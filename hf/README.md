@@ -3,6 +3,7 @@ license: mit
 base_model:
 - deepseek-ai/DeepSeek-V4.1-Flash-1017
 base_model_relation: quantized
+pipeline_tag: text-generation
 tags:
 - deepseek
 - deepseek-v4.1
