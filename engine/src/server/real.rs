@@ -75,8 +75,19 @@ impl Engine for Real {
         let td = Instant::now();
         let mut sampler = Sampler::from_params(p);
         let mut fin = Finish::Length;
+        let mut hes = p.hesitation.clone();
         for _ in 0..p.max_new {
+            if let Some(h) = &hes {
+                for &i in h.ids.iter() {
+                    if let Some(l) = logits.get_mut(i as usize) {
+                        *l -= h.lambda;
+                    }
+                }
+            }
             let tok = sampler.sample(&logits);
+            if hes.as_ref().is_some_and(|h| tok == h.close) {
+                hes = None;
+            }
             if !emit(tok) {
                 fin = Finish::Cancelled;
                 break;

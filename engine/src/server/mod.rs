@@ -33,7 +33,7 @@ use serde_json::json;
 use tokenizers::Tokenizer;
 use tokio_stream::{Stream, StreamExt};
 
-pub use engine::{Engine, EngineHandle, Event, Finish, GenParams, GenStats};
+pub use engine::{Engine, EngineHandle, Event, Finish, GenParams, GenStats, Hesitation};
 
 /// Tokens that end generation (never forwarded to the parser).
 pub const STOP_TOKENS: [&str; 2] = ["<｜end▁of▁sentence｜>", "<｜User｜>"];
@@ -48,6 +48,8 @@ pub struct ServerConfig {
     pub default_max_tokens: usize,
     pub default_temperature: f32,
     pub default_top_p: f32,
+    /// hesitation-token logit penalty while reasoning; 0 = off. Requests can set `hesitation_penalty`.
+    pub hesitation_penalty: f32,
     /// SSE comment interval while nothing else is sent (long prefills)
     pub keepalive: Duration,
 }
@@ -60,6 +62,7 @@ impl Default for ServerConfig {
             default_max_tokens: 8192,
             default_temperature: 1.0,
             default_top_p: 1.0,
+            hesitation_penalty: 0.0,
             keepalive: Duration::from_secs(10),
         }
     }
@@ -70,7 +73,17 @@ pub struct AppState {
     pub tok: Arc<Tokenizer>,
     pub cfg: ServerConfig,
     stop_ids: Vec<u32>,
+    /// single-token spellings of HESITATION_WORDS, and the reasoning delimiters
+    hes_ids: Arc<Vec<u32>>,
+    think: Option<(u32, u32)>,
 }
+
+/// Words a quantized model over-uses when it second-guesses itself (Lotfi et al., arXiv 2606.00206). Each is
+/// penalized in the spellings the tokenizer has as one token: as is, lowercase, with a leading space.
+pub const HESITATION_WORDS: [&str; 16] = [
+    "Wait", "But", "Alternatively", "Hmm", "However", "Actually", "Hold", "Perhaps", "Maybe", "Oh", "Oops", "Instead",
+    "Again", "Recheck", "Double", "Verify",
+];
 
 impl AppState {
     pub fn new(engine: EngineHandle, tok: Arc<Tokenizer>, cfg: ServerConfig) -> anyhow::Result<Arc<Self>> {
@@ -78,7 +91,23 @@ impl AppState {
             .iter()
             .map(|t| tok.token_to_id(t).ok_or_else(|| anyhow::anyhow!("tokenizer has no {t} token: not a DeepSeek V4.1 tokenizer?")))
             .collect::<anyhow::Result<_>>()?;
-        Ok(Arc::new(Self { engine, tok, cfg, stop_ids }))
+        let mut hes: Vec<u32> = vec![];
+        for w in HESITATION_WORDS {
+            let lw = w.to_lowercase();
+            for v in [w.to_string(), lw.clone(), format!(" {w}"), format!(" {lw}")] {
+                if let Some(id) = tok.token_to_id(&v).or_else(|| {
+                    let e = tok.encode(v.as_str(), false).ok()?;
+                    (e.get_ids().len() == 1).then(|| e.get_ids()[0])
+                }) {
+                    hes.push(id);
+                }
+            }
+        }
+        hes.sort_unstable();
+        hes.dedup();
+        let think = tok.token_to_id("<think>").zip(tok.token_to_id("</think>"));
+        tracing::info!(tokens = hes.len(), "hesitation penalty: {} tokens, default {}", hes.len(), cfg.hesitation_penalty);
+        Ok(Arc::new(Self { engine, tok, cfg, stop_ids, hes_ids: Arc::new(hes), think }))
     }
 }
 
@@ -147,28 +176,31 @@ fn parse_with_model<T: DeserializeOwned>(st: &AppState, body: &[u8]) -> Result<T
 
 async fn chat_completions(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let e = |err| ApiError(Proto::OpenAi, err);
+    let hes = hesitation_override(&body);
     let req: ChatCompletionRequest = parse_with_model(&st, &body).map_err(e)?;
     let (seed, include_usage) = (req.seed, req.include_usage());
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
     let streaming = conv.stream;
-    run::<ChatCompletionRequest>(st, conv, "chatcmpl-", seed, |g| if streaming { g.with_include_usage(include_usage) } else { g })
+    run::<ChatCompletionRequest>(st, conv, "chatcmpl-", seed, hes, |g| if streaming { g.with_include_usage(include_usage) } else { g })
         .await
         .map_err(e)
 }
 
 async fn messages(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let e = |err| ApiError(Proto::Anthropic, err);
+    let hes = hesitation_override(&body);
     let req: MessagesRequest = parse_with_model(&st, &body).map_err(e)?;
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
-    run::<MessagesRequest>(st, conv, "msg_", None, |g| g).await.map_err(e)
+    run::<MessagesRequest>(st, conv, "msg_", None, hes, |g| g).await.map_err(e)
 }
 
 async fn responses(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let e = |err| ApiError(Proto::OpenAi, err);
+    let hes = hesitation_override(&body);
     let req: ResponsesRequest = parse_with_model(&st, &body).map_err(e)?;
     let custom = req.custom_tool_names();
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
-    run::<ResponsesRequest>(st, conv, "resp_", None, move |g| g.with_custom_tool_names(custom)).await.map_err(e)
+    run::<ResponsesRequest>(st, conv, "resp_", None, hes, move |g| g.with_custom_tool_names(custom)).await.map_err(e)
 }
 
 /// Anthropic token counting: the exact prompt length this server would prefill.
@@ -199,6 +231,11 @@ async fn health(State(st): State<Arc<AppState>>) -> Response {
 type Gen<T> = <<T as ProtocolRequest>::Response as ProtocolResponse>::ChunkGenerator;
 type Chunk<T> = <Gen<T> as ChunkGenerator>::Chunk;
 
+/// Per-request `hesitation_penalty` (a dsx extension field; the protocol parsers ignore unknown fields).
+fn hesitation_override(body: &[u8]) -> Option<f32> {
+    serde_json::from_slice::<serde_json::Value>(body).ok()?.get("hesitation_penalty")?.as_f64().map(|v| v as f32)
+}
+
 /// Render + tokenize the conversation (V4.1 template). Rejects images.
 pub fn encode(st: &AppState, conv: &ConversationRequest) -> Result<Vec<u32>, ConversionError> {
     let rendered = DeepseekV41Encoding::new().render_conversation(&conv.conversation);
@@ -218,6 +255,7 @@ async fn run<T>(
     conv: ConversationRequest,
     id_prefix: &str,
     seed: Option<u64>,
+    hesitation: Option<f32>,
     configure: impl FnOnce(Gen<T>) -> Gen<T>,
 ) -> Result<Response, ConversionError>
 where
@@ -226,6 +264,11 @@ where
 {
     let prompt = encode(&st, &conv)?;
     let cfg = &st.cfg;
+    let lambda = hesitation.unwrap_or(cfg.hesitation_penalty);
+    let hesitation = match st.think {
+        Some((open, close)) if lambda > 0.0 && prompt.last() == Some(&open) => Some(Hesitation { lambda, ids: st.hes_ids.clone(), close }),
+        _ => None,
+    };
     if prompt.len() >= cfg.ctx {
         return Err(ConversionError::bad_request(format!(
             "prompt is {} tokens; this server's context window is {} tokens",
@@ -241,13 +284,14 @@ where
         top_p: io.top_p.unwrap_or(cfg.default_top_p),
         seed,
         stop_token_ids: st.stop_ids.clone(),
+        hesitation,
     };
     let id = engine::request_id(id_prefix);
     let model = conv.model.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| cfg.model_name.clone());
     let c = &conv.conversation;
     tracing::info!(
         %id, %model, stream = conv.stream, thinking = c.thinking_mode, effort = ?c.reasoning_effort,
-        messages = c.messages.len(), tools = c.tools.len(), temperature = params.temperature, top_p = params.top_p,
+        messages = c.messages.len(), tools = c.tools.len(), temperature = params.temperature, top_p = params.top_p, hesitation = params.hesitation.as_ref().map_or(0.0, |h| h.lambda),
         "request"
     );
     let generator = configure(T::chunk_generator(&conv, id.clone(), model.clone()));

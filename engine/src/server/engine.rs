@@ -17,6 +17,16 @@ pub struct GenParams {
     pub seed: Option<u64>,
     /// EOS and friends. The worker enforces these and `max_new` too, so an engine may ignore them.
     pub stop_token_ids: Vec<u32>,
+    /// logit penalty on hesitation tokens while the model is reasoning (None = off)
+    pub hesitation: Option<Hesitation>,
+}
+
+/// Subtract `lambda` from the logits of `ids` until `close` (`</think>`) is generated.
+#[derive(Debug, Clone)]
+pub struct Hesitation {
+    pub lambda: f32,
+    pub ids: std::sync::Arc<Vec<u32>>,
+    pub close: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

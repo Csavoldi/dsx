@@ -34,6 +34,10 @@ struct Cli {
     temperature: f32,
     #[arg(long, default_value_t = 1.0)]
     top_p: f32,
+    /// logit penalty on hesitation tokens ("Wait", "But", "Alternatively", ...) while reasoning; 0 = off.
+    /// A request's `hesitation_penalty` field overrides it.
+    #[arg(long, default_value_t = 0.0)]
+    hesitation_penalty: f32,
     /// run the deterministic mock engine instead of the model
     #[arg(long)]
     mock: bool,
@@ -84,6 +88,7 @@ async fn main() -> Result<()> {
         default_max_tokens: cli.max_tokens,
         default_temperature: cli.temperature,
         default_top_p: cli.top_p,
+        hesitation_penalty: cli.hesitation_penalty,
         ..ServerConfig::default()
     };
     let st = AppState::new(engine, tok, cfg)?;
