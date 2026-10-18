@@ -95,6 +95,51 @@ extern "C" __global__ void search_scales_k(const float *__restrict__ W, const fl
   out[id] = best_s;
 }
 
+// warp per (row, group): lanes split the group's elements, each candidate's error is a warp sum (same candidates,
+// same first-best rule as search_scales_k; 32x the parallelism of a thread per group)
+extern "C" __global__ void search_scales_w(const float *__restrict__ W, const float *__restrict__ d, int R, int C, int G, float lo,
+                                           float hi, const float *__restrict__ clip, int nclip, float *__restrict__ out) {
+  const int ng = C / G, lane = threadIdx.x & 31;
+  const long id = ((long)blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  if (id >= (long)R * ng) return;
+  const int r = id / ng, g = id % ng;
+  const float *wg = W + (size_t)r * C + (size_t)g * G;
+  const float *dg = d + (size_t)g * G;
+  float wv[4], dv[4];  // G <= 128: up to 4 elements per lane
+  int nv = 0;
+  float amax = 0.f;
+  for (int j = lane; j < G; j += 32, nv++) {
+    wv[nv] = wg[j];
+    dv[nv] = dg[j];
+    amax = fmaxf(amax, fabsf(wv[nv]));
+  }
+  for (int o = 16; o; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+  amax = fmaxf(amax, 1e-12f);
+  float den[2];
+  int nden;
+  if (hi == -lo) { den[0] = hi; nden = 1; } else { den[0] = fminf(hi, -lo); den[1] = fmaxf(hi, -lo); nden = 2; }
+  const int nsign = (lo != -hi) ? 2 : 1;
+  float best_e = 0.f, best_s = 0.f;
+  bool first = true;
+  for (int si = 0; si < nsign; si++) {
+    const float sign = si == 0 ? 1.f : -1.f;
+    for (int di = 0; di < nden; di++) {
+      for (int ci = 0; ci < nclip; ci++) {
+        const float sc = sign * amax * clip[ci] / den[di];
+        float e = 0.f;
+        for (int k = 0; k < nv; k++) {
+          float q = fminf(fmaxf(rintf(wv[k] / sc), lo), hi) * sc;
+          float df = wv[k] - q;
+          e += df * df * dv[k];
+        }
+        for (int o = 16; o; o >>= 1) e += __shfl_xor_sync(0xffffffffu, e, o);
+        if (first || e < best_e) { best_e = e; best_s = sc; first = false; }
+      }
+    }
+  }
+  if (lane == 0) out[id] = best_s;
+}
+
 extern "C" int ds41q_gptq_block(const float *Hinv, int C, int i1, float *W, const float *S, const float *lo, const float *hi, float *Q,
                                 float *E, int R, int B, uintptr_t stream) {
   static bool attr = false;
@@ -111,6 +156,10 @@ extern "C" int ds41q_gptq_block(const float *Hinv, int C, int i1, float *W, cons
 extern "C" int ds41q_search_scales(const float *W, const float *d, int R, int C, int G, float lo, float hi, const float *clip, int nclip,
                                    float *out, uintptr_t stream) {
   long n = (long)R * (C / G);
-  search_scales_k<<<(unsigned)((n + 255) / 256), 256, 0, (cudaStream_t)stream>>>(W, d, R, C, G, lo, hi, clip, nclip, out);
+  if (G >= 64 && G <= 128) {  // q3_k (16) keeps a thread per group: half a warp would idle
+    search_scales_w<<<(unsigned)((n * 32 + 255) / 256), 256, 0, (cudaStream_t)stream>>>(W, d, R, C, G, lo, hi, clip, nclip, out);
+  } else {
+    search_scales_k<<<(unsigned)((n + 255) / 256), 256, 0, (cudaStream_t)stream>>>(W, d, R, C, G, lo, hi, clip, nclip, out);
+  }
   return (int)cudaGetLastError();
 }
