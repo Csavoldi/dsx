@@ -3,7 +3,9 @@
 mod decode;
 mod hip;
 mod load;
+mod prefill;
 mod selftest;
+mod serve;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -69,6 +71,21 @@ enum Cmd {
     },
     /// Kernel self-tests on synthetic inputs against CPU implementations.
     Selftest,
+    /// OpenAI / Anthropic compatible API server (dsx's server, llama.cpp web UI at /).
+    Serve {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        rank: Option<PathBuf>,
+        #[arg(long, default_value_t = 131072)]
+        ctx: usize,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 8090)]
+        port: u16,
+        #[arg(long, default_value_t = 32768)]
+        max_tokens: usize,
+    },
     /// Development loop: load once, then run commands from a file as it appears (one line per command):
     /// `reload PATH.hsaco`, `bench CTX STEPS`, `prof CTX`, `eval DIR SEQS`, `check REFCACHE`, `quit`.
     Dev {
@@ -209,6 +226,25 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                     }
                     "bench" => bench(&mut dec, w[1].parse()?, w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(24), false)?,
                     "prof" => bench(&mut dec, w[1].parse()?, 8, true)?,
+                    "pbench" => {
+                        // prompt throughput on synthetic tokens from an empty context, then decode at that context
+                        let n: usize = w[1].parse()?;
+                        let toks: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % 120000) as u32).collect();
+                        dec.g.sync()?;
+                        let t0 = Instant::now();
+                        let next = dec.prefill(&toks)?;
+                        dec.g.sync()?;
+                        let s = t0.elapsed().as_secs_f64();
+                        println!("prefill {n} tokens: {s:.2} s = {:.0} tok/s (next {next})", n as f64 / s);
+                        let mut ts = vec![];
+                        let mut tok = next;
+                        for _ in 0..16 {
+                            ts.push(dec.time_step(tok)?);
+                            tok = (tok * 7 + 13) % 100000;
+                        }
+                        ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                        println!("  decode after it: {:.0} us median ({:.1} tok/s)", ts[8], 1e6 / ts[8]);
+                    }
                     "eval" => {
                         let r = eval_run(&mut dec, Path::new(w[1]), w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(8), 1024)?;
                         println!("{r}");
@@ -245,6 +281,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::EngramJson { gguf, out } => engram_json(&gguf, &out),
         Cmd::Selftest => selftest::run(),
+        Cmd::Serve { model, rank, ctx, host, port, max_tokens } => serve::serve(model, read_rank(&rank)?, ctx, host, port, max_tokens),
         Cmd::Dev { model, rank, ctx, cmd } => dev(&model, &read_rank(&rank)?, ctx, &cmd),
         Cmd::Check { model, ids, n, rank, ref_cache } => {
             // ---- reference: tokens fed, logits per position, routed experts
@@ -298,7 +335,28 @@ fn main() -> Result<()> {
             eprintln!("reference: {} positions, {} distinct routed experts", feed.len(), routes.len());
             let mut dec = Decoder::load(&model, 4096, &read_rank(&rank)?, &routes, None)?;
             let dump_dir = std::env::var("DSX_DUMP").ok();
+            let npf: usize = std::env::var("DSXA_PREFILL").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+            if std::env::var_os("DSXA_PFCMP").is_some() {
+                // one token through decode (eager, dumps) and through prefill (dumps), same position 0
+                dec.dump = Some(Default::default());
+                let _ = dec.step_dump(feed[0])?;
+                dec.reset()?;
+                dec.prefill(&feed[..1])?;
+                return Ok(());
+            }
+            if npf > 0 {
+                let t0 = Instant::now();
+                let next = dec.prefill(&feed[..npf])?;
+                let lg = dec.logits()?;
+                let r = &ref_logits[npf - 1];
+                let (lr, lgp) = (log_softmax(r), log_softmax(&lg));
+                let kl: f64 = lr.iter().zip(&lgp).map(|(a, b)| a.exp() * (a - b)).sum();
+                println!("prefill {npf} tokens ({:.2} s): next {next} top {:?} | ref top {:?} | KL {kl:.2e}", t0.elapsed().as_secs_f32(), top(&lg, 3), top(r, 3));
+            }
             for (i, &tok) in feed.iter().enumerate() {
+                if i < npf {
+                    continue;
+                }
                 let next = if let (Some(dir), true) = (&dump_dir, i < 4) {
                     let (nx, hs) = dec.step_dump(tok)?;
                     for (l, h) in hs.iter().enumerate() {

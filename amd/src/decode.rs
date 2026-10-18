@@ -18,34 +18,34 @@ pub const WIN: usize = 128;
 pub const IH: usize = 32;
 pub const ID: usize = 128;
 pub const VOCAB: usize = 129280;
-const ACH: usize = 16;
-const NCHUNK: usize = (WIN + 512).div_ceil(ACH);
-const CAND_CAP: usize = 65536;
+pub(crate) const ACH: usize = 16;
+pub(crate) const NCHUNK: usize = (WIN + 512).div_ceil(ACH);
+pub(crate) const CAND_CAP: usize = 65536;
 
 // per-layer accumulator offsets (f32), all zeroed at the start of a step
-const NPART: usize = D / 64;
-const A_HMIX_A: usize = 0; // [NPART][32] per-block partial mix dots
-const A_HMIX_F: usize = NPART * 32;
-const A_XSS_A: usize = 2 * NPART * 32; // [NPART] partial sums of squares
-const A_XSS_F: usize = A_XSS_A + NPART;
-const A_ENG_SUM: usize = A_XSS_F + NPART;
-const A_QR: usize = A_ENG_SUM + 16;
-const A_KV: usize = A_QR + 1280;
-const A_CKV: usize = A_KV + 512;
-const A_CGATE: usize = A_CKV + 512;
-const A_IW: usize = A_CGATE + 512;
-const A_R: usize = A_IW + 32;
-const A_A: usize = A_R + 8192;
-const A_LOGITS: usize = A_A + 5120;
-const A_SHG: usize = A_LOGITS + 384;
-const A_SHU: usize = A_SHG + 2304;
-const A_G: usize = A_SHU + 2304;
-const A_U: usize = A_G + 6 * 2304;
-const A_Y: usize = A_U + 6 * 2304;
-const A_ENG_KV: usize = A_Y + 5120;
-const A_RCNT: usize = A_ENG_KV + 25600; // router blocks-done counter
-const A_CNT: usize = A_RCNT + 32; // last-block counters: 0 hc attn, 1 hc ffn, 2 q_a, 3 router, 4 wo_a, 5 shared, 6.. expert slots
-const ACC: usize = A_CNT + 32;
+pub(crate) const NPART: usize = D / 64;
+pub(crate) const A_HMIX_A: usize = 0; // [NPART][32] per-block partial mix dots
+pub(crate) const A_HMIX_F: usize = NPART * 32;
+pub(crate) const A_XSS_A: usize = 2 * NPART * 32; // [NPART] partial sums of squares
+pub(crate) const A_XSS_F: usize = A_XSS_A + NPART;
+pub(crate) const A_ENG_SUM: usize = A_XSS_F + NPART;
+pub(crate) const A_QR: usize = A_ENG_SUM + 16;
+pub(crate) const A_KV: usize = A_QR + 1280;
+pub(crate) const A_CKV: usize = A_KV + 512;
+pub(crate) const A_CGATE: usize = A_CKV + 512;
+pub(crate) const A_IW: usize = A_CGATE + 512;
+pub(crate) const A_R: usize = A_IW + 32;
+pub(crate) const A_A: usize = A_R + 8192;
+pub(crate) const A_LOGITS: usize = A_A + 5120;
+pub(crate) const A_SHG: usize = A_LOGITS + 384;
+pub(crate) const A_SHU: usize = A_SHG + 2304;
+pub(crate) const A_G: usize = A_SHU + 2304;
+pub(crate) const A_U: usize = A_G + 6 * 2304;
+pub(crate) const A_Y: usize = A_U + 6 * 2304;
+pub(crate) const A_ENG_KV: usize = A_Y + 5120;
+pub(crate) const A_RCNT: usize = A_ENG_KV + 25600; // router blocks-done counter
+pub(crate) const A_CNT: usize = A_RCNT + 32; // last-block counters: 0 hc attn, 1 hc ffn, 2 q_a, 3 router, 4 wo_a, 5 shared, 6.. expert slots
+pub(crate) const ACC: usize = A_CNT + 32;
 
 // ---- kernel argument structs (mirror kernels/dsxa.hip)
 
@@ -58,7 +58,7 @@ pub struct HcArgs {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct Job {
+pub(crate) struct Job {
     w: u64,
     sc: u64,
     y: u64,
@@ -82,8 +82,8 @@ pub struct Job {
     emat: i32,
 }
 
-const MAXJ: usize = 13;
-const ROUTE_BYTES: usize = 1024; // Route struct slot per layer
+pub(crate) const MAXJ: usize = 13;
+pub(crate) const ROUTE_BYTES: usize = 1024; // Route struct slot per layer
 
 /// target waves per GEMV launch for the shared k-split choice (dev-tunable)
 pub static TARGET_WAVES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(8192);
@@ -116,10 +116,10 @@ struct Post {
     os: u64,
     ob: u64,
 }
-const P_ROUTER: i32 = 1;
-const P_RMSNORM: i32 = 2;
-const P_BF16: i32 = 3;
-const P_SWIGLU: i32 = 4;
+pub(crate) const P_ROUTER: i32 = 1;
+pub(crate) const P_RMSNORM: i32 = 2;
+pub(crate) const P_BF16: i32 = 3;
+pub(crate) const P_SWIGLU: i32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -248,86 +248,86 @@ pub struct Layer {
     pub idx_src: bool,
     pub comp_src: usize,
     pub idxk_src: usize,
-    hc_attn_fn: Buf,
-    hc_attn: HcArgs,
-    hc_ffn_fn: Buf,
-    hc_ffn: HcArgs,
-    attn_norm: Buf,
-    ffn_norm: Buf,
-    q_norm: Buf,
-    kv_norm: Buf,
-    sinks: Buf,
-    wq_a: DMat,
-    wkv: DMat,
-    wq_b: DMat,
-    wo_a: DMat,
-    wo_b: DMat,
-    comp_wkv: Option<DMat>,
-    comp_wgate: Option<DMat>,
-    comp_norm: Option<Buf>,
-    idx_wq_b: Option<DMat>,
-    idx_proj: Option<DMat>,
-    idx_wk: Option<Buf>,
-    idx_knorm: Option<Buf>,
-    gate: DMat,
-    gate_bias: Buf,
-    sh_w1: DMat,
-    sh_w3: DMat,
-    sh_w2: DMat,
+    pub(crate) hc_attn_fn: Buf,
+    pub(crate) hc_attn: HcArgs,
+    pub(crate) hc_ffn_fn: Buf,
+    pub(crate) hc_ffn: HcArgs,
+    pub(crate) attn_norm: Buf,
+    pub(crate) ffn_norm: Buf,
+    pub(crate) q_norm: Buf,
+    pub(crate) kv_norm: Buf,
+    pub(crate) sinks: Buf,
+    pub(crate) wq_a: DMat,
+    pub(crate) wkv: DMat,
+    pub(crate) wq_b: DMat,
+    pub(crate) wo_a: DMat,
+    pub(crate) wo_b: DMat,
+    pub(crate) comp_wkv: Option<DMat>,
+    pub(crate) comp_wgate: Option<DMat>,
+    pub(crate) comp_norm: Option<Buf>,
+    pub(crate) idx_wq_b: Option<DMat>,
+    pub(crate) idx_proj: Option<DMat>,
+    pub(crate) idx_wk: Option<Buf>,
+    pub(crate) idx_knorm: Option<Buf>,
+    pub(crate) gate: DMat,
+    pub(crate) gate_bias: Buf,
+    pub(crate) sh_w1: DMat,
+    pub(crate) sh_w3: DMat,
+    pub(crate) sh_w2: DMat,
     pub experts: Buf, // ExpertMat [384][3]
-    engram: Option<(DMat, Buf)>,
+    pub(crate) engram: Option<(DMat, Buf)>,
     // state
-    ring: Buf,
-    comp_cache: Option<Buf>,
-    idx_cache: Option<Buf>,
-    cstate: Option<Buf>,
+    pub(crate) ring: Buf,
+    pub(crate) comp_cache: Option<Buf>,
+    pub(crate) idx_cache: Option<Buf>,
+    pub(crate) cstate: Option<Buf>,
 }
 
 pub struct Decoder {
     pub g: Gpu,
     pub cfg: Config,
     pub layers: Vec<Layer>,
-    embed: Buf,
-    head: DMat,
-    out_norm: Buf,
+    pub(crate) embed: Buf,
+    pub(crate) head: DMat,
+    pub(crate) out_norm: Buf,
     pub arena: Buf,
-    rope_f: Buf,
-    rope_fc: Buf,
+    pub(crate) rope_f: Buf,
+    pub(crate) rope_fc: Buf,
     pub max_ctx: usize,
     // step buffers
-    st: Buf,
-    h: Buf,
-    acc: Buf,
-    x_a: Buf,
-    x_f: Buf,
-    q: Buf,
-    iq: Buf,
-    score: Buf,
-    bscore: Buf,
-    hist: Buf,
-    ctl: Buf,
-    sel: Buf,
-    cand: Buf,
-    ckey: Buf,
-    comp_idx: Buf,
-    ncomp: Buf,
-    kb: Buf,
-    nkb: Buf,
-    nb: Buf,
-    keep: Buf,
-    nkeep: Buf,
-    cscore: Buf,
-    part: Buf,
-    oq: Buf,
-    os: Buf,
-    route: Buf,
-    xfin: Buf,
+    pub(crate) st: Buf,
+    pub(crate) h: Buf,
+    pub(crate) acc: Buf,
+    pub(crate) x_a: Buf,
+    pub(crate) x_f: Buf,
+    pub(crate) q: Buf,
+    pub(crate) iq: Buf,
+    pub(crate) score: Buf,
+    pub(crate) bscore: Buf,
+    pub(crate) hist: Buf,
+    pub(crate) ctl: Buf,
+    pub(crate) sel: Buf,
+    pub(crate) cand: Buf,
+    pub(crate) ckey: Buf,
+    pub(crate) comp_idx: Buf,
+    pub(crate) ncomp: Buf,
+    pub(crate) kb: Buf,
+    pub(crate) nkb: Buf,
+    pub(crate) nb: Buf,
+    pub(crate) keep: Buf,
+    pub(crate) nkeep: Buf,
+    pub(crate) cscore: Buf,
+    pub(crate) part: Buf,
+    pub(crate) oq: Buf,
+    pub(crate) os: Buf,
+    pub(crate) route: Buf,
+    pub(crate) xfin: Buf,
     pub logits: Buf,
-    next: Buf,
-    eng_rows: Buf,
+    pub(crate) next: Buf,
+    pub(crate) eng_rows: Buf,
     /// pinned host staging: [token i32, pad] then engram rows for the 2 engram layers
     pub host: *mut u8,
-    graph: Option<Graph>,
+    pub(crate) graph: Option<Graph>,
     pub cb3: [u32; 2],
     pub cb2: u32,
     pub engram_st: Option<SafeTensors>,
@@ -335,20 +335,23 @@ pub struct Decoder {
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
-    act_a: Act,
-    act_f: Act,
-    act_qr: Act,
-    act_r: Act,
-    act_h: Act, // 7 slots of 2304: routed experts 0..5, shared 6
-    act_head: Act,
-    act_eng: Act,
-    v1: bool,
-    gtime: std::cell::RefCell<Option<Vec<(String, [f64; 5])>>>,
-    last_blocks: std::cell::RefCell<usize>,
+    /// host copies of the per-layer expert tables (prompt path builds grouped expert jobs from them)
+    pub(crate) etab: Vec<Vec<ExpertMat>>,
+    pub(crate) pf: Option<crate::prefill::PfBufs>,
+    pub(crate) act_a: Act,
+    pub(crate) act_f: Act,
+    pub(crate) act_qr: Act,
+    pub(crate) act_r: Act,
+    pub(crate) act_h: Act, // 7 slots of 2304: routed experts 0..5, shared 6
+    pub(crate) act_head: Act,
+    pub(crate) act_eng: Act,
+    pub(crate) v1: bool,
+    pub(crate) gtime: std::cell::RefCell<Option<Vec<(String, [f64; 5])>>>,
+    pub(crate) last_blocks: std::cell::RefCell<usize>,
 }
 
-const ENG_ROW_BYTES: usize = 24 * 256 + 24 * 8;
-const HOST_BYTES: usize = 256 + 2 * ENG_ROW_BYTES;
+pub(crate) const ENG_ROW_BYTES: usize = 24 * 256 + 24 * 8;
+pub(crate) const HOST_BYTES: usize = 256 + 2 * ENG_ROW_BYTES;
 
 fn hc_args(st: &SafeTensors, l: usize, which: &str) -> Result<(Vec<f32>, HcArgs)> {
     let p = |s: &str| format!("layers.{l}.hc_{which}_{s}");
@@ -480,9 +483,9 @@ pub struct Placement {
     pub fmt: Vec<i32>, // [layer * 384 + e]
 }
 
-const FP4_BYTES: usize = 3 * (INTER * D / 2 + INTER * D / 32);
-const CB3_BYTES: usize = 3 * (INTER * D * 3 / 8 + INTER * D / 32);
-const CB2_BYTES: usize = 3 * (INTER * D * 2 / 8 + INTER * D / 32);
+pub(crate) const FP4_BYTES: usize = 3 * (INTER * D / 2 + INTER * D / 32);
+pub(crate) const CB3_BYTES: usize = 3 * (INTER * D * 3 / 8 + INTER * D / 32);
+pub(crate) const CB2_BYTES: usize = 3 * (INTER * D * 2 / 8 + INTER * D / 32);
 
 pub fn expert_bytes(fmt: i32) -> usize {
     match fmt {
@@ -684,6 +687,8 @@ impl Decoder {
             hist_tokens: vec![],
             pos: 0,
             dump: None,
+            etab: vec![],
+            pf: None,
             act_a: Act::new(&g, D)?,
             act_f: Act::new(&g, D)?,
             act_qr: Act::new(&g, QL)?,
@@ -778,6 +783,7 @@ impl Decoder {
                 }
             }
             g.htod(self.layers[l].experts.ptr, &table)?;
+            self.etab.push(table.clone());
             g.sync()?;
             if l % 4 == 3 || l + 1 == n_layers {
                 eprintln!("experts: layer {l} done, {:.1} GB, {:.0} s", off as f64 / 1e9, t0.elapsed().as_secs_f32());
@@ -789,7 +795,7 @@ impl Decoder {
         Ok(())
     }
 
-    fn accp(&self, l: usize, off: usize) -> u64 {
+    pub(crate) fn accp(&self, l: usize, off: usize) -> u64 {
         self.acc.at((l * ACC + off) * 4)
     }
 
@@ -895,12 +901,12 @@ impl Decoder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn hc_step(&self, y: u64, round_y: bool, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64, eng: Option<(u64, u64)>) -> Result<()> {
+    pub(crate) fn hc_step(&self, y: u64, round_y: bool, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64, eng: Option<(u64, u64)>) -> Result<()> {
         self.hc_step_x(y, round_y, pmix, pa, premix, prea, fnw, nmix, x_raw, xss, eng, XOut::default())
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn hc_step_x(&self, y: u64, round_y: bool, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64, eng: Option<(u64, u64)>, xo: XOut) -> Result<()> {
+    pub(crate) fn hc_step_x(&self, y: u64, round_y: bool, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64, eng: Option<(u64, u64)>, xo: XOut) -> Result<()> {
         let c = &self.cfg;
         let (ev, es) = eng.unwrap_or((0, 0));
         self.g.launch(
@@ -988,7 +994,7 @@ impl Decoder {
 
     /// radix top-k: n from `n_src` (device int) or (pos+1)/ratio; writes `out` (+offset, -1 padding to kmax), *nout
     #[allow(clippy::too_many_arguments)]
-    fn topk(&self, scores: u64, ratio: usize, n_src: u64, k: usize, map: u64, offset: i32, out: u64, kmax: usize, nout: u64) -> Result<()> {
+    pub(crate) fn topk(&self, scores: u64, ratio: usize, n_src: u64, k: usize, map: u64, offset: i32, out: u64, kmax: usize, nout: u64) -> Result<()> {
         // only the candidate-block list needs ascending order (expand_blocks); attention rows do not
         let sorted = (out == self.kb.ptr) as i32;
         let g = &self.g;
@@ -1184,6 +1190,8 @@ impl Decoder {
                 w("qraw", qraw)?;
                 let cnt: Vec<u8> = self.g.dtoh(self.accp(0, A_CNT), 32 * 4)?;
                 w("cnt", cnt)?;
+                let xr: Vec<f32> = self.g.dtoh(self.x_a.ptr, D)?;
+                w("xraw", xr.iter().flat_map(|v| v.to_le_bytes()).collect())?;
                 let kv: Vec<f32> = self.g.dtoh(self.accp(0, A_KV), 512)?;
                 w("kv", kv.iter().flat_map(|v| v.to_le_bytes()).collect())?;
             }
@@ -1358,6 +1366,15 @@ impl Decoder {
                 j.split = 2;
             }
             self.jobs(jobs, 2, Some(li))?;
+            if let (true, Some(_), Ok(dir)) = (li == 0, &self.dump, std::env::var("DSXA_DUMPQ")) {
+                let p = self.pos;
+                for (n, off, cnt) in [("a", A_A, D), ("logits", A_LOGITS, NE), ("y", A_Y, D), ("r", A_R, 8192)] {
+                    let v: Vec<f32> = g.dtoh(self.accp(0, off), cnt)?;
+                    std::fs::write(format!("{dir}/{n}_p{p}.bin"), v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
+                }
+                let v: Vec<f32> = g.dtoh(self.x_f.ptr, D)?;
+                std::fs::write(format!("{dir}/xf_p{p}.bin"), v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
+            }
             if let Some(d) = &self.dump {
                 // h after layer li = the next residual step's post; run it on a copy via a post-only hc_step
                 let tmp: Vec<f32> = g.dtoh(self.h.ptr, HC * D)?;
@@ -1382,6 +1399,18 @@ impl Decoder {
         g.launch("argmax", (1, 1, 1), 64, 0, &[Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::I(128), Arg::P(self.next.ptr)])?;
         g.launch("advance", (1, 1, 1), 1, 0, &[Arg::P(self.st.ptr), Arg::P(self.next.ptr)])?;
         Ok(())
+    }
+
+    /// head GEMV + argmax from xfin (used after the prompt path)
+    pub(crate) fn head_logits(&self) -> Result<()> {
+        let g = &self.g;
+        let fp8 = self.head.sc.is_some();
+        let mut hj = Job::dense(&self.head, if fp8 { W_FP8 } else { W_BF16 }, self.logits.ptr, X_PLAIN, self.xfin.ptr);
+        hj.lo = 1;
+        hj.split = 1;
+        self.jobs(vec![hj], 0, None)?;
+        g.launch("argmax_part", (128, 1, 1), 256, 0, &[Arg::P(self.logits.ptr), Arg::I(VOCAB as i32), Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr)])?;
+        g.launch("argmax", (1, 1, 1), 64, 0, &[Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::I(128), Arg::P(self.next.ptr)])
     }
 
     fn jobs_with_rows(&self, jobs: Vec<Job>, rows: u64) -> Result<()> {
@@ -1423,7 +1452,7 @@ impl Decoder {
     }
 
     /// Host side of the Engram lookup for the newest token: hash ids -> rows (fp8 + e8m0) into pinned memory.
-    fn engram_rows(&mut self, token: u32) -> Result<()> {
+    pub(crate) fn engram_rows(&mut self, token: u32) -> Result<()> {
         let c = &self.cfg;
         self.hist_tokens.push(c.engram_token_map[token as usize] as i64);
         let est = self.engram_st.as_ref().context("engram tables")?;

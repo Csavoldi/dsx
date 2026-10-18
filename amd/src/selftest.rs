@@ -314,6 +314,47 @@ pub fn run() -> Result<()> {
         nm[24] = h2.iter().map(|v| v * v).sum();
         report("hc_step next mix dots", &gm, &nm);
     }
+    // ---- prompt-path mm: FP8 dense, MXFP4, BF16 over 37 tokens vs CPU
+    {
+        let (n, k, nt) = if std::env::var_os("MM_BIG").is_some() { (5120usize, 8192usize, 3usize) } else { (128usize, 512usize, 37usize) };
+        let codes: Vec<u8> = (0..nt * k).map(|i| [0x38u8, 0x40, 0xC4, 0x30, 0xB8, 0x48, 0x00, 0xBC][(i * 7 + i / 5) % 8]).collect();
+        let xsv: Vec<f32> = (0..nt * k / 32).map(|i| [1.0f32, 0.5, 2.0, 0.25][i % 4]).collect();
+        let xv: Vec<f32> = (0..nt * k).map(|i| fnuz(codes[i]) * xsv[i / 32]).collect();
+        let (dq, dxs) = (g.upload(&codes)?, g.upload(&xsv)?);
+        let y = g.alloc_zeroed(nt * n * 4)?;
+        // FP8 dense
+        let w: Vec<u8> = (0..n * k).map(|_| { let b = ((r.f() + 1.0) * 127.0) as u8; if b & 0x7f == 0x7f { 0x30 } else { b } }).collect();
+        let sc: Vec<u8> = (0..(n / 32) * (k / 32)).map(|i| 118 + (i % 5) as u8).collect();
+        let (dw, dsc) = (g.upload(&crate::load::tile_fp8(&w, n, k))?, g.upload(&sc)?);
+        crate::prefill::test_mm(&g, 0, dw.ptr, dsc.ptr, 0, 0, n, k, dq.ptr, dxs.ptr, 0, nt, y.ptr, (0, 0, 0))?;
+        let got: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
+        let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| dsx::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xv[t * k + c]).sum() }).collect();
+        report("mm fp8 dense (37 tok)", &got, &cpu);
+        // MXFP4
+        let w4: Vec<u8> = (0..n * k / 2).map(|_| ((r.f() + 1.0) * 127.9) as u8).collect();
+        let s4: Vec<u8> = (0..n * k / 32).map(|_| 118 + ((r.f() + 1.0) * 3.0) as u8).collect();
+        let (c4, t4) = crate::load::tile_fp4(&w4, &s4, n, k);
+        let ar = g.alloc(c4.len() + t4.len())?;
+        g.htod(ar.ptr, &c4)?;
+        g.htod(ar.at(c4.len()), &t4)?;
+        crate::prefill::test_mm(&g, 1, ar.ptr, 0, 0, c4.len() as i64, n, k, dq.ptr, dxs.ptr, 0, nt, y.ptr, (0, 0, 0))?;
+        let got: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
+        let mut row = vec![0f32; k];
+        let wd: Vec<Vec<f32>> = (0..n).map(|i| { dsx::formats::dequant_row_scaled(dsx::gguf::GType::Fp4, &w4[i * k / 2..(i + 1) * k / 2], &s4[i * k / 32..(i + 1) * k / 32], &mut row); row.clone() }).collect();
+        let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| wd[i][c] * xv[t * k + c]).sum() }).collect();
+        report("mm mxfp4 (37 tok)", &got, &cpu);
+        // BF16 weights x bf16 activations (xv is bf16-exact)
+        let wb: Vec<f32> = (0..n * k).map(|_| r.f() * 0.1).collect();
+        let wbb = bf16r(&wb);
+        let wbytes: Vec<u8> = wbb.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let dwb = g.upload(&crate::load::tile_bf16(&wbytes, n, k))?;
+        let xb = g.upload(&bf16r(&xv))?;
+        crate::prefill::test_mm(&g, 4, dwb.ptr, 0, 0, 0, n, k, 0, 0, xb.ptr, nt, y.ptr, (0, 0, 0))?;
+        let got: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
+        let wf = from_bf16(&wbb);
+        let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| wf[i * k + c] * xv[t * k + c]).sum() }).collect();
+        report("mm bf16 (37 tok)", &got, &cpu);
+    }
     // ---- router top-6 vs the reference's sort
     {
         let mut bad = 0;

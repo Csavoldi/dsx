@@ -602,3 +602,42 @@ extern "C" __global__ void route_fill_t(int T, const int* sel, const float* wts,
     tok[pidx] = i / 6;
     wrow[pidx] = wts[i];
 }
+
+extern "C" __global__ void embed_t(const uint16_t* __restrict__ emb, const int* toks, float* h) {
+    const int t = blockIdx.y;
+    const int tok = toks[t];
+    for (int d = blockIdx.x * blockDim.x + threadIdx.x; d < D; d += gridDim.x * blockDim.x) {
+        const float v = bf16_to_f32(emb[(size_t)tok * D + d]);
+        for (int k = 0; k < HC; k++) h[((size_t)t * HC + k) * D + d] = v;
+    }
+}
+
+// window rows of positions p0-128 .. p0-1 from the ring into lin[0..128) (positions < 0 left as is)
+extern "C" __global__ void ring_to_lin(const uint16_t* ring, int p0, uint16_t* lin) {
+    const int r = blockIdx.x;  // lin row: position p0 - 128 + r
+    const int p = p0 - WIN + r;
+    if (p < 0) return;
+    for (int i = threadIdx.x; i < HD; i += blockDim.x) lin[(size_t)r * HD + i] = ring[(size_t)(p % WIN) * HD + i];
+}
+// the batch's newest min(T, 128) positions from lin back into the ring
+extern "C" __global__ void lin_to_ring(const uint16_t* lin, int p0, int T, uint16_t* ring) {
+    const int j = blockIdx.x;  // 0 .. min(T,128)-1
+    const int n = min(T, WIN);
+    const int t = T - n + j, p = p0 + t;
+    for (int i = threadIdx.x; i < HD; i += blockDim.x) ring[(size_t)(p % WIN) * HD + i] = lin[(size_t)(WIN + t) * HD + i];
+}
+
+// Engram rows of a batch: rows [T][ENG_ROW_BYTES] (this layer's) -> FP8 activation [T][6144]
+extern "C" __global__ void __launch_bounds__(256) engram_act_t(const uint8_t* rows, int rstride, uint8_t* oq, float* os) {
+    const int t = blockIdx.x;
+    const uint8_t* r = rows + (size_t)t * rstride;
+    write_act(24 * 256, [&](int i) -> float {
+        const int row = i >> 8, j = i & 255;
+        const uint8_t b8 = r[row * 256 + j];
+        const uint8_t sc = r[24 * 256 + row * 8 + (j >> 5)];
+        const int s = b8 >> 7, e = (b8 >> 3) & 15, m = b8 & 7;
+        float v = e == 0 ? ldexpf((float)m, -9) : ldexpf(1.f + m / 8.f, e - 7);
+        v = s ? -v : v;
+        return round_bf16(v * __uint_as_float((uint32_t)sc << 23));
+    }, oq + (size_t)t * 6144, os + (size_t)t * 192, nullptr);
+}
