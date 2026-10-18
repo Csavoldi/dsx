@@ -5,7 +5,7 @@
   "speed": {
     "decode_tok_s_gen_3000_prompt": 31.5,
     "decode_ms_per_token": 31.7,
-    "decode_tok_s_api_server": "19-23",
+    "decode_tok_s_general_prose": "22-24",
     "prefill_tok_s_3000": 340,
     "verify_6_tokens_ms": 157
   },

@@ -41,7 +41,7 @@ nothing read from disk per token. Exact routing (no routing bias), greedy, think
 | | |
 |---|---:|
 | Decode, 3000-token agent prompt (`ds41 gen`) | **31.5 tok/s** (31.7 ms/token) |
-| Decode through the API server (temperature sampling, SSE streaming) | 19-23 tok/s (server overhead, fixed in v2) |
+| Decode on general prose (more experts outside the agentic hot set) | 22-24 tok/s |
 | Prefill, 3000 tokens in one 4096 chunk | 340 tok/s |
 | Prefill of a 2,000-token agent system prompt (server) | 7.8 s, then reused across turns |
 | Verify pass, 6 tokens (for speculative decoding) | 157 ms (26 ms/token if all accepted) |

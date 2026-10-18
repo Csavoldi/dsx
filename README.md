@@ -10,7 +10,7 @@ Measured on that box (i7-12700K, 128 GB DDR4-3200, RTX 3090 on PCIe 4.0 x16 + RT
 | | |
 |---|---:|
 | Decode, 3000-token agent prompt (engine benchmark) | **31.5 tok/s** |
-| Decode through the API server (sampling, streaming) | 19-23 tok/s (being fixed) |
+| Decode on general prose (more experts outside the agentic hot set) | 22-24 tok/s |
 | Prefill, 3000 tokens | 340 tok/s |
 | Quality vs the FP8 model (8 x 1024 tokens): KL / top-1 / perplexity | 0.462 / 71.5% / 11.66 (FP8: 0 / 100% / 8.56) |
 
@@ -100,7 +100,8 @@ same format as [Xolotl](https://github.com/Indras-Mirror/Xolotl)'s V4.1 GSQ rele
 ## Status
 
 Research code, tuned on one machine. Next (v2): close the quality gap (spill the coldest experts to NVMe to afford
-~2.3-2.5 bits/weight), faster prefill and dense projections, the server's decode overhead, DSpark speculative decoding.
+~2.3-2.5 bits/weight), expert placement that adapts to the conversation (general prose runs at 22-24 tok/s because the VRAM hot set is
+ranked on agentic text), faster prefill and dense projections, DSpark speculative decoding.
 
 ## Credits
 
