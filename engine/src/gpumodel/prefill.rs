@@ -639,6 +639,7 @@ impl GpuModel<'_> {
             let a = pb.a.ptr + (r0 * d * 4) as u64;
             return self.moe_fast_t(li, x, a, n);
         }
+        let tp0 = std::time::Instant::now();
         let l = &self.layers[li];
         // router (exact f32)
         // inputs are bf16-rounded, so bf16 x bf16 with f32 accumulation is exact
@@ -707,6 +708,8 @@ impl GpuModel<'_> {
         } else {
             spans
         };
+        self.prof_mark("prefill moe . router+shared+gpu1 ship", tp0)?;
+        let tp1 = std::time::Instant::now();
         let mut nstaged = 0usize;
         // the side stream must not start copying before the main stream reaches this layer's experts
         self.g.record(pb.ev_free[0], false)?;
@@ -751,6 +754,8 @@ impl GpuModel<'_> {
                 self.g.record(pb.ev_free[b], false)?;
             }
         }
+        self.prof_mark("prefill moe . GPU0 expert loop", tp1)?;
+        let tp2 = std::time::Instant::now();
         if use_g1 {
             let (g1, gp) = (self.g1.as_ref().unwrap(), self.g1p.as_ref().unwrap());
             g1.sync()?;
@@ -758,6 +763,7 @@ impl GpuModel<'_> {
             self.g.htod(pb.go.ptr, &gp.out_host.as_slice::<f32>()[..n * d])?;
             self.g.launch(self.k["add_inplace"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(pb.out.ptr), Arg::P(pb.go.ptr), Arg::I((n * d) as i32)])?;
         }
+        self.prof_mark("prefill moe . wait GPU1 + add", tp2)?;
         // a = bf16(out)
         let a = pb.a.ptr + (r0 * d * 4) as u64;
         self.g.dtod(a, pb.out.ptr, n * d * 4)?;

@@ -664,6 +664,15 @@ impl<'m> GpuModel<'m> {
         Ok(())
     }
 
+    /// DS41_PROF=1: synchronize GPU0 and add the time since `t0` under `name` (prefill profiling)
+    pub(crate) fn prof_mark(&mut self, name: &'static str, t0: std::time::Instant) -> Result<()> {
+        if self.prof.is_some() && !self.prof_host {
+            self.g.sync()?;
+            *self.prof.as_mut().unwrap().entry(name).or_default() += t0.elapsed().as_secs_f64();
+        }
+        Ok(())
+    }
+
     /// DS41_PROF=host: add host time since `t0` under `name`
     fn hmark(&mut self, t0: std::time::Instant, name: &'static str) {
         if self.prof_host {
