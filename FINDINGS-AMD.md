@@ -13,6 +13,17 @@ the architecture and quant background is in [FINDINGS.md](FINDINGS.md).
 | Software | ROCm 7.14 (prerelease image), Ubuntu 24.04 |
 | Price | $3.80/h (DigitalOcean `gpu-mi325x1-256gb`) |
 
+Measured on the rented box (ROCm 7.14, `mbench`):
+
+| | |
+|---|---|
+| Empty kernel in a HIP graph | 1.53 µs (grids up to 1216 blocks); 3.3 µs at 4864 blocks, 10 µs at 19456 |
+| Stream launch, empty kernel | 2.28 µs |
+| Dependent load latency | 290 ns (32 MB working set) to 340 ns (2 GB) |
+| Streaming read, 16 B nontemporal loads | 5.45 TB/s (91% of peak) at 304 x 256 threads, 4 loads in flight |
+| Agent-scope fence + atomic per block | 80 µs per 1216-block launch (vs 2.2 µs without): never fence per block |
+| NVMe scratch, parallel page-fault reads | ~1.7-2.4 GB/s (checkpoint load: 143 s) |
+
 ## 2. What has to fit
 
 | Part | Parameters | Native size | Where it goes |

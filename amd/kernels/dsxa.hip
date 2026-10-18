@@ -1138,3 +1138,7 @@ extern "C" __global__ void fill_rand(uint16_t* p, int n, int seed) {
         p[i] = (uint16_t)bf16_bits(v);
     }
 }
+
+extern "C" __global__ void test_route(const float* logits, const float* bias, float scale, Route* r) {
+    route_top6(logits, bias, scale, r, threadIdx.x);
+}

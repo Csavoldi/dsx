@@ -268,6 +268,8 @@ pub struct Decoder {
     pub engram_st: Option<SafeTensors>,
     pub hist_tokens: Vec<i64>,
     pub pos: usize,
+    /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
+    pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
 }
 
 const ENG_ROW_BYTES: usize = 24 * 256 + 24 * 8;
@@ -307,6 +309,53 @@ pub const CB2: [f32; 4] = [-8.0, -1.875, 2.75, 8.0];
 
 fn table(v: &[f32]) -> u32 {
     v.iter().enumerate().map(|(i, &x)| (fnuz_byte(x) as u32) << (8 * i)).sum()
+}
+
+/// Self-test hook: one FP8 GEMV job over a plain f32 activation, with an optional RoPE epilogue.
+#[allow(clippy::too_many_arguments)]
+pub fn test_gemv(g: &Gpu, w: u64, sc: u64, n: usize, k: usize, x: u64, y: u64, epi: i32, ropec: i32, st: u64, rf: u64, rfc: u64) -> Result<()> {
+    let mut j = Job::new(W_FP8, w, sc, n, k, y, X_PLAIN, x);
+    j.epi = epi;
+    j.ropec = ropec;
+    j.split = 1;
+    j.blocks = (n.div_ceil(64)) as i32;
+    let lds = j.lds();
+    let js = Jobs { j: [j; MAXJ], n: 1, eps: 1e-20, lim: 10.0, cb3: [0; 2], cb2: 0 };
+    g.launch("gemv_jobs", (j.blocks as u32, 1, 1), 256, lds as u32, &[Arg::B(bytes_of(&js)), Arg::P(st), Arg::P(rf), Arg::P(rfc), Arg::I(0), Arg::P(0), Arg::P(0), Arg::F(0.0), Arg::P(0), Arg::P(0)])
+}
+
+/// Self-test hook: one job of any weight kind with an f32 activation (X_PLAIN, or X_BF16R).
+#[allow(clippy::too_many_arguments)]
+pub fn test_job(g: &Gpu, wkind: i32, w: u64, sc: u64, n: usize, k: usize, x: u64, y: u64, lo: i32, split: usize, table: u64) -> Result<()> {
+    let mut j = Job::new(wkind, w, sc, n, k, y, X_PLAIN, x);
+    j.lo = lo;
+    j.split = split as i32;
+    if wkind == W_EXPERT {
+        j.sc = table;
+        j.eslot = 0;
+    }
+    j.blocks = (n.div_ceil(64) * split) as i32;
+    let lds = j.lds();
+    let js = Jobs { j: [j; MAXJ], n: 1, eps: 1e-20, lim: 10.0, cb3: [table_of(&CB3[..4]), table_of(&CB3[4..])], cb2: table_of(&CB2) };
+    let route = g.upload(&[0i32; 16])?; // expert slot 0 = expert 0, weight 0 (read with route_mode 2)
+    g.launch("gemv_jobs", (j.blocks as u32, 1, 1), 256, lds as u32, &[Arg::B(bytes_of(&js)), Arg::P(0), Arg::P(0), Arg::P(0), Arg::I(2), Arg::P(0), Arg::P(0), Arg::F(0.0), Arg::P(route.ptr), Arg::P(0)])?;
+    g.sync()
+}
+
+pub fn table_of(v: &[f32]) -> u32 {
+    table(v)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn test_hc_step(g: &Gpu, h: u64, y: u64, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64) -> Result<()> {
+    g.launch(
+        "hc_step",
+        ((D / 64) as u32, 1, 1),
+        256,
+        0,
+        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20)],
+    )?;
+    g.sync()
 }
 
 /// Expert placement: format per (layer, expert)
@@ -466,7 +515,7 @@ impl Decoder {
         // ---- experts
         let (free, _) = g.mem_info()?;
         let reserve = 3usize << 30;
-        let budget = free.saturating_sub(reserve + 64 << 20);
+        let budget = free.saturating_sub(reserve + (64 << 20));
         let pl = Placement::plan(rank, budget, force_fp4, nl);
         let c = pl.counts();
         eprintln!("experts: {} MXFP4, {} 3-bit, {} 2-bit: {:.1} GB (free {:.1} GB)", c[0], c[1], c[2], pl.bytes() as f64 / 1e9, free as f64 / 1e9);
@@ -504,7 +553,7 @@ impl Decoder {
             part: f(NCHUNK * NH * (HD + 2))?,
             oq: f(NH * HD / 4)?,
             os: f(NH * HD / 32)?,
-            route: f(16)?,
+            route: f(16 * 64)?,
             xfin: f(D)?,
             logits: f(VOCAB)?,
             next: f(4)?,
@@ -516,6 +565,7 @@ impl Decoder {
             engram_st: None,
             hist_tokens: vec![],
             pos: 0,
+            dump: None,
             layers,
             cfg,
             g,
@@ -531,63 +581,76 @@ impl Decoder {
     }
 
     fn load_experts(&mut self, st: &SafeTensors, pl: &Placement) -> Result<()> {
+        use rayon::prelude::*;
         let t0 = std::time::Instant::now();
         let g = &self.g;
         let n_layers = self.layers.len();
-        // staging for re-quantization: raw fp4 + scales, codes [n][k] + scale bytes
+        // GPU staging for re-quantization: SLOTS matrices in flight (raw fp4 + scales, codes, scale bytes)
+        const SLOTS: usize = 16;
         let mx = INTER * D;
-        let st_w = g.alloc(mx / 2)?;
-        let st_s = g.alloc(mx / 32)?;
-        let st_c = g.alloc(mx)?;
-        let st_b = g.alloc(mx / 32)?;
+        let slot = mx / 2 + mx / 32 + mx + mx / 32;
+        let stage = g.alloc(SLOTS * slot)?;
         let cb3 = g.upload(&CB3)?;
         let cb2 = g.upload(&CB2)?;
         let mut off = 0usize;
-        // host-side FP4 tiling runs on a thread pool, one expert ahead of the uploads
-        let mut table = vec![ExpertMat::default(); NE * 3];
+        let mut nslot = 0usize;
         for l in 0..n_layers {
-            for e in 0..NE {
-                let fmt = pl.fmt[l * NE + e];
-                for (mi, wn) in ["w1", "w3", "w2"].iter().enumerate() {
+            // host side, all of the layer's matrices in parallel: FP4 tiles, or the raw bytes for GPU re-quantization
+            let items: Vec<(usize, usize, i32)> = (0..NE).flat_map(|e| (0..3).map(move |m| (e, m, 0))).map(|(e, m, _)| (e, m, pl.fmt[l * NE + e])).collect();
+            let prepared: Vec<Result<(usize, usize, Vec<u8>, Vec<u8>)>> = items
+                .par_iter()
+                .map(|&(e, mi, fmt)| {
+                    let wn = ["w1", "w3", "w2"][mi];
                     let name = format!("layers.{l}.ffn.experts.{e}.{wn}.weight");
                     let (n, kh) = load::shape2(st, &name)?;
                     let k = kh * 2;
                     let w = st.bytes(st.get(&name)?);
                     let s = st.bytes(st.get(&name.replace(".weight", ".scale"))?);
-                    let em = &mut table[e * 3 + mi];
-                    em.fmt = fmt;
-                    em.woff = off as i64;
                     if fmt == E_FP4 {
-                        let (codes, scales) = load::tile_fp4(w, s, n, k);
-                        g.htod(self.arena.at(off), &codes)?;
-                        off += codes.len();
-                        em.soff = off as i64;
-                        g.htod(self.arena.at(off), &scales)?;
-                        off += scales.len();
-                        em.mul = 1.0;
+                        let (c, sc) = load::tile_fp4(w, s, n, k);
+                        Ok((n, k, c, sc))
                     } else {
-                        let bits = if fmt == E_CB3 { 3 } else { 2 };
-                        // per-matrix multiplier: the largest group scale fits e4m3 (max 240) with headroom
-                        let smax = s.iter().map(|&b| f32::from_bits((b as u32) << 23)).fold(0f32, f32::max);
-                        let mul = (smax * 6.0 / 8.0 * 1.25) / 128.0;
-                        g.htod(st_w.ptr, w)?;
-                        g.htod(st_s.ptr, s)?;
-                        let (cb, nlv) = if bits == 3 { (cb3.ptr, 8) } else { (cb2.ptr, 4) };
-                        let groups = n * k / 32;
-                        g.launch("cb_quant", ((groups as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(st_w.ptr), Arg::P(st_s.ptr), Arg::I(n as i32), Arg::I(k as i32), Arg::P(cb), Arg::I(nlv), Arg::F(mul), Arg::P(st_c.ptr), Arg::P(st_b.ptr)])?;
-                        let cbytes = n * k * bits / 8;
-                        let threads = (n / 16) * (k / 128) * 64;
-                        let wo = self.arena.at(off);
-                        let so = self.arena.at(off + cbytes);
-                        g.launch("cb_pack", ((threads as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(st_c.ptr), Arg::P(st_b.ptr), Arg::I(n as i32), Arg::I(k as i32), Arg::I(bits as i32), Arg::P(wo), Arg::P(so)])?;
-                        g.sync()?;
-                        em.soff = (off + cbytes) as i64;
-                        off += cbytes + n * k / 32;
-                        em.mul = mul;
+                        Ok((n, k, w.to_vec(), s.to_vec()))
                     }
+                })
+                .collect();
+            let mut table = vec![ExpertMat::default(); NE * 3];
+            for (it, pr) in items.iter().zip(prepared) {
+                let (e, mi, fmt) = *it;
+                let (n, k, a, b) = pr?;
+                let em = &mut table[e * 3 + mi];
+                em.fmt = fmt;
+                em.woff = off as i64;
+                if fmt == E_FP4 {
+                    g.htod_async(self.arena.at(off), a.as_ptr(), a.len())?;
+                    off += a.len();
+                    em.soff = off as i64;
+                    g.htod_async(self.arena.at(off), b.as_ptr(), b.len())?;
+                    off += b.len();
+                    em.mul = 1.0;
+                } else {
+                    let bits = if fmt == E_CB3 { 3 } else { 2 };
+                    // per-matrix multiplier: the largest group scale fits e4m3 (max 240) with headroom
+                    let smax = b.iter().map(|&x| f32::from_bits((x as u32) << 23)).fold(0f32, f32::max);
+                    let mul = (smax * 6.0 / 8.0 * 1.25) / 128.0;
+                    let sb = stage.at((nslot % SLOTS) * slot);
+                    nslot += 1;
+                    let (sw, ss, sc, sbb) = (sb, sb + (mx / 2) as u64, sb + (mx / 2 + mx / 32) as u64, sb + (mx / 2 + mx / 32 + mx) as u64);
+                    g.htod_async(sw, a.as_ptr(), a.len())?;
+                    g.htod_async(ss, b.as_ptr(), b.len())?;
+                    let (cb, nlv) = if bits == 3 { (cb3.ptr, 8) } else { (cb2.ptr, 4) };
+                    let groups = n * k / 32;
+                    g.launch("cb_quant", ((groups as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(sw), Arg::P(ss), Arg::I(n as i32), Arg::I(k as i32), Arg::P(cb), Arg::I(nlv), Arg::F(mul), Arg::P(sc), Arg::P(sbb)])?;
+                    let cbytes = n * k * bits / 8;
+                    let threads = (n / 16) * (k / 128) * 64;
+                    g.launch("cb_pack", ((threads as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(sc), Arg::P(sbb), Arg::I(n as i32), Arg::I(k as i32), Arg::I(bits as i32), Arg::P(self.arena.at(off)), Arg::P(self.arena.at(off + cbytes))])?;
+                    em.soff = (off + cbytes) as i64;
+                    off += cbytes + n * k / 32;
+                    em.mul = mul;
                 }
             }
             g.htod(self.layers[l].experts.ptr, &table)?;
+            g.sync()?;
             if l % 4 == 3 || l + 1 == n_layers {
                 eprintln!("experts: layer {l} done, {:.1} GB, {:.0} s", off as f64 / 1e9, t0.elapsed().as_secs_f32());
             }
@@ -602,7 +665,24 @@ impl Decoder {
         self.acc.at((l * ACC + off) * 4)
     }
 
-    fn jobs(&self, mut jobs: Vec<Job>, route_mode: i32, router_layer: Option<usize>) -> Result<()> {
+    fn jobs(&self, jobs: Vec<Job>, route_mode: i32, router_layer: Option<usize>) -> Result<()> {
+        let lab = match (jobs[0].wkind, jobs[0].xkind, jobs[0].epi, route_mode, jobs.len()) {
+            (_, _, 1, _, _) => "gemv q_b(+idx)",
+            (_, X_Q, _, _, _) => "gemv wo_a",
+            (_, X_BF16R, _, _, _) => "gemv wo_b",
+            (_, X_PLAIN, _, _, _) => "gemv head",
+            (_, _, _, 1, _) => "gemv experts gate/up",
+            (_, _, _, 2, _) => "gemv experts down",
+            (W_BF16, _, _, _, 3) => "gemv router+shared g/u",
+            _ => "gemv q_a/kv/comp/idxw",
+        };
+        self.g.set_label(Some(lab));
+        let r = self.jobs_inner(jobs, route_mode, router_layer);
+        self.g.set_label(None);
+        r
+    }
+
+    fn jobs_inner(&self, mut jobs: Vec<Job>, route_mode: i32, router_layer: Option<usize>) -> Result<()> {
         if jobs.len() > MAXJ {
             bail!("{} jobs", jobs.len());
         }
@@ -632,9 +712,9 @@ impl Decoder {
         let mut arr = [pad; MAXJ];
         arr[..n].copy_from_slice(&jobs);
         let js = Jobs { j: arr, n: n as i32, eps: self.cfg.eps, lim: self.cfg.swiglu_limit, cb3: self.cb3, cb2: self.cb2 };
-        let (logits, bias) = match router_layer {
-            Some(l) => (self.accp(l, A_LOGITS), self.layers[l].gate_bias.ptr),
-            None => (0, 0),
+        let (logits, bias, route) = match router_layer {
+            Some(l) => (self.accp(l, A_LOGITS), self.layers[l].gate_bias.ptr, self.route.at(l * 64)),
+            None => (0, 0, self.route.ptr),
         };
         self.g.launch(
             "gemv_jobs",
@@ -650,7 +730,7 @@ impl Decoder {
                 Arg::P(logits),
                 Arg::P(bias),
                 Arg::F(self.cfg.route_scale),
-                Arg::P(self.route.ptr),
+                Arg::P(route),
                 Arg::P(self.eng_rows.ptr),
             ],
         )
@@ -860,6 +940,14 @@ impl Decoder {
                 j.split = 2;
             }
             self.jobs(jobs, 2, Some(li))?;
+            if let Some(d) = &self.dump {
+                // h after layer li = the next residual step's post; run it on a copy via a post-only hc_step
+                let tmp: Vec<f32> = g.dtoh(self.h.ptr, HC * D)?;
+                let none = HcArgs::default();
+                self.hc_step(self.accp(li, A_Y), true, self.accp(li, A_HMIX_F), &l.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
+                d.borrow_mut().push(g.dtoh(self.h.ptr, HC * D)?);
+                g.htod(self.h.ptr, &tmp)?;
+            }
         }
         // ---- final residual step, norm, head, argmax
         let none = HcArgs::default();
@@ -948,12 +1036,40 @@ impl Decoder {
         Ok(next[0] as u32)
     }
 
+    /// One step without the graph, recording h after every layer.
+    pub fn step_dump(&mut self, token: u32) -> Result<(u32, Vec<Vec<f32>>)> {
+        unsafe { *(self.host as *mut i32) = token as i32 };
+        self.engram_rows(token)?;
+        self.dump = Some(Default::default());
+        let r = self.record();
+        let d = self.dump.take().unwrap().into_inner();
+        r?;
+        let next: Vec<i32> = self.g.dtoh(self.next.ptr, 1)?;
+        self.pos += 1;
+        Ok((next[0] as u32, d))
+    }
+
+    /// One eager step with per-kernel timings.
+    pub fn step_prof(&mut self, token: u32) -> Result<Vec<(String, f32, usize)>> {
+        unsafe { *(self.host as *mut i32) = token as i32 };
+        self.engram_rows(token)?;
+        self.g.sync()?;
+        self.g.prof_start();
+        let r = self.record();
+        let p = self.g.prof_end();
+        r?;
+        self.pos += 1;
+        p
+    }
+
     pub fn logits(&self) -> Result<Vec<f32>> {
         self.g.dtoh(self.logits.ptr, VOCAB)
     }
 
-    pub fn route(&self) -> Result<Vec<i32>> {
-        self.g.dtoh(self.route.ptr, 6)
+    /// routed experts of the last step, per layer
+    pub fn routes(&self) -> Result<Vec<Vec<i32>>> {
+        let v: Vec<i32> = self.g.dtoh(self.route.ptr, self.layers.len() * 16)?;
+        Ok(v.chunks(16).map(|c| c[..6].to_vec()).collect())
     }
 
     /// Reset to an empty context.

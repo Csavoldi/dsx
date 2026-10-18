@@ -74,6 +74,9 @@ pub struct Gpu {
     module: hipModule_t,
     funcs: std::sync::Mutex<std::collections::HashMap<String, hipFunction_t>>,
     pub allocated: std::sync::atomic::AtomicUsize,
+    /// eager profiling: (kernel label, start, end) events per launch
+    pub prof: std::sync::Mutex<Option<Vec<(String, hipEvent_t, hipEvent_t)>>>,
+    label: std::sync::Mutex<Option<String>>,
 }
 
 unsafe impl Send for Gpu {}
@@ -123,7 +126,7 @@ impl Gpu {
             ck(hipStreamCreateWithFlags(&mut s, 1), "hipStreamCreate")?;
             let mut m = std::ptr::null_mut();
             ck(hipModuleLoadData(&mut m, image.as_ptr() as *const c_void), "hipModuleLoadData")?;
-            Ok(Gpu { stream: s, module: m, funcs: Default::default(), allocated: Default::default() })
+            Ok(Gpu { stream: s, module: m, funcs: Default::default(), allocated: Default::default(), prof: Default::default(), label: Default::default() })
         }
     }
 
@@ -170,12 +173,56 @@ impl Gpu {
         if shmem > 65536 {
             bail!("{name}: {shmem} bytes of LDS");
         }
+        let mut prof = self.prof.lock().unwrap();
+        let ev = if let Some(p) = prof.as_mut() {
+            let (mut a, mut b) = (std::ptr::null_mut(), std::ptr::null_mut());
+            unsafe {
+                ck(hipEventCreate(&mut a), "hipEventCreate")?;
+                ck(hipEventCreate(&mut b), "hipEventCreate")?;
+                ck(hipEventRecord(a, self.stream), "hipEventRecord")?;
+            }
+            p.push((self.label.lock().unwrap().clone().unwrap_or_else(|| name.to_string()), a, b));
+            Some(b)
+        } else {
+            None
+        };
         ck(
             unsafe {
                 hipModuleLaunchKernel(f, grid.0, grid.1, grid.2, block, 1, 1, shmem, self.stream, ptrs.as_mut_ptr(), std::ptr::null_mut())
             },
             name,
-        )
+        )?;
+        if let Some(b) = ev {
+            ck(unsafe { hipEventRecord(b, self.stream) }, "hipEventRecord")?;
+        }
+        Ok(())
+    }
+
+    /// Start collecting per-launch timings (eager execution only).
+    pub fn prof_start(&self) {
+        *self.prof.lock().unwrap() = Some(vec![]);
+    }
+
+    /// Stop and return (label, total us, launches), sorted by time.
+    pub fn prof_end(&self) -> Result<Vec<(String, f32, usize)>> {
+        self.sync()?;
+        let v = self.prof.lock().unwrap().take().unwrap_or_default();
+        let mut agg: std::collections::BTreeMap<String, (f32, usize)> = Default::default();
+        for (n, a, b) in v {
+            let mut ms = 0f32;
+            ck(unsafe { hipEventElapsedTime(&mut ms, a, b) }, "hipEventElapsedTime")?;
+            let e = agg.entry(n).or_default();
+            e.0 += ms * 1000.0;
+            e.1 += 1;
+        }
+        let mut r: Vec<(String, f32, usize)> = agg.into_iter().map(|(k, (t, n))| (k, t, n)).collect();
+        r.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        Ok(r)
+    }
+
+    /// Label the next launches (profiling); None = kernel names.
+    pub fn set_label(&self, l: Option<&str>) {
+        *self.label.lock().unwrap() = l.map(|s| s.to_string());
     }
 
     pub fn alloc(&self, bytes: usize) -> Result<Buf> {
@@ -280,4 +327,61 @@ impl Gpu {
 #[allow(dead_code)]
 fn _unused() {
     let _ = hipFuncSetAttribute;
+}
+
+/// hipBLAS GEMM (bf16 in, f32 accumulate) for the prompt path.
+pub mod blas {
+    use super::*;
+    pub type Handle = *mut c_void;
+    pub const OP_N: c_int = 111;
+    pub const OP_T: c_int = 112;
+    pub const R_32F: c_int = 0;
+    pub const R_16BF: c_int = 14;
+    const COMPUTE_32F: c_int = 2;
+    const ALGO_DEFAULT: c_int = 160;
+
+    #[link(name = "hipblas")]
+    unsafe extern "C" {
+        fn hipblasCreate(h: *mut Handle) -> c_int;
+        fn hipblasSetStream(h: Handle, s: hipStream_t) -> c_int;
+        fn hipblasGemmEx(
+            h: Handle, ta: c_int, tb: c_int, m: c_int, n: c_int, k: c_int, alpha: *const c_void, a: *const c_void, at: c_int,
+            lda: c_int, b: *const c_void, bt: c_int, ldb: c_int, beta: *const c_void, c: *mut c_void, ct: c_int, ldc: c_int,
+            compute: c_int, algo: c_int,
+        ) -> c_int;
+    }
+
+    pub fn create(s: hipStream_t) -> Result<Handle> {
+        if std::env::var_os("ROCBLAS_USE_HIPBLASLT").is_none() {
+            unsafe { std::env::set_var("ROCBLAS_USE_HIPBLASLT", "1") };
+        }
+        let mut h = std::ptr::null_mut();
+        let e = unsafe { hipblasCreate(&mut h) };
+        if e != 0 {
+            bail!("hipblasCreate: {e}");
+        }
+        let e = unsafe { hipblasSetStream(h, s) };
+        if e != 0 {
+            bail!("hipblasSetStream: {e}");
+        }
+        Ok(h)
+    }
+
+    /// Row-major C[m][n] (+)= A[m][k] . B[n][k]^T, A and B bf16, C f32 (or bf16 with ct = R_16BF).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_nt(h: Handle, m: usize, n: usize, k: usize, a: u64, lda: usize, b: u64, ldb: usize, c: u64, ldc: usize, ct: c_int, beta: f32) -> Result<()> {
+        // column-major view: C^T[n][m] = B[n][k] . A^T  ->  op(B) = B^T? hipBLAS is column-major: C^T = B' * A'
+        let alpha = 1f32;
+        let e = unsafe {
+            hipblasGemmEx(
+                h, OP_T, OP_N, n as c_int, m as c_int, k as c_int, &alpha as *const f32 as *const c_void, b as *const c_void, R_16BF,
+                ldb as c_int, a as *const c_void, R_16BF, lda as c_int, &beta as *const f32 as *const c_void, c as *mut c_void, ct,
+                ldc as c_int, COMPUTE_32F, ALGO_DEFAULT,
+            )
+        };
+        if e != 0 {
+            bail!("hipblasGemmEx {m}x{n}x{k}: {e}");
+        }
+        Ok(())
+    }
 }

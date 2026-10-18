@@ -3,6 +3,7 @@
 mod decode;
 mod hip;
 mod load;
+mod selftest;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -51,6 +52,23 @@ enum Cmd {
         #[arg(long)]
         rank: Option<PathBuf>,
     },
+    /// Quality on Lucebox's 1017 eval (8 x 1024 tokens, FP8 teacher top-256 log-probs), teacher-forced through decode:
+    /// KL(teacher || model) over the teacher's top-256, top-1 agreement, perplexity. Reads heldout.i32,
+    /// teacher_idx.i32, teacher_lp.f32 (convert the .npy/.npz once with tools/eval_bins.py).
+    Eval {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        eval: PathBuf,
+        #[arg(long, default_value_t = 8)]
+        seqs: usize,
+        #[arg(long, default_value_t = 1024)]
+        len: usize,
+        #[arg(long)]
+        rank: Option<PathBuf>,
+    },
+    /// Kernel self-tests on synthetic inputs against CPU implementations.
+    Selftest,
     /// Greedy generation from token ids.
     Gen {
         #[arg(long)]
@@ -101,16 +119,18 @@ fn engram_json(gguf: &Path, out: &Path) -> Result<()> {
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::EngramJson { gguf, out } => engram_json(&gguf, &out),
+        Cmd::Selftest => selftest::run(),
         Cmd::Check { model, ids, n, rank, ref_cache } => {
             // ---- reference: tokens fed, logits per position, routed experts
-            let (feed, ref_logits, routes): (Vec<u32>, Vec<Vec<f32>>, Vec<(usize, usize)>) = match ref_cache.as_ref().filter(|p| p.exists()) {
+            let (feed, ref_logits, routes, pos_routes): (Vec<u32>, Vec<Vec<f32>>, Vec<(usize, usize)>, Vec<Vec<Vec<u16>>>) = match ref_cache.as_ref().filter(|p| p.exists()) {
                 Some(p) => {
                     let v: serde_json::Value = serde_json::from_slice(&std::fs::read(p)?)?;
                     let feed = v["feed"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u32).collect();
                     let routes = v["routes"].as_array().unwrap().iter().map(|r| (r[0].as_u64().unwrap() as usize, r[1].as_u64().unwrap() as usize)).collect();
+                    let pr: Vec<Vec<Vec<u16>>> = serde_json::from_value(v["pos_routes"].clone()).unwrap_or_default();
                     let lb = std::fs::read(p.with_extension("logits"))?;
                     let fl: Vec<f32> = lb.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
-                    (feed, fl.chunks(decode::VOCAB).map(|c| c.to_vec()).collect(), routes)
+                    (feed, fl.chunks(decode::VOCAB).map(|c| c.to_vec()).collect(), routes, pr)
                 }
                 None => {
                     let t0 = Instant::now();
@@ -140,24 +160,53 @@ fn main() -> Result<()> {
                     }
                     routes.sort();
                     routes.dedup();
+                    let pr = st.routes.clone();
                     if let Some(p) = &ref_cache {
-                        std::fs::write(p, serde_json::to_vec(&serde_json::json!({"feed": feed, "routes": routes}))?)?;
+                        std::fs::write(p, serde_json::to_vec(&serde_json::json!({"feed": feed, "routes": routes, "pos_routes": pr}))?)?;
                         let b: Vec<u8> = out.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
                         std::fs::write(p.with_extension("logits"), b)?;
                     }
-                    (feed, out, routes)
+                    (feed, out, routes, pr)
                 }
             };
             eprintln!("reference: {} positions, {} distinct routed experts", feed.len(), routes.len());
             let mut dec = Decoder::load(&model, 4096, &read_rank(&rank)?, &routes, None)?;
+            let dump_dir = std::env::var("DSX_DUMP").ok();
             for (i, &tok) in feed.iter().enumerate() {
-                let next = dec.step(tok)?;
+                let next = if let (Some(dir), true) = (&dump_dir, i < 4) {
+                    let (nx, hs) = dec.step_dump(tok)?;
+                    for (l, h) in hs.iter().enumerate() {
+                        let p = format!("{dir}/ref_p{i}_l{l:02}.bin");
+                        if let Ok(b) = std::fs::read(&p) {
+                            let r: Vec<f32> = b.chunks(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                            let md = r.iter().zip(h).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+                            let rn = r.iter().map(|a| a * a).sum::<f32>().sqrt();
+                            let dn = r.iter().zip(h).map(|(a, b)| (a - b) * (a - b)).sum::<f32>().sqrt();
+                            println!("  pos {i} layer {l}: max|dh| {md:.4}, rel {:.2e}", dn / rn);
+                        }
+                    }
+                    nx
+                } else {
+                    dec.step(tok)?
+                };
                 let lg = dec.logits()?;
                 let r = &ref_logits[i];
                 let (lr, lgp) = (log_softmax(r), log_softmax(&lg));
                 let kl: f64 = lr.iter().zip(&lgp).map(|(a, b)| a.exp() * (a - b)).sum();
                 let md = r.iter().zip(&lg).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
                 println!("pos {i} tok {tok}: gpu next {next} top {:?} | ref top {:?} | max|dlogit| {md:.4} KL {kl:.2e}", top(&lg, 3), top(r, 3));
+                if let Some(pr) = pos_routes.get(i) {
+                    let gr = dec.routes()?;
+                    for (l, (a, b)) in gr.iter().zip(pr).enumerate() {
+                        let mut a: Vec<i32> = a.clone();
+                        let mut b: Vec<i32> = b.iter().map(|&x| x as i32).collect();
+                        a.sort();
+                        b.sort();
+                        if a != b {
+                            println!("  route differs at layer {l}: gpu {a:?} ref {b:?}");
+                        }
+                    }
+                }
             }
             Ok(())
         }
@@ -179,7 +228,44 @@ fn main() -> Result<()> {
                 ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 let med = ts[ts.len() / 2];
                 println!("ctx {c}: decode step {med:.0} us median ({:.1} tok/s), min {:.0} max {:.0}", 1e6 / med, ts[0], ts[ts.len() - 1]);
+                if std::env::var_os("DSXA_PROF").is_some() {
+                    let p = dec.step_prof(tok)?;
+                    let tot: f32 = p.iter().map(|x| x.1).sum();
+                    println!("  eager step: {tot:.0} us in {} launches", p.iter().map(|x| x.2).sum::<usize>());
+                    for (n, t, k) in p.iter().take(30) {
+                        println!("  {n:<28} {t:>8.1} us {k:>5} launches {:>6.2} us each", t / *k as f32);
+                    }
+                }
             }
+            Ok(())
+        }
+        Cmd::Eval { model, eval, seqs, len, rank } => {
+            let rd = |f: &str| std::fs::read(eval.join(f));
+            let toks: Vec<u32> = rd("heldout.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
+            let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
+            let tlp: Vec<f32> = rd("teacher_lp.f32")?.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+            let topk = 256;
+            let mut dec = Decoder::load(&model, len + 64, &read_rank(&rank)?, &[], None)?;
+            let (mut nll, mut kl, mut agree, mut cnt) = (0f64, 0f64, 0usize, 0usize);
+            let t0 = Instant::now();
+            for sq in 0..seqs {
+                dec.reset()?;
+                let seq = &toks[sq * len..(sq + 1) * len];
+                for p in 0..len - 1 {
+                    dec.step(seq[p])?;
+                    let l = dec.logits()?;
+                    let lq = log_softmax(&l);
+                    nll -= lq[seq[p + 1] as usize];
+                    let row = sq * (len - 1) + p;
+                    let (ti, tl) = (&tidx[row * topk..(row + 1) * topk], &tlp[row * topk..(row + 1) * topk]);
+                    kl += ti.iter().zip(tl).map(|(&i, &lt)| (lt as f64).exp() * (lt as f64 - lq[i as usize])).sum::<f64>();
+                    let am = l.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |a, (i, &v)| if v > a.1 { (i, v) } else { a }).0;
+                    agree += (am as i32 == ti[0]) as usize;
+                    cnt += 1;
+                }
+                eprintln!("seq {sq}: running ppl {:.3} kl {:.4} top1 {:.4} ({:.0} s)", (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64, t0.elapsed().as_secs_f64());
+            }
+            println!("{{\"tokens\": {cnt}, \"nll\": {:.6}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", nll / cnt as f64, (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64);
             Ok(())
         }
         Cmd::Gen { model, ids, n, rank, ctx } => {
