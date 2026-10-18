@@ -1,6 +1,6 @@
 # Quantization pipeline
 
-How `DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf` was made. Built on the V4.1 tools of
+How [DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit) was made. Built on the V4.1 tools of
 [Xolotl](https://github.com/Indras-Mirror/Xolotl) (MIT, Niko1221 and the Strata contributors), commit `7375e305`.
 
 | File | |

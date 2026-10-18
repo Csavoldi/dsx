@@ -4,7 +4,7 @@
 # Usage: ./dsx-serve.sh [model.gguf] [port]
 set -e
 cd ~/ai/ds41
-MODEL=${1:-gguf/1017-v2-joint.gguf}
+MODEL=${1:-hf-v2/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf}
 PORT=${2:-8090}
 sudo -n nvidia-smi -i 0 -pl 210 >/dev/null 2>&1 || true   # GPU0 is cooling-limited (see watchdog notes)
 tmux has-session -t watchdog 2>/dev/null || tmux new-session -d -s watchdog ~/ai/ds41/watchdog.sh
