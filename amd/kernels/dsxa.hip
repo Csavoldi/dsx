@@ -532,9 +532,10 @@ extern "C" __global__ void __launch_bounds__(256) gemv_jobs(Jobs js, const State
     if (J.xgroup) gx = (rb * 64 / J.xgroup) * J.k;
     float scale_all = 1.f;
     if (J.xkind == X_NORM) {
+        // the NPART partial sums of squares: one load per lane (not 80 serial loads per thread), then a wave sum
         float ss = 0;
-#pragma unroll 8
-        for (int b = 0; b < NPART; b++) ss += J.ss[b];
+        for (int b = lane; b < NPART; b += 64) ss += J.ss[b];
+        ss = wave_sum(ss);
         scale_all = 1.f / sqrtf(ss / J.k + js.eps);
     }
     if (J.xkind == X_RMS) {
