@@ -12,7 +12,7 @@ ROUTED_ACTIVE = 40 * 6 * EXPERT_PARAMS  # 8.49B routed params read per token
 DENSE_ACTIVE = 16e9 - ROUTED_ACTIVE     # DeepSeek says 16B active in decode -> ~7.5B dense
 KV_BYTES_PER_TOKEN = 890                # FP4 global KV (model card)
 
-# ---- box (.102) ----
+# ---- box (2x RTX 3090, 128 GB DDR4) ----
 VRAM_FOR_EXPERTS = {1: 11e9, 2: 11e9 + 21e9}  # GPU0 also holds dense + KV + DSpark (~13 GB)
 RAM_BW = 40e9            # DDR4-3200 dual channel: 51.2 GB/s peak, ~40 achievable
 NVME_BW = 6e9            # SN850X large reads; striping both drives could ~double this
