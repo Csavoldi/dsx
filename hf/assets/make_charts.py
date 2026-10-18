@@ -65,8 +65,8 @@ svg .v{{paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}}
 .note{{margin-top:8px;font:400 11.5px/1.35 system-ui,sans-serif;color:{MUTED}}}
 """
 
-def page(title, sub, svg, key="", note=""):
-    return f"<!doctype html><meta charset=utf-8><style>{CSS}</style><div class=card><h1>{title}</h1><div class=sub>{sub}</div>{key}{svg}{f'<div class=note>{note}</div>' if note else ''}</div>"
+def page(title, sub, svg, key="", note="", width=W):
+    return f"<!doctype html><meta charset=utf-8><style>{CSS}</style><div class=card style='width:{width}px'><h1>{title}</h1><div class=sub>{sub}</div>{key}{svg}{f'<div class=note>{note}</div>' if note else ''}</div>"
 
 def t(x, y, s, cls="", anchor="start", extra=""):
     return f'<text x="{x:.1f}" y="{y:.1f}" class="{cls}" text-anchor="{anchor}" {extra}>{s}</text>'
@@ -162,6 +162,52 @@ def size_quality():
     svg = f'<svg width="{W-44}" height="{Y0 + 42}">{"".join(s)}</svg>'
     return page("Size against perplexity", "Lucebox 1017 eval set. Sizes include the 203 GB Engram tables.", svg)
 
+POST = {  # the X post: a few big numbers, one comparison
+    "speed": "30+", "size": "148",
+    # top-1 match with FP8 on the Lucebox 1017 eval set (QUALITY above), rounded
+    "match": [("FP8 original", 100, "#c9d6da"), ("Lucebox 2.5-bit", 79, "#9aa8ff"), ("dsx 2-bit", 74, "#7df0d4")],
+}
+
+def post():
+    """16:9 social card in Pocket Model's site style: dark ground, mint accent, Pathway Extreme headings."""
+    bars = "".join(
+        f"<div class=row><span class=nm style='color:{c}'>{n}</span><div class=track><b style='width:{v}%;background:{c}'></b></div>"
+        f"<span class=pc style='color:{c}'>{v}%</span></div>" for n, v, c in POST["match"])
+    css = f"""
+@import url('https://fonts.googleapis.com/css2?family=Pathway+Extreme:ital,opsz,wdth,wght@0,8..12,75..100,300..600;1,8..12,75..100,300..600&display=swap');
+{f"@font-face{{font-family:Num;src:url(file://{FONT})}}" if FONT else ""}
+html,body{{margin:0}}
+.card{{width:1600px;height:900px;box-sizing:border-box;position:relative;overflow:hidden;padding:64px 76px;color:#f0f6f7;
+  font:400 22px/1.4 Num,Iosevka,ui-monospace,Menlo,monospace;
+  background:radial-gradient(60% 70% at 88% 0%,rgba(125,240,212,.16),transparent 65%),radial-gradient(50% 60% at 0% 100%,rgba(154,168,255,.10),transparent 70%),#0d1318}}
+.eyebrow{{font-weight:700;font-size:20px;letter-spacing:.16em;color:#7df0d4;text-transform:uppercase}}
+h1{{margin:18px 0 0;font:300 66px/1.02 'Pathway Extreme',sans-serif;font-variation-settings:'wdth' 75,'opsz' 12;letter-spacing:-.01em}}
+h1 em{{color:#7df0d4;font-style:italic}}
+.hero{{margin-top:54px;display:grid;grid-template-columns:repeat(3,1fr);gap:28px}}
+.tile{{background:rgba(255,255,255,.045);border:1px solid rgba(228,241,244,.14);border-radius:18px;padding:26px 30px}}
+.big{{font:500 88px/1 'Pathway Extreme',sans-serif;font-variation-settings:'wdth' 75;color:#7df0d4;white-space:nowrap}}
+.big small{{font-size:40px;margin-left:10px;color:#bff7e9}}
+.lab{{margin-top:12px;color:#a9b8bd;font-size:21px}}
+.cmp{{margin-top:44px}}
+.cmp h2{{margin:0 0 18px;font:600 26px/1 Num,Iosevka,ui-monospace,monospace}}
+.cmp h2 span{{color:#a9b8bd;font-weight:400}}
+.row{{display:grid;grid-template-columns:260px 1fr 110px;align-items:center;gap:22px;height:46px}}
+.nm{{font-weight:700;font-size:24px}} .pc{{font-weight:700;font-size:30px;text-align:right}}
+.track{{height:26px;border-radius:6px;background:rgba(255,255,255,.06)}} .track b{{display:block;height:100%;border-radius:6px}}
+.foot{{position:absolute;left:76px;right:76px;bottom:40px;display:flex;justify-content:space-between;color:#8a9a9f;font-size:20px}}
+"""
+    return f"""<!doctype html><meta charset=utf-8><style>{css}</style><div class=card>
+<div class=eyebrow>dsx · 2-bit quant + engine</div>
+<h1>DeepSeek-V4.1-Flash-1017 (552B MoE)<br><em>on 2x RTX 3090 + 128 GB RAM</em></h1>
+<div class=hero>
+  <div class=tile><div class=big>{POST['speed']}<small>tok/s</small></div><div class=lab>generation speed</div></div>
+  <div class=tile><div class=big>{POST['size']}<small>GB</small></div><div class=lab>model download</div></div>
+  <div class=tile><div class=big>exact</div><div class=lab>routing, no expert pruning</div></div>
+</div>
+<div class=cmp><h2>Same next token as FP8 <span>top-1 match</span></h2>{bars}</div>
+<div class=foot><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div>
+</div>"""
+
 # ---------------------------------------------------------------- render
 def chromium():
     if os.environ.get("PW_CHROMIUM"): return os.environ["PW_CHROMIUM"]
@@ -169,13 +215,14 @@ def chromium():
     return found[-1] if found else None
 
 if __name__ == "__main__":
-    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality()}
+    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality(), "post.png": post()}
     with sync_playwright() as p:
         b = p.chromium.launch(executable_path=chromium(), args=["--allow-file-access-from-files"])
-        pg = b.new_page(viewport={"width": W + 20, "height": 800}, device_scale_factor=2)
+        pg = b.new_page(viewport={"width": 840, "height": 900}, device_scale_factor=2)
         for name, html in charts.items():
             tmp = OUT / f".{name}.html"
             tmp.write_text(html)
+            pg.set_viewport_size({"width": 1600, "height": 900} if name == "post.png" else {"width": 840, "height": 900})
             pg.goto(tmp.as_uri(), wait_until="networkidle")
             pg.evaluate("document.fonts.ready")
             pg.locator(".card").screenshot(path=str(OUT / name), omit_background=True)
