@@ -94,10 +94,16 @@ pub struct PfBufs {
     es: Buf,
     ekv: Buf,
     esum: Buf,
+    mixd: Buf,
     jobs: Buf,
     blk: Buf,
+    /// pinned staging ring for job tables (async uploads; the device side uses the same offsets)
+    pin: *mut u8,
+    ring: std::cell::Cell<usize>,
     max_end: usize,
 }
+
+const RING: usize = 192 << 20;
 
 const ER: usize = 24 * 256 + 24 * 8;
 
@@ -166,8 +172,11 @@ impl PfBufs {
             es: f(t * 192)?,
             ekv: f(t * 25600)?,
             esum: f(t * 16)?,
-            jobs: g.alloc(1024 * std::mem::size_of::<MmJob>())?,
-            blk: f(1 << 18)?,
+            mixd: f(t * 48)?,
+            jobs: g.alloc(RING)?,
+            blk: f(1)?,
+            pin: g.host_alloc(RING)?,
+            ring: std::cell::Cell::new(0),
             max_end: max_ctx,
         })
     }
@@ -245,13 +254,25 @@ impl Decoder {
         if blk.is_empty() {
             return Ok(());
         }
-        assert!(jobs.len() <= 1024 && blk.len() <= 1 << 18);
+        assert!(jobs.len() <= 1024);
         let g = &self.g;
         let jb: Vec<u8> = jobs.iter().flat_map(|j| unsafe { std::slice::from_raw_parts(j as *const MmJob as *const u8, std::mem::size_of::<MmJob>()).to_vec() }).collect();
-        // stream-ordered copies: an earlier mm launch on the stream may still read the previous table
-        g.htod_async(pf.jobs.ptr, jb.as_ptr(), jb.len())?;
-        g.htod_async(pf.blk.ptr, blk.as_ptr() as *const u8, blk.len() * 4)?;
-        g.launch(if mm2 { "mm2" } else { "mm" }, (blk.len() as u32, 1, 1), 256, 0, &[Arg::P(pf.jobs.ptr), Arg::P(pf.blk.ptr), Arg::I(self.cb3[0] as i32), Arg::I(self.cb3[1] as i32), Arg::I(self.cb2 as i32)])
+        // pinned ring: truly async copies; regions are reused only after the chunk's final sync
+        let need = jb.len().div_ceil(256) * 256 + blk.len() * 4;
+        let mut o = pf.ring.get();
+        if o + need > RING {
+            g.sync()?;
+            o = 0;
+        }
+        let (jo, bo) = (o, o + jb.len().div_ceil(256) * 256);
+        unsafe {
+            std::ptr::copy_nonoverlapping(jb.as_ptr(), pf.pin.add(jo), jb.len());
+            std::ptr::copy_nonoverlapping(blk.as_ptr() as *const u8, pf.pin.add(bo), blk.len() * 4);
+        }
+        g.htod_async(pf.jobs.at(jo), unsafe { pf.pin.add(jo) }, jb.len())?;
+        g.htod_async(pf.jobs.at(bo), unsafe { pf.pin.add(bo) }, blk.len() * 4)?;
+        pf.ring.set(o + need);
+        g.launch(if mm2 { "mm2" } else { "mm" }, (blk.len() as u32, 1, 1), 256, 0, &[Arg::P(pf.jobs.at(jo)), Arg::P(pf.jobs.at(bo)), Arg::I(self.cb3[0] as i32), Arg::I(self.cb3[1] as i32), Arg::I(self.cb2 as i32)])
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -280,6 +301,9 @@ impl Decoder {
     fn prefill_chunk(&mut self, tk: &[u32]) -> Result<u32> {
         let t = tk.len();
         let p0 = self.pos;
+        if let Some(pf) = self.pf.as_ref() {
+            pf.ring.set(0); // the previous chunk ended with a sync
+        }
         if p0 + t > self.max_ctx {
             anyhow::bail!("context full");
         }
@@ -298,12 +322,16 @@ impl Decoder {
         let nl = self.layers.len();
         let hc = |y: u64, round: bool, pm: u64, pa: &HcArgs, pre: u64, prea: &HcArgs, fnw: u64, nmix: u64, xr: u64, xss: u64, eng: Option<(u64, u64)>| -> Result<()> {
             let (ev, es) = eng.unwrap_or((0, 0));
+            // finish the mixes once per token
+            g.launch("hc_mix_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pm), Arg::B(bytes(pa)), Arg::P(pre), Arg::B(bytes(prea)), Arg::P(pf.mixd.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32)])?;
+            let mut xo = vec![0u8; 48];
+            xo[40..48].copy_from_slice(&pf.mixd.ptr.to_le_bytes());
             g.launch(
                 "hc_step",
                 ((D / 64) as u32, t as u32, 1),
                 256,
                 0,
-                &[Arg::P(pf.h.ptr), Arg::P(y), Arg::I(round as i32), Arg::P(pm), Arg::B(bytes(pa)), Arg::P(pre), Arg::B(bytes(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(xr), Arg::P(xss), Arg::P(ev), Arg::P(es), Arg::P(0), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::B(vec![0u8; 40])],
+                &[Arg::P(pf.h.ptr), Arg::P(y), Arg::I(round as i32), Arg::P(pm), Arg::B(bytes(pa)), Arg::P(pre), Arg::B(bytes(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(xr), Arg::P(xss), Arg::P(ev), Arg::P(es), Arg::P(0), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::B(xo)],
             )
         };
         for li in 0..nl {

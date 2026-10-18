@@ -162,6 +162,7 @@ struct XOut {
     uint8_t* oq;
     float* os;
     uint16_t* ob;
+    const float* mixd;  // prompt path: per-token finished mixes (hc_mix_t), replaces pmix/premix finishing
 };
 
 // Residual-stream step between sub-blocks, one block per 64 dims (grid D/64, 256 threads: thread = stream*64 + dim):
@@ -202,6 +203,12 @@ extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h,
     {
         const int w = threadIdx.x >> 6, ln = threadIdx.x & 63;
 #ifndef HC_NOFIN
+        if (xo.mixd) {
+            // prompt path: mixes finished once per token by hc_mix_t: [token][2][24] = (pre, post, comb) of pmix, premix
+            const float* md = xo.mixd + (size_t)blockIdx.y * 48;
+            if (threadIdx.x < 16) comb[threadIdx.x] = md[8 + threadIdx.x];
+            if (threadIdx.x < 4) { post[threadIdx.x] = md[4 + threadIdx.x]; pre[threadIdx.x] = premix ? md[24 + threadIdx.x] : (threadIdx.x == 0 ? 1.f : 0.f); }
+        } else
         if (w == 0 && pmix) {
             reduce_mix(pmix, ln, m0);
             hc_finish16(m0, pa, hc_eps, eps, iters, ln, nullptr, post, comb);
@@ -1620,3 +1627,18 @@ extern "C" __global__ void __launch_bounds__(256) engram_act(const uint8_t* rows
     }, oq, os, nullptr);
 }
 #include "prefill.h"
+
+// prompt path: finish the mixes of a batch once per token: out[t][0..24) from pmix (pre, post, comb), [24..48) from premix
+extern "C" __global__ void hc_mix_t(const float* pmix, HcArgs pa, const float* premix, HcArgs prea, float* out, float hc_eps, float eps, int iters) {
+    __shared__ float m0[32], m1[32];
+    const int t = blockIdx.x, ln = threadIdx.x;
+    float* o = out + (size_t)t * 48;
+    if (pmix) {
+        reduce_mix(pmix + (size_t)t * NPART * 32, ln, m0);
+        hc_finish16(m0, pa, hc_eps, eps, iters, ln, o, o + 4, o + 8);
+    }
+    if (premix) {
+        reduce_mix(premix + (size_t)t * NPART * 32, ln, m1);
+        hc_finish16(m1, prea, hc_eps, eps, iters, ln, o + 24, nullptr, nullptr);
+    }
+}

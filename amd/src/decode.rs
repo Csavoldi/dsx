@@ -143,6 +143,7 @@ struct XOut {
     oq: u64,
     os: u64,
     ob: u64,
+    mixd: u64,
 }
 
 /// an FP8 activation buffer (codes, scales) + optional bf16 hi / lo copies
@@ -463,7 +464,7 @@ pub fn test_hc_step_nosync(g: &Gpu, h: u64, y: u64, pmix: u64, pa: &HcArgs, prem
         ((D / 64) as u32, 1, 1),
         256,
         0,
-        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 40])],
+        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 48])],
     )
 }
 
@@ -474,7 +475,7 @@ pub fn test_hc_step(g: &Gpu, h: u64, y: u64, pmix: u64, pa: &HcArgs, premix: u64
         ((D / 64) as u32, 1, 1),
         256,
         0,
-        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 40])],
+        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 48])],
     )?;
     g.sync()
 }
@@ -968,7 +969,7 @@ impl Decoder {
     }
 
     fn xout(&self, l: usize, which: usize, nw: u64, a: &Act) -> XOut {
-        XOut { cnt: self.accp(l, A_CNT + which), nw, oq: a.q.ptr, os: a.s.ptr, ob: a.h.ptr }
+        XOut { cnt: self.accp(l, A_CNT + which), nw, oq: a.q.ptr, os: a.s.ptr, ob: a.h.ptr, mixd: 0 }
     }
 
     /// gemv2 launch: jobs (split 0 = shared choice) with their post groups; expects are filled from block counts.
