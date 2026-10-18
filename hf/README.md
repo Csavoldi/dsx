@@ -23,11 +23,11 @@ exact routing. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engi
 | | |
 |---|---|
 | Size | 148 GB (4 parts) + the official Engram shards (203 GB) |
+| Format | per-expert mixed precision: ternary, Q2_0 or Q3_K for each expert, Q8_0 dense |
+| Routing | exact: no expert pruning, no router bias |
 | Quality vs FP8 | KL 0.395 · top-1 74.1% · perplexity 10.93 (FP8: 8.56) |
 | Speed, 2x RTX 3090 | 30-37 tok/s decode · 334-508 tok/s prefill |
 | Runtime | [dsx](https://github.com/lxe/dsx) (OpenAI / Anthropic API, web UI) |
-
-> Runs on dsx: the file stores each expert in its own format (ternary, Q2_0 or Q3_K).
 
 ## Quality
 
