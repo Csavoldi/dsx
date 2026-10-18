@@ -27,7 +27,7 @@ exact routing. Runs on [**ds41**](https://github.com/lxe/ds41), a Rust + CUDA en
 | Speed, 2x RTX 3090 | 30-37 tok/s decode · 334-508 tok/s prefill |
 | Runtime | [ds41](https://github.com/lxe/ds41) (OpenAI / Anthropic API, web UI) |
 
-> Not a llama.cpp / Ollama / LM Studio file: it uses per-expert quant types those runtimes don't load.
+> Runs on ds41: the file stores each expert in its own format (ternary, Q2_0 or Q3_K).
 
 ## Quality
 

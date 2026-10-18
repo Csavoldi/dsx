@@ -5,7 +5,7 @@ an NVMe drive. A Rust + CUDA engine built for this one model, with its own 2-bit
 ([lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit)).
 
 - 30-37 tok/s decode, 334-508 tok/s prefill on 2x RTX 3090
-- Exact routing: no expert pruning, no router bias
+- Exact routing: all 384 experts per layer, the router as trained
 - OpenAI and Anthropic compatible server with tool calls, streaming and a built-in web UI
 - Quality vs the FP8 model: KL 0.395, top-1 74.1%
 
@@ -19,7 +19,7 @@ an NVMe drive. A Rust + CUDA engine built for this one model, with its own 2-bit
 | Decode, 3K-token agent prompt | 30.0 tok/s | 15.2 tok/s |
 | Prefill, 3K / 8K tokens | 334 / 508 tok/s | 93 / 172 tok/s |
 
-The single-GPU box is slower because 32 GB of VRAM + 128 GB of RAM can't hold every expert, so some are read from disk.
+On the single-GPU box, ~40 GB of experts live on disk, which sets its speed.
 
 ## Quick start
 
@@ -82,8 +82,8 @@ Experts are spread across VRAM, a RAM arena and the file, hottest first.
 | Remaining experts | 14 CPU threads, straight from a hugepage RAM arena |
 | Engram n-gram rows | read from the official shards by a prefetch thread |
 
-- Within a token there are no host round trips: GPU0 posts each layer's expert picks to shared memory, and the CPU and
-  GPU1 answer through flags.
+- Within a token, GPU0 posts each layer's expert picks to shared memory and the CPU and GPU1 answer through flags,
+  so the whole token runs without waiting on the host.
 - Prefill runs the first half of the layers on every token and the second half only on the tokens it can still affect.
 - The server reuses the cached prefix across turns.
 
@@ -122,7 +122,7 @@ pi --provider ds41 --model deepseek-v4.1-flash:off
 | [`quant/`](quant/) | the quantization pipeline, with native CUDA GPTQ |
 | [`FINDINGS.md`](FINDINGS.md) | research notes and measurements |
 
-The quant is not a llama.cpp GGUF: it uses per-expert types llama.cpp doesn't have.
+The quant uses ds41's per-expert formats (ternary, Q2_0, Q3_K per expert) and loads in ds41.
 
 ## Credits
 
