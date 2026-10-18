@@ -4,7 +4,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/kernels");
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=CUDA_ARCHS");
-    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("ds41.fatbin");
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("dsx.fatbin");
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
         std::fs::write(&out, []).unwrap();
         return;
@@ -24,7 +24,7 @@ fn main() {
     for a in archs.split(',') {
         cmd.arg(format!("-gencode=arch=compute_{a},code=sm_{a}"));
     }
-    cmd.args(["src/kernels/ds41.cu", "-o"]).arg(&out);
+    cmd.args(["src/kernels/dsx.cu", "-o"]).arg(&out);
     let st = cmd.status().expect("nvcc is required for the cuda feature");
     assert!(st.success(), "kernel compilation failed");
 }

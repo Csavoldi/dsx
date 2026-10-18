@@ -107,9 +107,9 @@ impl CpuWorker {
             .spawn(move || {
                 pin_to(crate::cpu::pool::WORKER_CPU);
                 // 14 threads on CPUs 0-13 (P-cores 0-6): 24 ms/token of CPU experts vs 30 with 8 threads (measured on the
-                // 1017 quant); CPUs 14-15 stay for the thread issuing GPU work and helpers. DS41_CPU_THREADS overrides.
+                // 1017 quant); CPUs 14-15 stay for the thread issuing GPU work and helpers. DSX_CPU_THREADS overrides.
                 // Spin 50 ms between jobs (decode layers come every ~1 ms), then sleep so prefill gets the cores.
-                let n = std::env::var("DS41_CPU_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(14usize).min(crate::cpu::pool::MAIN_CPU);
+                let n = std::env::var("DSX_CPU_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(14usize).min(crate::cpu::pool::MAIN_CPU);
                 let mut cm = CpuMoe::new(Pool::new(&P_CORES[..n], Duration::from_millis(50)));
                 let nl = m.cfg.n_layers;
                 let d = m.cfg.dim;
@@ -117,10 +117,10 @@ impl CpuWorker {
                 let mut x = vec![0f32; d];
                 let mut y = vec![0f32; d];
                 let mut t_done = std::time::Instant::now();
-                // profiling only (DS41_CPU_NOOP=1): skip the CPU experts to time the bare handoff (wrong output)
-                let noop = std::env::var_os("DS41_CPU_NOOP").is_some();
-                // DS41_LOG_ROUTES=path: one line per (pass, layer) with every token's picks, for placement studies
-                let mut route_log = std::env::var("DS41_LOG_ROUTES").ok().and_then(|p| std::fs::File::create(p).ok()).map(std::io::BufWriter::new);
+                // profiling only (DSX_CPU_NOOP=1): skip the CPU experts to time the bare handoff (wrong output)
+                let noop = std::env::var_os("DSX_CPU_NOOP").is_some();
+                // DSX_LOG_ROUTES=path: one line per (pass, layer) with every token's picks, for placement studies
+                let mut route_log = std::env::var("DSX_LOG_ROUTES").ok().and_then(|p| std::fs::File::create(p).ok()).map(std::io::BufWriter::new);
                 loop {
                     seq += 1;
                     let l = (seq as usize - 1) % nl;

@@ -184,7 +184,7 @@ async fn models(State(st): State<Arc<AppState>>) -> Response {
     let created = now();
     axum::Json(json!({
         "object": "list",
-        "data": [{"id": st.cfg.model_name, "object": "model", "created": created, "owned_by": "ds41",
+        "data": [{"id": st.cfg.model_name, "object": "model", "created": created, "owned_by": "dsx",
                   "display_name": st.cfg.model_name, "type": "model", "context_length": st.cfg.ctx}],
     }))
     .into_response()
@@ -306,7 +306,7 @@ fn inference_stream(
     timing: Arc<Mutex<Timing>>,
 ) -> Pin<Box<dyn Stream<Item = InferenceChunk> + Send>> {
     let ready = InferenceChunk::Ready {
-        system_fingerprint: Some("ds41".into()),
+        system_fingerprint: Some("dsx".into()),
         prompt_usage: PromptUsage { prompt_tokens: n_prompt, prompt_cache_hit_tokens: 0 },
     };
     let rest = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map_while(move |ev| match ev {

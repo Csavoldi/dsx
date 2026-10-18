@@ -1,6 +1,6 @@
 #![cfg(feature = "cuda")]
 //! 6-bit dense planes: GPU GEMV vs the CPU decoder, and speed next to the repacked Q8 GEMV.
-use ds41::gpu::*;
+use dsx::gpu::*;
 use std::time::Instant;
 
 #[test]
@@ -10,7 +10,7 @@ fn q6_gemv() {
         let x: Vec<f32> = (0..rows * k).map(|i| ((i * 2654435761usize) % 2001) as f32 / 1000.0 - 1.0).collect();
         let (mut lo, mut hi, mut sc, mut d) = (vec![0u8; rows * k / 2], vec![0u8; rows * k / 4], vec![0i8; rows * k / 16], vec![0u16; rows * k / 256]);
         for r in 0..rows {
-            ds41::q6::quantize_row(&x[r * k..(r + 1) * k], &mut lo[r * k / 2..(r + 1) * k / 2], &mut hi[r * k / 4..(r + 1) * k / 4], &mut sc[r * k / 16..(r + 1) * k / 16], &mut d[r * k / 256..(r + 1) * k / 256]);
+            dsx::q6::quantize_row(&x[r * k..(r + 1) * k], &mut lo[r * k / 2..(r + 1) * k / 2], &mut hi[r * k / 4..(r + 1) * k / 4], &mut sc[r * k / 16..(r + 1) * k / 16], &mut d[r * k / 256..(r + 1) * k / 256]);
         }
         let v: Vec<f32> = (0..k).map(|i| (i % 13) as f32 * 0.1 - 0.6).collect();
         let (dl, dh, ds, dd, dv, dy) = (g.upload(&lo).unwrap(), g.upload(&hi).unwrap(), g.upload(&sc).unwrap(), g.upload(&d).unwrap(), g.upload(&v).unwrap(), g.alloc(rows * 4).unwrap());
@@ -19,7 +19,7 @@ fn q6_gemv() {
         g.launch(kk, ((rows as u32).div_ceil(4), 1, 1), 128, 0, &args).unwrap();
         let got: Vec<f32> = g.download(dy.ptr, rows).unwrap();
         for r in (0..rows).step_by((rows / 8).max(1)) {
-            let want: f64 = (0..k).map(|c| ds41::q6::dequant(&lo, &hi, &sc, &d, r * k + c) as f64 * v[c] as f64).sum();
+            let want: f64 = (0..k).map(|c| dsx::q6::dequant(&lo, &hi, &sc, &d, r * k + c) as f64 * v[c] as f64).sum();
             assert!((got[r] as f64 - want).abs() < 1e-3 * want.abs().max(1.0), "row {r}: {} vs {want}", got[r]);
         }
         let t = Instant::now();

@@ -1,9 +1,9 @@
 #![cfg(feature = "cuda")]
 //! Expert-format GEMV speed as decode runs them, old GGUF-block kernels vs the repacked fast kernels
 //! (cargo test --release --features cuda --test gpu_expbench -- --ignored --nocapture).
-use ds41::experts::{KS, ExpCfg, GpuExperts, RawExpert, repack, repacked_id};
-use ds41::gguf::GType;
-use ds41::gpu::*;
+use dsx::experts::{KS, ExpCfg, GpuExperts, RawExpert, repack, repacked_id};
+use dsx::gguf::GType;
+use dsx::gpu::*;
 use std::time::Instant;
 
 fn random_bytes(n: usize, seed: &mut u64) -> Vec<u8> {

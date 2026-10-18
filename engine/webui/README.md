@@ -1,6 +1,6 @@
 # webui
 
-The chat UI served at `/` by `ds41-server` is [llama.cpp](https://github.com/ggml-org/llama.cpp)'s web UI
+The chat UI served at `/` by `dsx-server` is [llama.cpp](https://github.com/ggml-org/llama.cpp)'s web UI
 (`tools/ui`), by Georgi Gerganov and the ggml authors, MIT licensed: see [LICENSE-llama.cpp](LICENSE-llama.cpp).
 `dist/` is its build output at the commit pinned in `build.sh`, embedded into the server binary at compile time.
 

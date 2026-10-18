@@ -1,8 +1,8 @@
 #![cfg(feature = "cuda")]
 //! The decode handoff in isolation, closer to the engine: GPU work between publish and wait, a pinned E-core
 //! worker that copies x, 20 KB of activations through mapped memory. Prints the round trip per variant.
-use ds41::cpu::pool::pin_to;
-use ds41::gpu::*;
+use dsx::cpu::pool::pin_to;
+use dsx::gpu::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 

@@ -1,6 +1,6 @@
 #![cfg(feature = "cuda")]
 //! Small-row GEMVs and the hc dots: one-warp-per-row vs split-K, decode shapes (cargo test -- --ignored --nocapture).
-use ds41::gpu::*;
+use dsx::gpu::*;
 use std::time::Instant;
 
 fn time(g: &Gpu, k: Kernel, grid: (u32, u32, u32), block: u32, args: &[Arg]) -> f64 {

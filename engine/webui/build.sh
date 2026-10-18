@@ -1,6 +1,6 @@
 #!/bin/bash
 # Rebuild webui/dist from llama.cpp's web UI (tools/ui, MIT) at a pinned commit. Needs git, node 20+, npm.
-# ds41-server embeds webui/dist at compile time and serves it at /.
+# dsx-server embeds webui/dist at compile time and serves it at /.
 set -euo pipefail
 COMMIT=${1:-547208d}
 here="$(cd "$(dirname "$0")" && pwd)"

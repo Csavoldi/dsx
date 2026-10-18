@@ -412,13 +412,13 @@ impl GpuModel<'_> {
             let u = uniq.binary_search(id).unwrap();
             o.copy_from_slice(&ubuf[u * hd..(u + 1) * hd]);
         }
-        if std::env::var_os("DS41_PROF").is_some() {
+        if std::env::var_os("DSX_PROF").is_some() {
             eprintln!("engram L{li}: {} rows, {} distinct", ids.len(), uniq.len());
         }
         let _ = p0;
         let t_gather = t_h.elapsed().as_secs_f64() - t_hash;
         self.g.htod_sync(pb.o.ptr, &ebuf)?;
-        if std::env::var_os("DS41_PROF").is_some() {
+        if std::env::var_os("DSX_PROF").is_some() {
             eprintln!("engram L{li}: hash {:.0} ms, gather {:.0} ms, upload {:.0} ms", t_hash * 1e3, t_gather * 1e3, (t_h.elapsed().as_secs_f64() - t_hash - t_gather) * 1e3);
         }
         let l = &self.layers[li];

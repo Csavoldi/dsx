@@ -37,7 +37,7 @@
      ap.add_argument("--min-eval", type=int, default=8)
      ap.add_argument("--unseen-floor", default="q2_0", choices=TIERS)
      ap.add_argument("--out", default=None)
-+    ap.add_argument("--budget-bpw", type=float, default=None, help="ds41: budget in bits/weight (default: all-Q2_0 = 2.25)")
++    ap.add_argument("--budget-bpw", type=float, default=None, help="dsx: budget in bits/weight (default: all-Q2_0 = 2.25)")
      a = ap.parse_args()
      layers = None
      if a.layers:
@@ -80,7 +80,7 @@
 +            m._mmap.madvise(mmap.MADV_SEQUENTIAL)
          self.dim, self.bytes_read, self.rows = dim, 0, 0
  
-+    PRELOAD = None  # ds41: all row ids the run will need (np.int64), gathered once by one sequential sweep
++    PRELOAD = None  # dsx: all row ids the run will need (np.int64), gathered once by one sequential sweep
 +
 +    def _preload(self):
 +        u = np.unique(self.PRELOAD)
@@ -133,7 +133,7 @@
 -    Wt = torch.from_numpy(np.ascontiguousarray(W, np.float32))
 -    S = G.search_scales(Wt, torch.ones(Wt.shape[1]), tier)
 +    import os
-+    dev = os.environ.get("V41_RTN_DEVICE", "cpu")   # ds41: the scale search on a GPU (CPU torch oversubscribes)
++    dev = os.environ.get("V41_RTN_DEVICE", "cpu")   # dsx: the scale search on a GPU (CPU torch oversubscribes)
 +    Wt = torch.from_numpy(np.ascontiguousarray(W, np.float32)).to(dev)
 +    S = G.search_scales(Wt, torch.ones(Wt.shape[1], device=dev), tier)
      lo, hi, grp, _ = G.TIERS[tier]

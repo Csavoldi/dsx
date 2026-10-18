@@ -1,7 +1,7 @@
 #![cfg(feature = "cuda")]
 //! GPU indexer selection (topk.cuh) vs a CPU reference with model.rs indexer()'s semantics.
-use ds41::gpu::*;
-use ds41::topk::{Rows, TopK};
+use dsx::gpu::*;
+use dsx::topk::{Rows, TopK};
 
 const K: usize = 512;
 const BS: usize = 8;

@@ -206,7 +206,7 @@ def encode_rtn(W, tier):
     import torch
     import v41_gptq as G
     import os
-    dev = os.environ.get("V41_RTN_DEVICE", "cpu")   # ds41: the scale search on a GPU (CPU torch oversubscribes)
+    dev = os.environ.get("V41_RTN_DEVICE", "cpu")   # dsx: the scale search on a GPU (CPU torch oversubscribes)
     Wt = torch.from_numpy(np.ascontiguousarray(W, np.float32)).to(dev)
     S = G.search_scales(Wt, torch.ones(Wt.shape[1], device=dev), tier)
     lo, hi, grp, _ = G.TIERS[tier]

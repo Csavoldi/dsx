@@ -1,15 +1,15 @@
-# ds41
+# dsx
 
 Run **DeepSeek-V4.1-Flash-1017** (552B MoE + 196B Engram) at full routing on a desktop: two RTX 3090s, 128 GB of RAM,
 an NVMe drive. A Rust + CUDA engine built for this one model, with its own 2-bit quant
-([lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit)).
+([lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit)).
 
 - 30-37 tok/s decode, 334-508 tok/s prefill on 2x RTX 3090
 - Exact routing: no expert pruning, no router bias
 - OpenAI and Anthropic compatible server with tool calls, streaming and a built-in web UI
 - Quality vs the FP8 model: KL 0.395, top-1 74.1%
 
-![ds41 speed on 2x RTX 3090 and RTX 5090](hf/assets/speed.png)
+![dsx speed on 2x RTX 3090 and RTX 5090](hf/assets/speed.png)
 
 ![Quality against the FP8 original](hf/assets/quality.png)
 
@@ -25,16 +25,16 @@ On the single-GPU box, ~40 GB of experts live on disk, which sets its speed.
 
 ```bash
 # weights: the quant, plus the Engram tables and tokenizer from the official checkpoint
-hf download lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit --local-dir ds41-2bit
-bash ds41-2bit/reassemble.sh ds41-2bit
+hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit --local-dir dsx-2bit
+bash dsx-2bit/reassemble.sh dsx-2bit
 hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
   --include model.safetensors.index.json model-00047-of-00048.safetensors model-00048-of-00048.safetensors tokenizer.json
 
 # build (86 = RTX 30xx, 120 = RTX 50xx) and serve
 cd engine && CUDA_ARCHS=86 cargo build --release --features cuda
-./target/release/ds41-server --model ../ds41-2bit/DeepSeek-V4.1-Flash-1017-ds41-2bit.gguf \
+./target/release/dsx-server --model ../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf \
   --engram ../v41-1017 --tokenizer ../v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
-  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../ds41-2bit/expert-rank.json
+  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../dsx-2bit/expert-rank.json
 ```
 
 Then open `http://localhost:8090/`, or use any OpenAI client with base URL `http://localhost:8090/v1`:
@@ -66,12 +66,12 @@ Experts are spread across VRAM, a RAM arena and the file, hottest first.
 | `--gpu0-gb`, `--gpu1-gb` | GB of experts per GPU; negative = all free VRAM minus that much; `--gpu1-gb 0` for one GPU |
 | `--arena-gb` | RAM for experts the CPU computes |
 | `--rank` | expert hotness order (`expert-rank.json` from the quant repo) |
-| `DS41_ADAPT=N` | GPU0 expert swaps per token to follow the conversation (default 8; 0 = static) |
+| `DSX_ADAPT=N` | GPU0 expert swaps per token to follow the conversation (default 8; 0 = static) |
 
 | Machine | Flags |
 |---|---|
 | 2x 24 GB GPU, 128 GB RAM | `--gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110` |
-| 1x 32 GB GPU, 128 GB RAM | `--gpu0-gb=-2.0 --gpu1-gb 0 --arena-gb 80`, `DS41_ADAPT=0` |
+| 1x 32 GB GPU, 128 GB RAM | `--gpu0-gb=-2.0 --gpu1-gb 0 --arena-gb 80`, `DSX_ADAPT=0` |
 
 ## How it works
 
@@ -93,7 +93,7 @@ Any OpenAI-compatible client works. For the [pi](https://github.com/badlogic/pi-
 `~/.pi/agent/models.json`:
 
 ```json
-{ "providers": { "ds41": {
+{ "providers": { "dsx": {
   "baseUrl": "http://localhost:8090/v1", "api": "openai-completions", "apiKey": "none", "authHeader": false,
   "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": true, "maxTokensField": "max_tokens" },
   "models": [{ "id": "deepseek-v4.1-flash", "reasoning": true, "input": ["text"], "contextWindow": 131072,
@@ -101,12 +101,12 @@ Any OpenAI-compatible client works. For the [pi](https://github.com/badlogic/pi-
 ```
 
 ```bash
-pi --provider ds41 --model deepseek-v4.1-flash:off
+pi --provider dsx --model deepseek-v4.1-flash:off
 ```
 
 ## Tools
 
-`target/release/ds41`:
+`target/release/dsx`:
 
 | Command | |
 |---|---|
@@ -122,7 +122,7 @@ pi --provider ds41 --model deepseek-v4.1-flash:off
 | [`quant/`](quant/) | the quantization pipeline, with native CUDA GPTQ |
 | [`FINDINGS.md`](FINDINGS.md) | research notes and measurements |
 
-The quant uses ds41's per-expert formats (ternary, Q2_0, Q3_K per expert) and loads in ds41.
+The quant uses dsx's per-expert formats (ternary, Q2_0, Q3_K per expert) and loads in dsx.
 
 ## Credits
 

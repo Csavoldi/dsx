@@ -2,10 +2,10 @@
 //! ms per layer for 6 mixed-type experts, and the pool's fixed per-call overhead.
 //! cargo run --release --bin cpubench [-- quick] [fmt=Q2_0]
 
-use ds41::cpu::moe::{CpuMoe, ExpertW};
-use ds41::cpu::pool::{Ctx, Pool};
-use ds41::cpu::qdot::{QAct, dot_rows};
-use ds41::gguf::GType;
+use dsx::cpu::moe::{CpuMoe, ExpertW};
+use dsx::cpu::pool::{Ctx, Pool};
+use dsx::cpu::qdot::{QAct, dot_rows};
+use dsx::gguf::GType;
 use half::f16;
 use std::time::{Duration, Instant};
 
@@ -118,7 +118,7 @@ fn main() {
     use GType::*;
 
     // in-cache single-thread kernel rate on a P-core: the compute ceiling per thread
-    ds41::cpu::pool::pin_to(0);
+    dsx::cpu::pool::pin_to(0);
     println!("in-cache kernel rate, 1 thread on a P-core (64 rows x 5120, L2-resident)");
     for ty in [Q2_0, Ptq1_0, Q3K, Q8_0] {
         let rows = rand_rows(ty, 64, DIM, &mut rng);
@@ -139,7 +139,7 @@ fn main() {
     }
 
     // the caller spins while workers run: keep it off the pool's CPUs (16 = first E-core)
-    ds41::cpu::pool::pin_to(16);
+    dsx::cpu::pool::pin_to(16);
     println!(
         "\nweights streamed from RAM, {nexp} experts per format, calls of 6 experts (all T tokens routed to each)"
     );

@@ -309,7 +309,7 @@ class MemmapEngramEmbedding(nn.Module):
             m._mmap.madvise(mmap.MADV_SEQUENTIAL)
         self.dim, self.bytes_read, self.rows = dim, 0, 0
 
-    PRELOAD = None  # ds41: all row ids the run will need (np.int64), gathered once by one sequential sweep
+    PRELOAD = None  # dsx: all row ids the run will need (np.int64), gathered once by one sequential sweep
 
     def _preload(self):
         u = np.unique(self.PRELOAD)

@@ -1,6 +1,6 @@
 #![cfg(feature = "cuda")]
 //! Round trip GPU -> CPU -> GPU through flags in mapped host memory: what one layer's expert handoff costs.
-use ds41::gpu::*;
+use dsx::gpu::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 

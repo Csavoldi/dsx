@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use ds41::model::{Model, RefState};
+use dsx::model::{Model, RefState};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -183,8 +183,8 @@ fn main() -> Result<()> {
         }
         Cmd::Spec { model, ids, n } => {
             let m = Model::load_hf(&model)?;
-            let st_hf = ds41::safetensors::SafeTensors::open(&model, &[])?;
-            let ds = ds41::dspark::Dspark::load(&m, &st_hf, &model)?;
+            let st_hf = dsx::safetensors::SafeTensors::open(&model, &[])?;
+            let ds = dsx::dspark::Dspark::load(&m, &st_hf, &model)?;
             let mut dst = ds.new_state(&m);
             let mut st = RefState::new(&m);
             let mut logits = vec![];
@@ -243,7 +243,7 @@ fn main() -> Result<()> {
                 ids.split(',').map(|x| x.trim().parse().unwrap()).collect()
             };
             let m = load(&model, engram.as_deref())?;
-            let mut gm = ds41::gpumodel::GpuModel::with_placement(&m, 0, ctx, ds41::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: chunk, rank: rank.clone() })?;
+            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, 0, ctx, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: chunk, rank: rank.clone() })?;
             let pb = gm.pb.take().unwrap();
             // chunk plan: the final chunk must hold the decoder cone (19 x 128 tokens) or the whole prompt
             let cone = (m.cfg.n_layers - 1 - m.cfg.cand_layer) * m.cfg.window;
@@ -306,7 +306,7 @@ fn main() -> Result<()> {
                 }
             }
             let legs = gm.handoff_legs_us();
-            if !legs.is_empty() && std::env::var_os("DS41_SPIN_WAIT").is_some() {
+            if !legs.is_empty() && std::env::var_os("DSX_SPIN_WAIT").is_some() {
                 let s: Vec<String> = legs.iter().enumerate().map(|(l, (a, b))| format!("{l}:{a:.0}/{b:.0}")).collect();
                 println!("  handoff legs us (GPU->CPU / CPU->GPU): {}", s.join(" "));
             }
@@ -335,7 +335,7 @@ fn main() -> Result<()> {
             }
             if check {
                 drop(gm);
-                let mut g2 = ds41::gpumodel::GpuModel::with_placement(&m, 0, ctx, ds41::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: 0, rank: rank.clone() })?;
+                let mut g2 = dsx::gpumodel::GpuModel::with_placement(&m, 0, ctx, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: 0, rank: rank.clone() })?;
                 let mut l2 = vec![];
                 for &t in &ids { l2 = g2.step(t)?; }
                 let maxd = l2.iter().zip(&logits).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
@@ -358,7 +358,7 @@ fn main() -> Result<()> {
             let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
             let tlp: Vec<f32> = rd("teacher_lp.f32")?.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
             let m = load(&model, engram.as_deref())?;
-            let mut gm = ds41::gpumodel::GpuModel::with_placement(&m, 0, len + 64, ds41::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: len, rank })?;
+            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, 0, len + 64, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: len, rank })?;
             let (mut nll, mut kl, mut agree, mut cnt) = (0f64, 0f64, 0usize, 0usize);
             let t0 = Instant::now();
             for sq in 0..seqs {
@@ -385,7 +385,7 @@ fn main() -> Result<()> {
         #[cfg(feature = "cuda")]
         Cmd::Cmp { model, engram, ids, ctx, no_ref, n, gpu0_gb, gpu1_gb, arena_gb } => {
             let m = load(&model, engram.as_deref())?;
-            let mut gm = ds41::gpumodel::GpuModel::with_placement(&m, 0, ctx, ds41::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: 0, rank: None })?;
+            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, 0, ctx, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: 0, rank: None })?;
             let t_all = Instant::now();
             let mut st = RefState::new(&m);
             let mut toks = ids.clone();

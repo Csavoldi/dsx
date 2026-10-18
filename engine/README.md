@@ -1,4 +1,4 @@
-# ds41
+# dsx
 
 DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200.
 Rust + CUDA (cudarc driver API, one nvcc fatbin for sm_86 and sm_120). Plan and numbers: ../DESIGN.md, ../FINDINGS.md,
@@ -16,14 +16,14 @@ cargo test --release --features cuda            # + GPU kernel tests (gemv vs CP
 
 | | |
 |---|---|
-| `ds41 ref --model DIR -ids ...` | CPU reference forward, token by token, exact model.py semantics (FP8/FP4 checkpoint dir, or a GGUF + `--engram DIR`) |
-| `ds41 cmp --model M --ids ...` | GPU decode next to the CPU reference, per-token logit diff; `--no-ref -n N` decodes greedily; `--gpu0-gb/--gpu1-gb/--arena-gb` place experts |
-| `ds41 gen --model GGUF --engram DIR --ids @file -n N` | chunked prefill, then decode; `--check` reruns the prompt token by token and compares |
-| `ds41 spec --model DIR --ids ...` | DSpark (the checkpoint's draft stack) acceptance on the CPU reference |
+| `dsx ref --model DIR -ids ...` | CPU reference forward, token by token, exact model.py semantics (FP8/FP4 checkpoint dir, or a GGUF + `--engram DIR`) |
+| `dsx cmp --model M --ids ...` | GPU decode next to the CPU reference, per-token logit diff; `--no-ref -n N` decodes greedily; `--gpu0-gb/--gpu1-gb/--arena-gb` place experts |
+| `dsx gen --model GGUF --engram DIR --ids @file -n N` | chunked prefill, then decode; `--check` reruns the prompt token by token and compares |
+| `dsx spec --model DIR --ids ...` | DSpark (the checkpoint's draft stack) acceptance on the CPU reference |
 
-Debug: `DS41_DUMP=dir` (per-layer residual streams, ref vs GPU), `DS41_ROUTES=1` (expert picks), `DS41_PROF=1` (time per section),
-`DS41_SYNC_MOE=1` (old host-synchronous expert path), `DS41_MOE_DEVICE=1` (device-driven expert kernels in the sync path),
-`DS41_OLD_MOE=1` (VRAM experts keep their GGUF blocks and run moe_gu / moe_down instead of the repacked int8-mma kernels).
+Debug: `DSX_DUMP=dir` (per-layer residual streams, ref vs GPU), `DSX_ROUTES=1` (expert picks), `DSX_PROF=1` (time per section),
+`DSX_SYNC_MOE=1` (old host-synchronous expert path), `DSX_MOE_DEVICE=1` (device-driven expert kernels in the sync path),
+`DSX_OLD_MOE=1` (VRAM experts keep their GGUF blocks and run moe_gu / moe_down instead of the repacked int8-mma kernels).
 
 ## Layout
 
@@ -35,7 +35,7 @@ Debug: `DS41_DUMP=dir` (per-layer residual streams, ref vs GPU), `DS41_ROUTES=1`
 | `dspark.rs` | DSpark draft stack (reference) |
 | `cpu/` | AVX2 + AVX-VNNI expert kernels, pinned thread pool, per-layer CPU MoE |
 | `gpu.rs` | CUDA boundary: contexts, buffers, hugepage host memory, launches, cuBLAS, stream flag ops |
-| `kernels/` | `ds41.cu` (dense path, attention, compressor, indexer, router, prefill helpers), `moe.cuh`, `expert_fast.cuh` (repacked VRAM experts, int8 mma, T tokens), `topk.cuh` |
+| `kernels/` | `dsx.cu` (dense path, attention, compressor, indexer, router, prefill helpers), `moe.cuh`, `expert_fast.cuh` (repacked VRAM experts, int8 mma, T tokens), `topk.cuh` |
 | `gpumodel.rs` | GPU decode: dense half on GPU0, experts on GPU0 / GPU1 / CPU, sync-free per-layer handoff |
 | `gpumodel/prefill.rs` | prefill: encoder for every token, decoder dependency cone, grouped expert GEMMs |
 | `experts.rs` | VRAM expert stores (residency table) and the hugepage RAM arena |

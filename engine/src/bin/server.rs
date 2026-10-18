@@ -1,4 +1,4 @@
-//! ds41-server: OpenAI / Anthropic compatible HTTP API for the ds41 engine.
+//! dsx-server: OpenAI / Anthropic compatible HTTP API for the dsx engine.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use ds41::server::mock::{MockEngine, MockMode};
-use ds41::server::{AppState, EngineHandle, ServerConfig};
+use dsx::server::mock::{MockEngine, MockMode};
+use dsx::server::{AppState, EngineHandle, ServerConfig};
 use tokenizers::Tokenizer;
 
 #[derive(Parser)]
-#[command(about = "OpenAI / Anthropic compatible API server for DeepSeek-V4.1-Flash (ds41)")]
+#[command(about = "OpenAI / Anthropic compatible API server for DeepSeek-V4.1-Flash (dsx)")]
 struct Cli {
     /// DeepSeek V4.1 tokenizer.json
     #[arg(long)]
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
         EngineHandle::spawn(move || {
             let mut m = MockEngine::new(tok, mode);
             m.delay = Duration::from_millis(delay);
-            Ok(Box::new(m) as Box<dyn ds41::server::Engine>)
+            Ok(Box::new(m) as Box<dyn dsx::server::Engine>)
         })?
     } else {
         real(&cli)?
@@ -88,14 +88,14 @@ async fn main() -> Result<()> {
     };
     let st = AppState::new(engine, tok, cfg)?;
     let listener = tokio::net::TcpListener::bind((cli.host.as_str(), cli.port)).await?;
-    tracing::info!("listening on http://{} ({})", listener.local_addr()?, if cli.mock { "mock engine" } else { "ds41 engine" });
-    ds41::server::serve(listener, st).await?;
+    tracing::info!("listening on http://{} ({})", listener.local_addr()?, if cli.mock { "mock engine" } else { "dsx engine" });
+    dsx::server::serve(listener, st).await?;
     Ok(())
 }
 
 #[cfg(feature = "cuda")]
 fn real(cli: &Cli) -> Result<EngineHandle> {
-    let args = ds41::server::real::RealEngineArgs {
+    let args = dsx::server::real::RealEngineArgs {
         model: cli.model.clone().ok_or_else(|| anyhow!("--model is required (or --mock)"))?,
         engram: cli.engram.clone(),
         ctx: cli.ctx,
@@ -105,7 +105,7 @@ fn real(cli: &Cli) -> Result<EngineHandle> {
         arena_gb: cli.arena_gb,
         rank: cli.rank.clone(),
     };
-    EngineHandle::spawn(move || ds41::server::real::real_engine(&args))
+    EngineHandle::spawn(move || dsx::server::real::real_engine(&args))
 }
 
 #[cfg(not(feature = "cuda"))]

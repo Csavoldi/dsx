@@ -1,8 +1,8 @@
 #![cfg(feature = "cuda")]
 //! GPU GEMV kernels vs the CPU block decoders on random blocks.
-use ds41::formats::dequant_row;
-use ds41::gguf::GType;
-use ds41::gpu::*;
+use dsx::formats::dequant_row;
+use dsx::gguf::GType;
+use dsx::gpu::*;
 
 fn rng(seed: &mut u64) -> u64 {
     *seed ^= *seed << 13;

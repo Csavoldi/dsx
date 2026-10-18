@@ -61,7 +61,7 @@ pub async fn props(State(st): State<Arc<AppState>>) -> Response {
         "chat_template": "",
         "bos_token": "<｜begin▁of▁sentence｜>",
         "eos_token": "<｜end▁of▁sentence｜>",
-        "build_info": concat!("ds41 ", env!("CARGO_PKG_VERSION")),
+        "build_info": concat!("dsx ", env!("CARGO_PKG_VERSION")),
         "ui_settings": {}
     }))
     .into_response()

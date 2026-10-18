@@ -1,7 +1,7 @@
 # DeepSeek-V4.1-Flash-1017 on a two-GPU desktop: findings
 
 How fast can a 552B-parameter MoE run on a desktop with two RTX 3090s and 128 GB of DDR4, with exact routing, and
-what limits it? This document collects the analysis, measurements and results behind ds41. Engine architecture:
+what limits it? This document collects the analysis, measurements and results behind dsx. Engine architecture:
 [DESIGN.md](DESIGN.md). Hardware microbenchmarks: [bench/RESULTS.md](bench/RESULTS.md). Speed model:
 [roofline.py](roofline.py).
 
@@ -35,7 +35,7 @@ and a quant whose bit budget is shared across layers.
 1017 has the same architecture as the October 16 V4.1 release, but every weight shard changed, the Engram tables
 included. A V4.1 quant is not a 1017 quant.
 
-| Part | Parameters | Placement in ds41 |
+| Part | Parameters | Placement in dsx |
 |---|---:|---|
 | Routed experts | 544B (15,360 × 35.4M) | quantized; VRAM, RAM, a few on disk |
 | Dense (attention, shared expert, routers, embeddings, head) | ~8B | GPU0, Q8_0 |

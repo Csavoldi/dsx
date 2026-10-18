@@ -1,4 +1,4 @@
-# ds41 design
+# dsx design
 
 One model (DeepSeek-V4.1-Flash-1017), one quant format, one class of machine: two 24 GB GPUs, 128 GB of RAM, an NVMe
 drive. The performance model behind these choices is in [FINDINGS.md](FINDINGS.md), section 3.

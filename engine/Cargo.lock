@@ -602,7 +602,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ds41"
+name = "dsx"
 version = "0.1.0"
 dependencies = [
  "anyhow",

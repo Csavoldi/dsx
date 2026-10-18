@@ -1,8 +1,8 @@
 #![cfg(feature = "cuda")]
 //! sparse_attn_tc (prefill, tensor cores) vs sparse_attn (f32 CUDA cores) vs an f64 CPU reference.
 //! Benchmark: cargo test --release --features cuda --test gpu_attn -- --ignored --nocapture
-use ds41::attn::SparseAttnTc;
-use ds41::gpu::*;
+use dsx::attn::SparseAttnTc;
+use dsx::gpu::*;
 use half::bf16;
 use std::time::Instant;
 

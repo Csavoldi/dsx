@@ -9,8 +9,8 @@ use deepseek_recipe::openai::ChatCompletionRequest;
 use deepseek_recipe::request::{ConversionOptions, ProtocolRequest};
 use deepseek_recipe_encoding::PromptEncoding;
 use deepseek_recipe_encoding::v4::dsv41::DeepseekV41Encoding;
-use ds41::server::mock::{MOCK_REASONING, MOCK_REPLY, MockEngine, MockMode};
-use ds41::server::{AppState, Engine, EngineHandle, ServerConfig};
+use dsx::server::mock::{MOCK_REASONING, MOCK_REPLY, MockEngine, MockMode};
+use dsx::server::{AppState, Engine, EngineHandle, ServerConfig};
 use serde_json::{Value, json};
 use tokenizers::Tokenizer;
 
@@ -38,7 +38,7 @@ async fn start(mode: MockMode, delay_ms: u64) -> String {
     let st = AppState::new(engine, tok, ServerConfig::default()).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(ds41::server::serve(listener, st));
+    tokio::spawn(dsx::server::serve(listener, st));
     base
 }
 
@@ -282,7 +282,7 @@ async fn limits_and_stops() {
     assert_eq!(r["usage"]["completion_tokens"], 3);
     let r = post_json(&base, "/v1/chat/completions", json!({"model": "m", "thinking": off, "stop": [" mock"],
         "messages": [{"role": "user", "content": "Hello"}]})).await;
-    assert_eq!(r["choices"][0]["message"]["content"], "Hello from the ds41");
+    assert_eq!(r["choices"][0]["message"]["content"], "Hello from the dsx");
     assert_eq!(r["choices"][0]["finish_reason"], "stop");
     let r = post_json(&base, "/v1/messages", json!({"model": "m", "max_tokens": 100, "thinking": off, "stop_sequences": [" mock"],
         "messages": [{"role": "user", "content": "Hello"}]})).await;

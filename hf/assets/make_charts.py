@@ -26,23 +26,23 @@ QUALITY = [  # Lucebox 1017 eval set: 8 x 1024 tokens vs FP8 top-256 log-probs
     # name, KL, top-1 %, perplexity, highlight
     ("FP8 original", 0.0, 100.0, 8.56, False),
     ("Lucebox ROCMFP, 2.5 bpw", 0.253, 78.7, 9.78, False),
-    ("ds41 2-bit v2, 2.03 bpw", 0.395, 74.1, 10.93, True),
-    ("ds41 v1, 2.03 bpw", 0.462, 71.5, 11.66, False),
+    ("dsx 2-bit v2, 2.03 bpw", 0.395, 74.1, 10.93, True),
+    ("dsx v1, 2.03 bpw", 0.462, 71.5, 11.66, False),
 ]
 SIZE = [  # GB to download, without the 203 GB Engram tables unless marked
     ("FP8 original", 510, "includes Engram", False),
     ("Q2_K GGUF (mrfakename)", 265, "", False),
     ("EXL3 3.5 bpw", 258, "", False),
     ("EXL3 2.9 bpw", 211, "", False),
-    ("ds41 2-bit", 148, "", True),
+    ("dsx 2-bit", 148, "", True),
     ("VQ (Baekpica)", 115, "approx.", False),
 ]
 SIZE_QUALITY = [  # sizes all include the Engram tables; perplexity on the Lucebox eval
     # name, GB, GB range or None, perplexity, highlight
     ("FP8 original", 510, None, 8.56, False),
     ("Lucebox ROCMFP 2.5 bpw", 395, (383, 405), 9.78, False),
-    ("ds41 2-bit v2", 351, None, 10.93, True),
-    ("ds41 v1", 351, None, 11.66, False),
+    ("dsx 2-bit v2", 351, None, 10.93, True),
+    ("dsx v1", 351, None, 11.66, False),
 ]
 
 # ---------------------------------------------------------------- style
@@ -98,7 +98,7 @@ def speed():
                 s.append(t(x + 20, y(v) - 5, f"{v:.1f}" if mx < 100 else f"{v:g}", "n v", "middle", 'font-size="11.5"'))
             s.append(t(ox + gi * gw + gw / 2, bot + 17, label, "", "middle"))
     svg = f'<svg width="{W-44}" height="{h}">{"".join(s)}</svg>'
-    return page("ds41 speed: DeepSeek-V4.1-Flash-1017 2-bit", "Tokens per second, exact routing, greedy decoding.", svg, key(list(zip(machines, cols))))
+    return page("dsx speed: DeepSeek-V4.1-Flash-1017 2-bit", "Tokens per second, exact routing, greedy decoding.", svg, key(list(zip(machines, cols))))
 
 def quality():
     lw, pw, gap, rh, top = 168, 112, 16, 30, 24
@@ -151,9 +151,9 @@ def size_quality():
         s.append(t(X0 - 7, y(g) + 4, g, "n m", "end", 'font-size="10.5"'))
     s.append(t((X0 + X1) / 2, Y0 + 34, "Size with Engram tables (GB)", "m", "middle"))
     s.append(t(X0 - 34, (Y0 + Y1) / 2, "Perplexity ↓", "m", "middle", f'transform="rotate(-90 {X0-34} {(Y0+Y1)/2})"'))
-    place = {"FP8 original": (-10, 4, "end"), "Lucebox ROCMFP 2.5 bpw": (0, -14, "middle"), "ds41 2-bit v2": (12, 4, "start"), "ds41 v1": (12, 4, "start")}
+    place = {"FP8 original": (-10, 4, "end"), "Lucebox ROCMFP 2.5 bpw": (0, -14, "middle"), "dsx 2-bit v2": (12, 4, "start"), "dsx v1": (12, 4, "start")}
     for name, gb, rng, ppl, hl in SIZE_QUALITY:
-        c = BLUE if hl else (BLUE2 if name.startswith("ds41") else GREY2)
+        c = BLUE if hl else (BLUE2 if name.startswith("dsx") else GREY2)
         if rng: s.append(f'<line x1="{x(rng[0]):.1f}" x2="{x(rng[1]):.1f}" y1="{y(ppl):.1f}" y2="{y(ppl):.1f}" stroke="{GREY2}" stroke-width="2"/>')
         s.append(f'<circle cx="{x(gb):.1f}" cy="{y(ppl):.1f}" r="{7 if hl else 6}" fill="{c}"/>')
         dx, dy, a = place[name]

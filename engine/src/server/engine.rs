@@ -76,7 +76,7 @@ impl EngineHandle {
         let pending = Arc::new(AtomicUsize::new(0));
         let pend = pending.clone();
         std::thread::Builder::new()
-            .name("ds41-engine".into())
+            .name("dsx-engine".into())
             .spawn(move || {
                 let mut engine = match make() {
                     Ok(e) => {

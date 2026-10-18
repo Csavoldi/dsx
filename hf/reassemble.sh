@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# reassemble.sh - join DeepSeek-V4.1-Flash-1017-ds41-2bit.gguf from its byte-split parts and verify it.
+# reassemble.sh - join DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf from its byte-split parts and verify it.
 #
 #   bash reassemble.sh [DIR] [--delete-parts]
 #
@@ -19,7 +19,7 @@ for a in "$@"; do
   esac
 done
 cd "$dir"
-out=DeepSeek-V4.1-Flash-1017-ds41-2bit.gguf
+out=DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf
 [ -f SHA256SUMS ] || { echo "SHA256SUMS not found in $dir"; exit 1; }
 mapfile -t parts < <(ls -1 "$out".part-*-of-* 2>/dev/null | sort)
 [ ${#parts[@]} -gt 0 ] || { echo "no $out.part-* files in $dir"; exit 1; }

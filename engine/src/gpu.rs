@@ -18,7 +18,7 @@ pub fn check(r: cu::CUresult, what: &str) -> Result<()> {
     bail!("{what}: {text}")
 }
 
-const KERNEL_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ds41.fatbin"));
+const KERNEL_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/dsx.fatbin"));
 
 /// Device memory, freed on drop.
 pub struct Buf {

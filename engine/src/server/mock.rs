@@ -9,7 +9,7 @@ use tokenizers::Tokenizer;
 use super::engine::{Engine, Finish, GenParams};
 
 pub const MOCK_REASONING: &str = "The user wants a short answer.";
-pub const MOCK_REPLY: &str = "Hello from the ds41 mock engine.";
+pub const MOCK_REPLY: &str = "Hello from the dsx mock engine.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MockMode {

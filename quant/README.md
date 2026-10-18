@@ -1,6 +1,6 @@
 # Quantization pipeline
 
-How `DeepSeek-V4.1-Flash-1017-ds41-2bit.gguf` was made. Built on the V4.1 tools of
+How `DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf` was made. Built on the V4.1 tools of
 [Xolotl](https://github.com/Indras-Mirror/Xolotl) (MIT, Niko1221 and the Strata contributors), commit `7375e305`.
 
 | File | |
@@ -17,7 +17,7 @@ About 5 hours on 2x RTX 3090 for the whole model.
 
 ```bash
 git clone https://github.com/Indras-Mirror/Xolotl && cd Xolotl && git checkout 7375e305
-git apply /path/to/ds41/quant/xolotl-v41.patch
+git apply /path/to/dsx/quant/xolotl-v41.patch
 # then, from tools/v41 with the paths in the scripts adjusted:
 ./calib_all.sh & ./quant_chain.sh & ./finish.sh
 ```

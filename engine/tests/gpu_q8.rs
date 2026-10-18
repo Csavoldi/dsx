@@ -1,6 +1,6 @@
 #![cfg(feature = "cuda")]
 //! Repacked Q8_0 GEMV variants: same results, and their speed on a big matrix (cargo test -- --ignored --nocapture).
-use ds41::gpu::*;
+use dsx::gpu::*;
 use std::time::Instant;
 
 #[test]

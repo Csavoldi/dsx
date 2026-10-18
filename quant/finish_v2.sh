@@ -10,7 +10,7 @@ cd ~/ai/ds41
 P="--gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 104 --rank calib/rank.json"
 for v in joint t100; do
   echo "=== eval v2-$v"
-  DS41_ADAPT=0 ./guard.sh eval 120 ./engine/target/release/ds41 eval --model gguf/1017-v2-$v.gguf --engram fp8-1017 --eval eval $P 2>&1 | grep -E "^\{"
+  DSX_ADAPT=0 ./guard.sh eval 120 ./engine/target/release/dsx eval --model gguf/1017-v2-$v.gguf --engram fp8-1017 --eval eval $P 2>&1 | grep -E "^\{"
 done
 echo "=== v1 (for reference): kl 0.462284 top1 0.715054 ppl 11.6631"
 echo FINISH_V2_DONE

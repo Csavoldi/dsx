@@ -120,13 +120,13 @@ impl Config {
 }
 
 impl Config {
-    /// From an HF checkpoint's config.json plus the Engram constants sidecar (ds41-engram.json, written by
+    /// From an HF checkpoint's config.json plus the Engram constants sidecar (dsx-engram.json, written by
     /// xolotl's v41_gguf_meta.engram_layout: tokenizer-derived token map, bucket primes, hash multipliers).
     pub fn from_hf(dir: &Path) -> Result<Config> {
         let cfg: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json"))?)?;
         let t = &cfg["text_config"];
         let e: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(dir.join("ds41-engram.json")).context("ds41-engram.json (engram constants) missing")?,
+            &std::fs::read(dir.join("dsx-engram.json")).context("dsx-engram.json (engram constants) missing")?,
         )?;
         let u = |v: &serde_json::Value, k: &str| -> Result<usize> { v[k].as_u64().map(|x| x as usize).with_context(|| k.to_string()) };
         let f = |v: &serde_json::Value, k: &str| -> Result<f32> { v[k].as_f64().map(|x| x as f32).with_context(|| k.to_string()) };
@@ -1001,7 +1001,7 @@ impl Model {
         order.sort_by(|&a, &b| (scores[b] + l.gate_bias[b]).partial_cmp(&(scores[a] + l.gate_bias[a])).unwrap());
         let sel = &order[..c.top_k];
         route_log.extend(sel.iter().map(|&e| e as u16));
-        if std::env::var_os("DS41_ROUTES").is_some() {
+        if std::env::var_os("DSX_ROUTES").is_some() {
             let mut sk: Vec<f32> = order.iter().take(8).map(|&e| scores[e] + l.gate_bias[e]).collect();
             sk.iter_mut().for_each(|v| *v = (*v * 1e4).round() / 1e4);
             eprintln!("ref l{} {:?} keys {:?}", l.id, sel, sk);
@@ -1097,9 +1097,9 @@ pub fn e8m0_to_f32(b: u8) -> f32 {
     f32::from_bits((b as u32) << 23)
 }
 
-/// DS41_DUMP=dir: write the residual stream after every layer for positions < 4 (debugging GPU vs reference)
+/// DSX_DUMP=dir: write the residual stream after every layer for positions < 4 (debugging GPU vs reference)
 pub fn dump(tag: &str, pos: usize, layer: usize, h: &[f32]) {
-    if let Ok(dir) = std::env::var("DS41_DUMP") {
+    if let Ok(dir) = std::env::var("DSX_DUMP") {
         if pos < 4 {
             let b: Vec<u8> = h.iter().flat_map(|v| v.to_le_bytes()).collect();
             let _ = std::fs::write(format!("{dir}/{tag}_p{pos}_l{layer:02}.bin"), b);

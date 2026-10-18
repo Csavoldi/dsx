@@ -1,9 +1,9 @@
 #![cfg(feature = "cuda")]
 //! Fast expert kernels (expert_fast.cuh): repacked GEMV vs the CPU block decoders, and moe_*_fast vs moe_gu / moe_down.
-use ds41::experts::{KS, ExpCfg, GpuExperts, RawExpert, repack, repacked_id};
-use ds41::formats::dequant_row;
-use ds41::gguf::GType;
-use ds41::gpu::*;
+use dsx::experts::{KS, ExpCfg, GpuExperts, RawExpert, repack, repacked_id};
+use dsx::formats::dequant_row;
+use dsx::gguf::GType;
+use dsx::gpu::*;
 
 fn rng(seed: &mut u64) -> u64 {
     *seed ^= *seed << 13;

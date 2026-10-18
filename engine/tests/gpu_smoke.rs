@@ -1,5 +1,5 @@
 #![cfg(feature = "cuda")]
-use ds41::gpu::*;
+use dsx::gpu::*;
 
 #[test]
 fn round_bf16_kernel() {
@@ -10,7 +10,7 @@ fn round_bf16_kernel() {
     g.launch(k, (1, 1, 1), 256, 0, &[Arg::P(b.ptr), Arg::I(256)]).unwrap();
     let v: Vec<f32> = g.download(b.ptr, 256).unwrap();
     for i in 0..256 {
-        assert_eq!(v[i], ds41::numerics::round_bf16(x[i]));
+        assert_eq!(v[i], dsx::numerics::round_bf16(x[i]));
     }
     eprintln!("{} sm_{} {} SMs", g.name, g.arch, g.sms);
 }

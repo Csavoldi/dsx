@@ -1,4 +1,4 @@
-//! ds41: DeepSeek-V4.1-Flash(-1017) inference tuned for one box (2x RTX 3090, i7-12700K, 128 GB DDR4-3200).
+//! dsx: DeepSeek-V4.1-Flash(-1017) inference tuned for one box (2x RTX 3090, i7-12700K, 128 GB DDR4-3200).
 
 #[cfg(feature = "cuda")]
 pub mod attn;

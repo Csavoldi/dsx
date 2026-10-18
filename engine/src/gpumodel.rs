@@ -20,7 +20,7 @@ struct DMat {
     act_fp8: bool,
     /// Q8_0 repacked at upload: buf = int8 [rows][cols], scale = f16 [rows][cols/32] (coalesced 16-byte loads)
     q8r: bool,
-    /// DS41_DENSE_Q6: requantized to 6 bits (q6.rs planes): buf = lo nibbles, q6 = (hi codes, sub-scales, super-scales)
+    /// DSX_DENSE_Q6: requantized to 6 bits (q6.rs planes): buf = lo nibbles, q6 = (hi codes, sub-scales, super-scales)
     q6: Option<(Buf, Buf, Buf)>,
 }
 
@@ -145,14 +145,14 @@ pub struct GpuModel<'m> {
     xch: Option<&'static crate::handoff::Xch>,
     worker: Option<crate::handoff::CpuWorker>,
     arena: Option<&'static crate::experts::Arena>,
-    /// adaptive GPU0 residency: replacements started per token (DS41_ADAPT, default 8; 0 = static placement)
+    /// adaptive GPU0 residency: replacements started per token (DSX_ADAPT, default 8; 0 = static placement)
     adapt: usize,
     pub adapt_swaps: usize,
     pub adapt_s: f64,
     warned_nan: bool,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
-    /// DS41_ROUTE_BIAS=x: per-layer selection bonus x for GPU-resident experts ([layers][E] f32), off by default
+    /// DSX_ROUTE_BIAS=x: per-layer selection bonus x for GPU-resident experts ([layers][E] f32), off by default
     bonus: Option<Buf>,
     pub pb: Option<PrefillBufs>,
     /// > 0 while a verify pass runs: prefill's experts go through the decode handoff
@@ -163,12 +163,12 @@ pub struct GpuModel<'m> {
     xch_dev: (u64, u64),
     seq_base: u32,
     pub n_routed: [usize; 3], // routed expert evaluations served by GPU0, GPU1, CPU
-    /// DS41_EVPROF=1: timed events per decode layer on GPU0 ([layer][EV_N]) and GPU1 ([layer][4]); ms sums per stage
+    /// DSX_EVPROF=1: timed events per decode layer on GPU0 ([layer][EV_N]) and GPU1 ([layer][4]); ms sums per stage
     ev0: Vec<crate::gpu::Event>,
     ev1: Vec<crate::gpu::Event>,
     pub evprof: Option<std::collections::BTreeMap<&'static str, f64>>,
     spin_wait: bool,
-    /// DS41_PROF=1: seconds per section (synchronizing after each), summed over steps
+    /// DSX_PROF=1: seconds per section (synchronizing after each), summed over steps
     pub prof: Option<std::collections::BTreeMap<&'static str, f64>>,
 }
 
@@ -209,7 +209,7 @@ impl<'m> GpuModel<'m> {
             k.insert(n, g.kernel(n)?);
         }
         let c = &m.cfg;
-        let dense_q6 = std::env::var_os("DS41_DENSE_Q6").is_some();
+        let dense_q6 = std::env::var_os("DSX_DENSE_Q6").is_some();
         let up = |w: &Mat| -> Result<DMat> {
             if w.ty == GType::Q8_0 && dense_q6 && w.cols % 256 == 0 {
                 // decode the Q8_0 rows, requantize to 6 bits (ggml's Q6_K algorithm), upload as planes
@@ -324,7 +324,7 @@ impl<'m> GpuModel<'m> {
             xch: None,
             worker: None,
             arena: None,
-            adapt: std::env::var("DS41_ADAPT").ok().and_then(|v| v.parse().ok()).unwrap_or(8),
+            adapt: std::env::var("DSX_ADAPT").ok().and_then(|v| v.parse().ok()).unwrap_or(8),
             adapt_swaps: 0,
             adapt_s: 0.0,
             warned_nan: false,
@@ -332,8 +332,8 @@ impl<'m> GpuModel<'m> {
             bonus: None,
             pb: None,
             verify_t: 0,
-            skip_experts: std::env::var_os("DS41_SKIP_EXPERTS").is_some(),
-            prof_host: std::env::var("DS41_PROF").is_ok_and(|v| v == "host"),
+            skip_experts: std::env::var_os("DSX_SKIP_EXPERTS").is_some(),
+            prof_host: std::env::var("DSX_PROF").is_ok_and(|v| v == "host"),
             g1p: None,
             xch_dev: (0, 0),
             seq_base: 0,
@@ -365,8 +365,8 @@ impl<'m> GpuModel<'m> {
             ev0: vec![],
             ev1: vec![],
             evprof: None,
-            spin_wait: std::env::var_os("DS41_SPIN_WAIT").is_some(),
-            prof: std::env::var_os("DS41_PROF").map(|_| Default::default()),
+            spin_wait: std::env::var_os("DSX_SPIN_WAIT").is_some(),
+            prof: std::env::var_os("DSX_PROF").map(|_| Default::default()),
         };
         let mut gm = gm;
         // prefill buffers before the experts take the rest of VRAM
@@ -431,7 +431,7 @@ impl<'m> GpuModel<'m> {
             gm.g.bind();
             eprintln!("experts resident: GPU0 {} ({:.1} GB), GPU1 {} ({:.1} GB)", a.len(), gm.exp0.as_ref().map_or(0, |x| x.bytes) as f64 / 1e9, b.len(), gm.exp1.as_ref().map_or(0, |x| x.bytes) as f64 / 1e9);
         }
-        if let Some(x) = std::env::var("DS41_ROUTE_BIAS").ok().and_then(|v| v.parse::<f32>().ok()) {
+        if let Some(x) = std::env::var("DSX_ROUTE_BIAS").ok().and_then(|v| v.parse::<f32>().ok()) {
             let mut b = vec![0f32; c.n_layers * c.n_experts];
             for l in 0..c.n_layers {
                 for e in 0..c.n_experts {
@@ -443,7 +443,7 @@ impl<'m> GpuModel<'m> {
             gm.bonus = Some(gm.g.upload(&b)?);
             eprintln!("route bias {x} toward GPU-resident experts (changes the model's routing)");
         }
-        if gm.cpu_moe.is_some() && std::env::var_os("DS41_SYNC_MOE").is_none() {
+        if gm.cpu_moe.is_some() && std::env::var_os("DSX_SYNC_MOE").is_none() {
             // the CPU worker owns the pool from here on
             gm.cpu_moe = None;
             let xch: &'static crate::handoff::Xch = Box::leak(Box::new(crate::handoff::Xch::new(c.dim)?));
@@ -487,7 +487,7 @@ impl<'m> GpuModel<'m> {
             gm.xch = Some(xch);
             gm.xch_dev = (d0, d1);
         }
-        if std::env::var_os("DS41_EVPROF").is_some() {
+        if std::env::var_os("DSX_EVPROF").is_some() {
             for _ in 0..c.n_layers * EV_N {
                 gm.ev0.push(gm.g.timed_event()?);
             }
@@ -545,7 +545,7 @@ impl<'m> GpuModel<'m> {
         self.ev(li, 2)?;
         let d0 = self.xch_dev.0;
         if self.skip_experts {
-            // profiling only (DS41_SKIP_EXPERTS=1): the dense half without routed experts (wrong output)
+            // profiling only (DSX_SKIP_EXPERTS=1): the dense half without routed experts (wrong output)
             let l = &self.layers[li];
             let inter = c.inter;
             let (g_ptr, u_ptr, hm) = (self.tmp.ptr, self.tmp.ptr + (t * inter * 4) as u64, self.tmp.ptr + (2 * t * inter * 4) as u64);
@@ -581,13 +581,13 @@ impl<'m> GpuModel<'m> {
     }
 
     /// attention for t <= 8 queries (sparse_attn's contract): split-K partials, then the merge with the sink.
-    /// DS41_OLD_ATTN=1 runs the serial single-kernel version.
+    /// DSX_OLD_ATTN=1 runs the serial single-kernel version.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sparse_attn_small(&self, t: usize, q: u64, win: u64, win_idx: u64, w: usize, comp: u64, comp_idx: u64, k: usize, sinks: u64, o: u64) -> Result<()> {
         let c = &self.m.cfg;
         let (nh, hd) = (c.n_heads, c.head_dim);
         let scale = 1.0 / (hd as f32).sqrt();
-        if std::env::var_os("DS41_OLD_ATTN").is_some() {
+        if std::env::var_os("DSX_OLD_ATTN").is_some() {
             return self.g.launch(self.k["sparse_attn"], (t as u32, (nh / 8) as u32, 1), 256, 0, &[Arg::P(q), Arg::P(win), Arg::P(win_idx), Arg::I(w as i32), Arg::P(comp), Arg::P(comp_idx), Arg::I(k as i32), Arg::P(sinks), Arg::P(o), Arg::I(nh as i32), Arg::I(hd as i32), Arg::F(scale)]);
         }
         let s = (w + k).div_ceil(32);
@@ -664,7 +664,7 @@ impl<'m> GpuModel<'m> {
         Ok(())
     }
 
-    /// DS41_PROF=1: synchronize GPU0 and add the time since `t0` under `name` (prefill profiling)
+    /// DSX_PROF=1: synchronize GPU0 and add the time since `t0` under `name` (prefill profiling)
     pub(crate) fn prof_mark(&mut self, name: &'static str, t0: std::time::Instant) -> Result<()> {
         if self.prof.is_some() && !self.prof_host {
             self.g.sync()?;
@@ -673,14 +673,14 @@ impl<'m> GpuModel<'m> {
         Ok(())
     }
 
-    /// DS41_PROF=host: add host time since `t0` under `name`
+    /// DSX_PROF=host: add host time since `t0` under `name`
     fn hmark(&mut self, t0: std::time::Instant, name: &'static str) {
         if self.prof_host {
             *self.prof.as_mut().unwrap().entry(name).or_default() += t0.elapsed().as_secs_f64();
         }
     }
 
-    /// GPU0's stream waits for a handoff flag: a spinning kernel (DS41_SPIN_WAIT) or cuStreamWaitValue32
+    /// GPU0's stream waits for a handoff flag: a spinning kernel (DSX_SPIN_WAIT) or cuStreamWaitValue32
     fn flag_wait(&self, addr: u64, seq: u32) -> Result<()> {
         if self.spin_wait {
             // the CPU flag's spin records GPU-side handoff time per layer
@@ -692,12 +692,12 @@ impl<'m> GpuModel<'m> {
         }
     }
 
-    /// DS41_EVPROF: record stage `k` of layer `li` on GPU0's stream
+    /// DSX_EVPROF: record stage `k` of layer `li` on GPU0's stream
     fn ev(&self, li: usize, k: usize) -> Result<()> {
         if self.ev0.is_empty() { Ok(()) } else { self.g.record(self.ev0[li * EV_N + k], false) }
     }
 
-    /// DS41_EVPROF: add this step's per-stage GPU times (events are complete once the logits are downloaded)
+    /// DSX_EVPROF: add this step's per-stage GPU times (events are complete once the logits are downloaded)
     fn ev_collect(&mut self) -> Result<()> {
         if self.ev0.is_empty() {
             return Ok(());
@@ -1130,10 +1130,10 @@ impl<'m> GpuModel<'m> {
         self.gemv(&l.sh_down, hm, self.a.ptr)?;
         // routed experts on the CPU
         let sel: Vec<i32> = self.g.download(idx_buf, c.top_k)?;
-        if std::env::var_os("DS41_ROUTES").is_some() && self.pos < 4 {
+        if std::env::var_os("DSX_ROUTES").is_some() && self.pos < 4 {
             eprintln!("gpu p{} l{li} {:?}", self.pos, sel);
         }
-        if let Ok(path) = std::env::var("DS41_LOG_ROUTES") {
+        if let Ok(path) = std::env::var("DSX_LOG_ROUTES") {
             // one line per (position, layer): the picks, for offline expert-overlap / hotness statistics
             use std::io::Write;
             let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
@@ -1325,7 +1325,7 @@ impl<'m> GpuModel<'m> {
             self.hmark(th, if li < 20 { "host: moe enc" } else { "host: moe dec" });
             self.mark(&mut tm, "moe")?;
             self.g.launch(self.k["hc_post_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.a.ptr), Arg::P(self.mix_f.ptr), Arg::I(d as i32)])?;
-            if std::env::var_os("DS41_DUMP").is_some() && self.pos < 4 {
+            if std::env::var_os("DSX_DUMP").is_some() && self.pos < 4 {
                 let h: Vec<f32> = self.g.download(self.h.ptr, c.hc * d)?;
                 crate::model::dump("gpu", self.pos, li, &h);
             }
@@ -1345,7 +1345,7 @@ impl<'m> GpuModel<'m> {
 /// most 32-row tiles of the small-T attention (window 128 + top-512 = 20)
 const ATTN_SPLITS: usize = 32;
 
-/// timed events per decode layer on GPU0 (DS41_EVPROF)
+/// timed events per decode layer on GPU0 (DSX_EVPROF)
 const EV_N: usize = 16;
 
 /// Decode state at a prompt boundary: enough to rewind there. Compressed KV and index-key caches are append-only,

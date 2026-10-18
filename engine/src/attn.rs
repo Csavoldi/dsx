@@ -1,9 +1,9 @@
-//! Prefill attention on tensor cores: launch helper for `sparse_attn_tc` / `sparse_attn_tc_fast` (ds41.cu).
+//! Prefill attention on tensor cores: launch helper for `sparse_attn_tc` / `sparse_attn_tc_fast` (dsx.cu).
 //! `sparse_attn` stays for decode (T = 1) and as the reference. T = 4096 on the 5090: 22.2 -> 4.2 ms (fast: 2.6 ms).
 use crate::gpu::{Arg, Gpu, Kernel};
 use anyhow::{Result, ensure};
 
-/// rows per smem tile (TC_NT in ds41.cu)
+/// rows per smem tile (TC_NT in dsx.cu)
 const NT: usize = 32;
 /// opt-in dynamic smem limit per block on sm_86 and sm_120
 pub const MAX_SMEM: usize = 99 * 1024;

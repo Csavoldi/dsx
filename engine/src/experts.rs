@@ -1,7 +1,7 @@
 //! Routed experts resident in a GPU's memory (GPU0's spare VRAM, or GPU1 as a pure expert store), computed there
 //! for one token: out = sum_e w_e * down(silu(min(gate x, L)) * clamp(up x, -L, L)).
 //! By default the weights are repacked at upload (same bytes) for the fast kernels (expert_fast.cuh: int8 tensor-core
-//! mma, int8 activations, up to 8 tokens per weight read); DS41_OLD_MOE=1 keeps the GGUF blocks and moe_gu / moe_down.
+//! mma, int8 activations, up to 8 tokens per weight read); DSX_OLD_MOE=1 keeps the GGUF blocks and moe_gu / moe_down.
 
 use crate::gguf::GType;
 use crate::gpu::{Arg, Buf, Event, Gpu, Kernel};
@@ -77,7 +77,7 @@ pub struct GpuExperts {
     dim: usize,
     lim: f32,
     pub bytes: usize,
-    /// weights repacked for the fast kernels (expert_fast.cuh); None = raw GGUF blocks (DS41_OLD_MOE=1)
+    /// weights repacked for the fast kernels (expert_fast.cuh); None = raw GGUF blocks (DSX_OLD_MOE=1)
     fast: Option<Fast>,
     /// adaptive residency (enable_swaps): in-flight replacements
     swap: Option<Swapper>,
@@ -134,7 +134,7 @@ fn repack_on(g: &Gpu, side: bool, t: GType, src: u64, dst: u64, rows: usize, k: 
 
 impl GpuExperts {
     /// Upload `which` (layer, expert) pairs into one device buffer on `g`, repacked for the fast kernels unless
-    /// DS41_OLD_MOE is set.
+    /// DSX_OLD_MOE is set.
     pub fn new(g: &Gpu, m: &Model, which: &[(usize, usize)]) -> Result<GpuExperts> {
         let c = &m.cfg;
         let cfg = ExpCfg { n_layers: c.n_layers, n_experts: c.n_experts, inter: c.inter, dim: c.dim, lim: c.swiglu_limit };
@@ -145,7 +145,7 @@ impl GpuExperts {
                 ((l, e), RawExpert { gate: x.gate.bytes(), up: x.up.bytes(), down: x.down.bytes(), gu: x.gate.ty, dn: x.down.ty })
             })
             .collect();
-        Self::build(g, cfg, &items, std::env::var_os("DS41_OLD_MOE").is_none())
+        Self::build(g, cfg, &items, std::env::var_os("DSX_OLD_MOE").is_none())
     }
 
     /// Upload experts given as raw GGUF bytes; `fast` = repacked for the fast kernels (else raw, for moe_gu / moe_down).
@@ -378,7 +378,7 @@ impl GpuExperts {
     /// Enqueue on g's stream: out (if `accumulate` is false it is zeroed first) += experts of layer `l`, input `x`
     /// (a device pointer on g).
     pub fn run(&self, g: &Gpu, l: usize, list: &[(usize, f32)], x: u64, out: u64) -> Result<()> {
-        if self.fast.is_some() || std::env::var_os("DS41_MOE_DEVICE").is_some() {
+        if self.fast.is_some() || std::env::var_os("DSX_MOE_DEVICE").is_some() {
             let sel: Vec<i32> = list.iter().map(|&(e, _)| e as i32).collect();
             let w: Vec<f32> = list.iter().map(|&(_, w)| w).collect();
             g.htod_sync(self.sel.ptr, &sel)?;
@@ -432,7 +432,7 @@ impl GpuExperts {
     /// several tokens is read once. Four launches: quantize x (+ plan), gate/up, quantize h, down.
     #[allow(clippy::too_many_arguments)]
     pub fn run_device_fast(&self, g: &Gpu, l: usize, sel: u64, wts: u64, k: usize, t: usize, x: u64, out: u64) -> Result<()> {
-        let Some(f) = self.fast.as_ref() else { bail!("expert store is not repacked (DS41_OLD_MOE)") };
+        let Some(f) = self.fast.as_ref() else { bail!("expert store is not repacked (DSX_OLD_MOE)") };
         if t == 0 || t > MAXT || k == 0 || k > MAXK {
             bail!("run_device_fast: T = {t}, K = {k} (max {MAXT}, {MAXK})");
         }

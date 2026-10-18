@@ -1067,7 +1067,7 @@ extern "C" __global__ void publish_route(const int *sel, const float *wts, int k
   if (threadIdx.x == 0) {
     unsigned long long now;
     asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
-    *(volatile unsigned long long *)(xch + 8) = now;  // handoff timing (DS41_HANDOFF_TS readers)
+    *(volatile unsigned long long *)(xch + 8) = now;  // handoff timing (DSX_HANDOFF_TS readers)
     __threadfence_system();
     *(volatile uint32_t *)xch = seq;
   }
@@ -1080,7 +1080,7 @@ extern "C" __global__ void gpu_sleep(uint32_t ns) {
   do { asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t)); } while (t - t0 < ns);
 }
 
-// one thread spins on a u32 in mapped host memory until it is >= seq (DS41_SPIN_WAIT: instead of cuStreamWaitValue32)
+// one thread spins on a u32 in mapped host memory until it is >= seq (DSX_SPIN_WAIT: instead of cuStreamWaitValue32)
 // diag (optional): [2] u64 += (globaltimer when seen - the CPU's store timestamp at flag + 8), count
 extern "C" __global__ void spin_wait(const volatile uint32_t *flag, uint32_t seq, unsigned long long *diag) {
   while (*flag < seq) __nanosleep(200);

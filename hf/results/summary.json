@@ -1,5 +1,5 @@
 {
-  "model": "DeepSeek-V4.1-Flash-1017, ds41 2-bit (2.03 bpw experts, Q8_0 dense)",
+  "model": "DeepSeek-V4.1-Flash-1017, dsx 2-bit (2.03 bpw experts, Q8_0 dense)",
   "quality": {
     "eval": "Lucebox 1017 set, 8 x 1024 tokens, FP8 teacher top-256 log-probs",
     "kl_top256": 0.395,
@@ -20,7 +20,7 @@
       "decode_agent_3k": 15.2,
       "prefill_3k": 93,
       "prefill_8k": 172,
-      "flags": "--gpu0-gb=-2.0 --gpu1-gb 0 --arena-gb 80, DS41_ADAPT=0"
+      "flags": "--gpu0-gb=-2.0 --gpu1-gb 0 --arena-gb 80, DSX_ADAPT=0"
     }
   },
   "units": "tokens per second, greedy, exact routing, 400 generated tokens"
