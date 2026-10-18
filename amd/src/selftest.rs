@@ -164,6 +164,24 @@ pub fn run() -> Result<()> {
             rope.apply(&mut want[h * hd + hd - rd..(h + 1) * hd], pos, false);
         }
         report("q_b rope epilogue", &b, &want);
+        // gemv2 on an FP8 activation (codes with scale 1): epilogue rope consistency + agreement with gemv_jobs
+        let codes: Vec<u8> = (0..k).map(|i| [0x38u8, 0x40, 0xC4, 0x30, 0xB8, 0x48][i % 6]).collect();
+        let xs1 = vec![1f32; k / 32];
+        let (dq, dxs) = (g.upload(&codes)?, g.upload(&xs1)?);
+        let z0 = g.alloc_zeroed(n * 4)?;
+        let z1 = g.alloc_zeroed(n * 4)?;
+        crate::decode::test_gemv2(&g, dw.ptr, dsc.ptr, n, k, dq.ptr, dxs.ptr, z0.ptr, 0, st.ptr, rf.ptr, rfc.ptr)?;
+        crate::decode::test_gemv2(&g, dw.ptr, dsc.ptr, n, k, dq.ptr, dxs.ptr, z1.ptr, 1, st.ptr, rf.ptr, rfc.ptr)?;
+        let a2: Vec<f32> = g.dtoh(z0.ptr, n)?;
+        let b2: Vec<f32> = g.dtoh(z1.ptr, n)?;
+        let mut want2 = a2.clone();
+        for h in 0..n / hd {
+            rope.apply(&mut want2[h * hd + hd - rd..(h + 1) * hd], pos, false);
+        }
+        report("gemv2 rope epilogue", &b2, &want2);
+        let xv: Vec<f32> = codes.iter().map(|&c| fnuz(c)).collect();
+        let cpu2: Vec<f32> = (0..n).map(|i| (0..k).map(|c| dsx::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xv[c]).sum()).collect();
+        report("gemv2 fp8 vs cpu", &a2, &cpu2);
         // and the GEMV itself against the CPU (FP8 OCP weights x fake_fp8(x))
         let mut xq = x.clone();
         fake_fp8(&mut xq, 32);

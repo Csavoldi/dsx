@@ -206,13 +206,14 @@ DEV f4 wave_bf16(const u4v* __restrict__ wp, int S, const uint16_t* xh, const ui
 
 // Quantize 4 values per thread to FP8 per 32 (DeepSeek's act_quant: scale = pow2_ceil(amax / 448), OCP e4m3 grid),
 // 8 consecutive lanes = one block of 32. Writes 4 FNUZ codes and (lane%8 == 0) the block's scale (x2 for FNUZ).
-DEV void quant32(const float v[4], uint32_t* q4, float* qs) {
+DEV void quant32(const float v[4], uint32_t* q4, float* qs, bool dev = false) {
     float a = fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3])));
     a = group_max<8>(a);
     const float s = pow2_ceil(fmaxf(a, 1e-4f) / 448.f);
     const float r = 0.5f / s;
-    *q4 = cvt_fp8x4(v[0] * r, v[1] * r, v[2] * r, v[3] * r);
-    if ((threadIdx.x & 7) == 0) *qs = 2.f * s;
+    const uint32_t c = cvt_fp8x4(v[0] * r, v[1] * r, v[2] * r, v[3] * r);
+    if (dev) st_dev_u(q4, c); else *q4 = c;
+    if ((threadIdx.x & 7) == 0) { if (dev) st_dev(qs, 2.f * s); else *qs = 2.f * s; }
 }
 
 // Single-token expert tiles (MXFP4 or codebook): k-block kb's activation goes into MFMA column kb % 16 (other lanes
@@ -305,10 +306,10 @@ DEV f4 wave_fp8g(const u4v* __restrict__ wp, int S, const uint8_t* __restrict__ 
     float cs[U][2], ns[U][2];
     auto ld = [&](int k, u4v& w, uint64_t* x, float* s) {
         w = __builtin_nontemporal_load(wp + (size_t)k * 64);
-        x[0] = *reinterpret_cast<const uint64_t*>(xq + k * 64 + g8);
-        x[1] = *reinterpret_cast<const uint64_t*>(xq + k * 64 + 32 + g8);
-        s[0] = xs[2 * k] * __uint_as_float((uint32_t)wsc[2 * k] << 23);
-        s[1] = xs[2 * k + 1] * __uint_as_float((uint32_t)wsc[2 * k + 1] << 23);
+        x[0] = ld_dev64(xq + k * 64 + g8);
+        x[1] = ld_dev64(xq + k * 64 + 32 + g8);
+        s[0] = ld_dev(xs + 2 * k) * __uint_as_float((uint32_t)wsc[2 * k] << 23);
+        s[1] = ld_dev(xs + 2 * k + 1) * __uint_as_float((uint32_t)wsc[2 * k + 1] << 23);
     };
 #pragma unroll
     for (int u = 0; u < U; u++)
@@ -351,7 +352,7 @@ DEV f4 wave_x1g(const uint32_t* __restrict__ wp, const u4v* __restrict__ sp, int
 #pragma unroll
         for (int q = 0; q < NDW; q++) w[q] = __builtin_nontemporal_load(wp + (size_t)k * WSTR + q);
 #pragma unroll
-        for (int m = 0; m < 4; m++) x[m] = ((4 * k + m) & 15) == col ? *reinterpret_cast<const uint64_t*>(xq + (4 * k + m) * 32 + g8) : 0;
+        for (int m = 0; m < 4; m++) x[m] = ((4 * k + m) & 15) == col ? ld_dev64(xq + (4 * k + m) * 32 + g8) : 0;
     };
 #pragma unroll
     for (int u = 0; u < U; u++)
@@ -362,7 +363,7 @@ DEV f4 wave_x1g(const uint32_t* __restrict__ wp, const u4v* __restrict__ sp, int
             const u4v sv = sp[(size_t)(kb >> 2) * 4];
             const int m = kb & 3;
             const uint32_t ss[4] = {sv.x, sv.y, sv.z, sv.w};
-            const float xsv = xs[kb];
+            const float xsv = ld_dev(xs + kb);
 #pragma unroll
             for (int j = 0; j < 4; j++) {
                 const uint32_t b = (ss[j] >> (8 * m)) & 0xFFu;
@@ -422,10 +423,10 @@ DEV f4 wave_bf16g(const u4v* __restrict__ wp, int S, const uint16_t* __restrict_
     uint64_t cx[U][4], nx[U][4];
     auto ld = [&](int k, u4v& w, uint64_t* x) {
         w = __builtin_nontemporal_load(wp + (size_t)k * 64);
-        x[0] = *reinterpret_cast<const uint64_t*>(xh + k * 32 + g4);
-        x[1] = *reinterpret_cast<const uint64_t*>(xh + k * 32 + 16 + g4);
-        x[2] = xl ? *reinterpret_cast<const uint64_t*>(xl + k * 32 + g4) : 0;
-        x[3] = xl ? *reinterpret_cast<const uint64_t*>(xl + k * 32 + 16 + g4) : 0;
+        x[0] = ld_dev64(xh + k * 32 + g4);
+        x[1] = ld_dev64(xh + k * 32 + 16 + g4);
+        x[2] = xl ? ld_dev64(xl + k * 32 + g4) : 0;
+        x[3] = xl ? ld_dev64(xl + k * 32 + 16 + g4) : 0;
     };
 #pragma unroll
     for (int u = 0; u < U; u++)

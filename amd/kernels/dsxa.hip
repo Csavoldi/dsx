@@ -136,10 +136,12 @@ template <class F> DEV void write_act(int n, F&& f, uint8_t* oq, float* os, uint
         float v[4];
 #pragma unroll
         for (int q = 0; q < 4; q++) v[q] = f(4 * i4 + q);
-        if (ob)
-#pragma unroll
-            for (int q = 0; q < 4; q++) ob[4 * i4 + q] = (uint16_t)bf16_bits(v[q]);
-        if (oq) quant32(v, reinterpret_cast<uint32_t*>(oq) + i4, os + (i4 >> 3));
+        // device-scope stores: consumers on other XCDs must not see stale L2 lines
+        if (ob) {
+            st_dev_u(reinterpret_cast<uint32_t*>(ob) + 2 * i4, bf16_bits(v[0]) | bf16_bits(v[1]) << 16);
+            st_dev_u(reinterpret_cast<uint32_t*>(ob) + 2 * i4 + 1, bf16_bits(v[2]) | bf16_bits(v[3]) << 16);
+        }
+        if (oq) quant32(v, reinterpret_cast<uint32_t*>(oq) + i4, os + (i4 >> 3), true);
     }
 }
 
@@ -299,7 +301,7 @@ extern "C" __global__ void __launch_bounds__(256) hc_final(const float* __restri
 
 // token embedding (bf16 table) into all 4 streams
 extern "C" __global__ void embed(const uint16_t* __restrict__ emb, const State* st, float* h) {
-    const int tok = st->token;
+    const int tok = ld_dev_i(&st->token);
     for (int d = blockIdx.x * blockDim.x + threadIdx.x; d < D; d += gridDim.x * blockDim.x) {
         const float v = bf16_to_f32(emb[(size_t)tok * D + d]);
         for (int k = 0; k < HC; k++) h[k * D + d] = v;
@@ -644,7 +646,7 @@ extern "C" __global__ void __launch_bounds__(256) gemv_jobs(Jobs js, const State
         const int dim = r0 % hd;
         if (dim >= hd - RD) {
             const float* f = J.ropec ? rope_fc : rope_f;
-            const int pos = st->pos;
+            const int pos = ld_dev_i(&st->pos);
             for (int p = 0; p < 2; p++) {
                 const int pi = (dim - (hd - RD)) / 2 + p;
                 rope_pair(v[2 * p], v[2 * p + 1], (float)pos * f[pi]);
@@ -755,7 +757,7 @@ extern "C" __global__ void __launch_bounds__(512) attn_kv(const State* st, const
     __shared__ float red[16];
     __shared__ float lat[HD];
     __shared__ float kk[ID];
-    const int t = st->pos, i = threadIdx.x;
+    const int t = ld_dev_i(&st->pos), i = threadIdx.x;
     const float* rf = ratio > 0 ? rope_fc : rope_f;
     // window kv
     {
@@ -860,7 +862,7 @@ extern "C" __global__ void __launch_bounds__(256) idx_score(const State* st, int
                                                  float* score) {
     __shared__ uint16_t qs[IH][ID + 8];
     __shared__ float ws[IH];
-    const int t = st->pos;
+    const int t = ld_dev_i(&st->pos);
     const int end = rows ? *nrows : (t + 1) / ratio;
     const int tid = threadIdx.x;
     for (int i = tid; i < IH * ID; i += 256) {
@@ -917,7 +919,7 @@ struct TopCtl {
 // histogram of the top 12 bits; n = (pos+1)/ratio (ratio>0) or *n_src; -inf entries are skipped
 extern "C" __global__ void __launch_bounds__(256) topk_hist(const State* st, int ratio, const int* n_src, const float* sc, uint32_t* hist, TopCtl* ctl) {
     __shared__ uint32_t lh[4096];
-    const int n = n_src ? *n_src : (st->pos + 1) / ratio;
+    const int n = n_src ? *n_src : (ld_dev_i(&st->pos) + 1) / ratio;
     if (blockIdx.x == 0 && threadIdx.x == 0) ctl->n = n;
     for (int i = threadIdx.x; i < 4096; i += 256) lh[i] = 0;
     __syncthreads();
@@ -1098,7 +1100,7 @@ extern "C" __global__ void __launch_bounds__(1024) topk_final(TopCtl* ctl, const
 
 // Block scores for the candidate layer: bscore[b] = max over 8 positions; the newest block is pinned (+inf).
 extern "C" __global__ void block_max8(const State* st, int ratio, int bs, const float* sc, float* bsc, int* nb_out) {
-    const int end = (st->pos + 1) / ratio;
+    const int end = (ld_dev_i(&st->pos) + 1) / ratio;
     const int nb = (end + bs - 1) / bs;
     if (blockIdx.x == 0 && threadIdx.x == 0) *nb_out = nb;
     for (int b = blockIdx.x * 256 + threadIdx.x; b < nb; b += gridDim.x * 256) {
@@ -1110,7 +1112,7 @@ extern "C" __global__ void block_max8(const State* st, int ratio, int bs, const 
 
 // Expand kept blocks (ascending block ids, count *nkb) into positions: rows[i], *nrows
 extern "C" __global__ void expand_blocks(const State* st, int ratio, int bs, const int* kb, const int* nkb, int* rows, int* nrows) {
-    const int end = (st->pos + 1) / ratio;
+    const int end = (ld_dev_i(&st->pos) + 1) / ratio;
     const int n = *nkb;
     // block ids are ascending; all blocks are full except possibly the last one
     for (int i = blockIdx.x * 256 + threadIdx.x; i < n * bs; i += gridDim.x * 256) {
@@ -1153,7 +1155,7 @@ extern "C" __global__ void __launch_bounds__(256) attn_part(const State* st, con
 #pragma unroll
         for (int u = 0; u < 8; u++) qv[u] = *reinterpret_cast<const float4*>(qp + 64 * u);
     }
-    const int t = st->pos;
+    const int t = ld_dev_i(&st->pos);
     const int nwin = min(t + 1, WIN);
     const int nc = comp ? *ncomp : 0;
     const int total = nwin + nc;
@@ -1254,7 +1256,7 @@ extern "C" __global__ void __launch_bounds__(512) attn_merge(const State* st, co
     const float other = __shfl_xor(v, 1);
     if (j >= HD - RD) {
         const int p = (j - (HD - RD)) / 2;
-        const float ang = (float)st->pos * rope_f[p];
+        const float ang = (float)ld_dev_i(&st->pos) * rope_f[p];
         const float s = -sinf(ang), c = cosf(ang);
         v = (j & 1) ? other * s + v * c : v * c - other * s;
     }
@@ -1306,8 +1308,8 @@ extern "C" __global__ void argmax(const float* pv, const int* pi, int nb, int* o
 
 // position bookkeeping at the end of a step: pos += 1, token = next
 extern "C" __global__ void advance(State* st, const int* next) {
-    st->pos += 1;
-    st->token = next[0];
+    st_dev_i(&st->pos, ld_dev_i(&st->pos) + 1);
+    st_dev_i(&st->token, next[0]);
 }
 
 // ------------------------------------------------------------------ load-time re-quantization of MXFP4 experts
@@ -1462,12 +1464,12 @@ DEV void run_post(const Post& P, const float* router_bias, float route_scale, Ro
             if (lane < 18) {
                 const int sl = lane / 3, m = lane % 3;
                 const ExpertMat em = ((const ExpertMat*)P.w)[rsh.ids[sl] * 3 + m];
-                route->woff[lane] = em.woff;
-                route->soff[lane] = em.soff;
-                route->mul[lane] = em.mul;
-                route->fmt[lane] = em.fmt;
+                st_dev_ll(&route->woff[lane], em.woff);
+                st_dev_ll(&route->soff[lane], em.soff);
+                st_dev(&route->mul[lane], em.mul);
+                st_dev_i(&route->fmt[lane], em.fmt);
             }
-            if (lane < 6) { route->ids[lane] = rsh.ids[lane]; route->wts[lane] = rsh.wts[lane]; }
+            if (lane < 6) { st_dev_i(&route->ids[lane], rsh.ids[lane]); st_dev(&route->wts[lane], rsh.wts[lane]); }
         }
         return;
     }
@@ -1479,7 +1481,7 @@ DEV void run_post(const Post& P, const float* router_bias, float route_scale, Ro
         sq = block_sum(sq, red);
         r = 1.f / sqrtf(sq / P.n + eps);
     }
-    const float wt = (P.kind == P_SWIGLU && P.slot >= 0) ? route->wts[P.slot] : 1.f;
+    const float wt = (P.kind == P_SWIGLU && P.slot >= 0) ? ld_dev(&route->wts[P.slot]) : 1.f;
     write_act(P.n, [&](int i) -> float {
         const float v = ld_dev(P.src + i);
         if (P.kind == P_RMSNORM) return round_bf16(P.w[i] * (v * r));
@@ -1523,10 +1525,10 @@ extern "C" __global__ void __launch_bounds__(256) gemv2(Jobs2 js, const State* s
             acc = wave_bf16g<4>(wp, S, (const uint16_t*)J.nw + gx + k0, J.ss ? (const uint16_t*)J.ss + gx + k0 : nullptr, lane);
         } else {  // routed expert: matrix from the route the router's last block published
             const int q = J.eslot * 3 + J.emat;
-            const int efmt = route->fmt[q];
-            mul = route->mul[q];
-            const char* wbase = (const char*)J.w + route->woff[q];
-            const u4v* sp = (const u4v*)((const char*)J.w + route->soff[q]) + ((size_t)rt * KUs + u0) * 4 + g16;
+            const int efmt = ld_dev_i(&route->fmt[q]);
+            mul = ld_dev(&route->mul[q]);
+            const char* wbase = (const char*)J.w + ld_dev_ll(&route->woff[q]);
+            const u4v* sp = (const u4v*)((const char*)J.w + ld_dev_ll(&route->soff[q])) + ((size_t)rt * KUs + u0) * 4 + g16;
             const uint8_t* xq = (const uint8_t*)J.x + k0;
             const float* xs = J.x2 + k0 / 32;
             x1 = true;
@@ -1553,7 +1555,7 @@ extern "C" __global__ void __launch_bounds__(256) gemv2(Jobs2 js, const State* s
             const int dim = r0 % hd;
             if (dim >= hd - RD) {
                 const float* f = J.ropec ? rope_fc : rope_f;
-                const int pos = st->pos;
+                const int pos = ld_dev_i(&st->pos);
                 for (int p = 0; p < 2; p++) {
                     const int pj = (dim - (hd - RD)) / 2 + p;
                     rope_pair(v[2 * p], v[2 * p + 1], (float)pos * f[pj]);

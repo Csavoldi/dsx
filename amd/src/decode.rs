@@ -386,6 +386,19 @@ fn table(v: &[f32]) -> u32 {
     v.iter().enumerate().map(|(i, &x)| (fnuz_byte(x) as u32) << (8 * i)).sum()
 }
 
+/// Self-test hook: gemv2 FP8 job with an FP8 activation (codes + scales), optional RoPE epilogue
+#[allow(clippy::too_many_arguments)]
+pub fn test_gemv2(g: &Gpu, w: u64, sc: u64, n: usize, k: usize, xq: u64, xs: u64, y: u64, epi: i32, st: u64, rf: u64, rfc: u64) -> Result<()> {
+    let mut j = Job::new(W_FP8, w, sc, n, k, y, 0, xq);
+    j.x2 = xs;
+    j.epi = epi;
+    j.split = 1;
+    j.blocks = n.div_ceil(64) as i32;
+    let js = Jobs2 { j: [j; MAXJ], post: [Post::default(); 7], jpost: [-1; MAXJ], n: 1, eps: 1e-20, lim: 10.0, cb3: [0; 2], cb2: 0 };
+    g.launch("gemv2", (j.blocks as u32, 1, 1), 256, 0, &[Arg::B(bytes_of(&js)), Arg::P(st), Arg::P(rf), Arg::P(rfc), Arg::P(0), Arg::F(0.0), Arg::P(0)])?;
+    g.sync()
+}
+
 /// Self-test hook: one FP8 GEMV job over a plain f32 activation, with an optional RoPE epilogue.
 #[allow(clippy::too_many_arguments)]
 pub fn test_gemv(g: &Gpu, w: u64, sc: u64, n: usize, k: usize, x: u64, y: u64, epi: i32, ropec: i32, st: u64, rf: u64, rfc: u64) -> Result<()> {
@@ -1058,12 +1071,15 @@ impl Decoder {
             }
             let pq = post(P_RMSNORM, QL, self.accp(li, A_CNT + 2), self.accp(li, A_QR), 0, l.q_norm.ptr, Some((&self.act_qr, 0)), -1);
             self.jobs2("gemv q_a/kv/comp/idxw", jobs, vec![(pq, vec![0])], None)?;
+            // q and the indexer q are stored, not accumulated (not in the zeroed region): no k-split
             let mut qj = j8(&l.wq_b, self.q.ptr, &self.act_qr);
+            qj.split = 1;
             qj.epi = 1;
             qj.ropec = (l.ratio > 0) as i32;
             let mut jobs = vec![qj];
             if let Some(m) = &l.idx_wq_b {
                 let mut j = j8(m, self.iq.ptr, &self.act_qr);
+                j.split = 1;
                 j.epi = 2;
                 j.ropec = 1;
                 jobs.push(j);
@@ -1149,6 +1165,33 @@ impl Decoder {
 
     /// attn_kv, indexer + top-k, sparse attention + merge (writes oq/os) for layer li
     fn attention_tail(&self, li: usize) -> Result<()> {
+        let r = self.attention_tail_inner(li);
+        if let (Some(_), Ok(dir)) = (&self.dump, std::env::var("DSXA_DUMPQ")) {
+            if li == 0 {
+                let p = self.pos;
+                let w = |n: &str, v: Vec<u8>| std::fs::write(format!("{dir}/{n}_p{p}.bin"), v);
+                let q: Vec<f32> = self.g.dtoh(self.q.ptr, NH * HD)?;
+                w("q", q.iter().flat_map(|v| v.to_le_bytes()).collect())?;
+                let ring: Vec<u8> = self.g.dtoh(self.layers[0].ring.ptr, 4 * HD * 2)?;
+                w("ring", ring)?;
+                let oq: Vec<u8> = self.g.dtoh(self.oq.ptr, NH * HD)?;
+                w("oq", oq)?;
+                let qr: Vec<u8> = self.g.dtoh(self.act_qr.q.ptr, QL)?;
+                w("qr", qr)?;
+                let qs: Vec<u8> = self.g.dtoh(self.act_qr.s.ptr, QL / 32 * 4)?;
+                w("qrs", qs)?;
+                let qraw: Vec<u8> = self.g.dtoh(self.accp(0, A_QR), QL * 4)?;
+                w("qraw", qraw)?;
+                let cnt: Vec<u8> = self.g.dtoh(self.accp(0, A_CNT), 32 * 4)?;
+                w("cnt", cnt)?;
+                let kv: Vec<f32> = self.g.dtoh(self.accp(0, A_KV), 512)?;
+                w("kv", kv.iter().flat_map(|v| v.to_le_bytes()).collect())?;
+            }
+        }
+        r
+    }
+
+    fn attention_tail_inner(&self, li: usize) -> Result<()> {
         let g = &self.g;
         let c = &self.cfg;
         let l = &self.layers[li];

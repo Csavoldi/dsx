@@ -104,3 +104,8 @@ DEV void st_dev(float* p, float v) { __hip_atomic_store(p, v, __ATOMIC_RELAXED, 
 DEV float ld_dev(const float* p) { return __hip_atomic_load(const_cast<float*>(p), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT); }
 DEV void st_dev_u(uint32_t* p, uint32_t v) { __hip_atomic_store(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT); }
 DEV uint32_t ld_dev_u(const uint32_t* p) { return __hip_atomic_load(const_cast<uint32_t*>(p), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT); }
+DEV uint64_t ld_dev64(const void* p) { return __hip_atomic_load((uint64_t*)const_cast<void*>(p), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT); }
+DEV int ld_dev_i(const int* p) { return __hip_atomic_load(const_cast<int*>(p), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT); }
+DEV long long ld_dev_ll(const long long* p) { return __hip_atomic_load(const_cast<long long*>(p), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT); }
+DEV void st_dev_i(int* p, int v) { __hip_atomic_store(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT); }
+DEV void st_dev_ll(long long* p, long long v) { __hip_atomic_store(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT); }
