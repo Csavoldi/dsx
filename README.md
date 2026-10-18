@@ -27,7 +27,7 @@ Details: [FINDINGS.md](FINDINGS.md) (research and every measurement), [DESIGN.md
 - **Engram** n-gram rows (two 98 GB tables) are read from the official checkpoint by a prefetch thread while layer 0 runs.
 - **Prefill** runs the encoder half on every token and the decoder half only on the tokens later layers can still see.
 - An **OpenAI / Anthropic compatible server** (chat completions, responses, messages, tool calls, streaming) with prefix
-  reuse across turns.
+  reuse across turns, and llama.cpp's web UI built in.
 
 ## Requirements
 
@@ -70,7 +70,8 @@ Placement flags: `--gpu0-gb` / `--gpu1-gb` are GB of experts per GPU (negative =
 `--arena-gb` the RAM arena, `--rank` the hotness order. With one GPU pass `--gpu1-gb 0`. Thinking is on by default;
 `"reasoning_effort": "none"` (OpenAI) or `"thinking": {"type": "disabled"}` turns it off per request.
 
-Any OpenAI-compatible client works (base URL `http://HOST:8090/v1`, any API key). For example the
+Open `http://HOST:8090/` for a chat UI: llama.cpp's web UI, embedded in the server (`engine/webui`, rebuilt by
+`webui/build.sh`). Any OpenAI-compatible client works (base URL `http://HOST:8090/v1`, any API key). For example the
 [pi](https://github.com/badlogic/pi-mono) coding agent, `~/.pi/agent/models.json`:
 
 ```json

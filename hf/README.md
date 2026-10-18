@@ -146,7 +146,8 @@ r = client.chat.completions.create(model="deepseek-v4.1-flash", reasoning_effort
 print(r.choices[0].message.content)
 ```
 
-The server also speaks Anthropic `/v1/messages` and OpenAI `/v1/responses`, with tool calls and streaming. Thinking is on
+Open `http://localhost:8090/` for a chat UI (llama.cpp's web UI, built in). The server also speaks Anthropic
+`/v1/messages` and OpenAI `/v1/responses`, with tool calls and streaming. Thinking is on
 by default; `"reasoning_effort": "none"` or `"thinking": {"type": "disabled"}` turns it off.
 
 ## Credits
