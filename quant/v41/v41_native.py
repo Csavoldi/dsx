@@ -32,12 +32,13 @@ def _stream():
 
 def gptq_batched(W, S, lo, hi, Hinv, dead=None):
     """W, S [B, R, C]; lo, hi [B, R]; Hinv [B, C, C] upper Cholesky of H^-1; dead [B, C] bool. Returns Q [B, R, C]."""
-    W = W.clone().contiguous()
+    # model.py makes bf16 the default dtype: everything here is explicitly fp32
+    W = W.float().clone().contiguous()
     if dead is not None and dead.any():
         W.masked_fill_(dead[:, None, :], 0.0)
     B, R, C = W.shape
     assert C % BLOCK == 0
-    S, lo, hi, Hinv = S.contiguous(), lo.contiguous(), hi.contiguous(), Hinv.contiguous()
+    S, lo, hi, Hinv = S.float().contiguous(), lo.float().contiguous(), hi.float().contiguous(), Hinv.float().contiguous()
     Q = torch.empty_like(W)
     E = torch.empty((B, R, BLOCK), device=W.device, dtype=torch.float32)
     st = _stream()
@@ -60,7 +61,7 @@ def search_scales(W, d, tier):
     if clip is None:
         clip = _clip[dev] = torch.tensor(G.CLIP, device=dev, dtype=torch.float32)
     out = torch.empty((R, C // Gs), device=dev, dtype=torch.float32)
-    rc = _lib.ds41q_search_scales(_p(W.contiguous()), _p(d.float().contiguous()), R, C, Gs, float(lo), float(hi), _p(clip), len(G.CLIP), _p(out), _stream())
+    rc = _lib.ds41q_search_scales(_p(W.float().contiguous()), _p(d.float().contiguous()), R, C, Gs, float(lo), float(hi), _p(clip), len(G.CLIP), _p(out), _stream())
     if rc:
         raise RuntimeError(f"search_scales: CUDA error {rc}")
     s = out
