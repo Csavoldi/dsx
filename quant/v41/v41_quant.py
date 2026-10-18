@@ -146,13 +146,17 @@ class Layer:
         self.pool, self.pending = ThreadPoolExecutor(max_workers=max(WRITE_THREADS, 1)), []
 
     def _encode_put(self, ex, mats):
-        b = [F.encode_tier(q, s, t).tobytes() for q, s, t in mats]
+        b = [(_pack_codes(q, s, t) if q.dtype == np.int8 else F.encode_tier(q, s, t)).tobytes() for q, s, t in mats]
         self.sink.put(ex, *b)
 
     def write(self, ex, q1, q3, q2):
         if self.sink.mode != "none":
-            mats = [(q.cpu().numpy(), s.cpu().numpy(), t)
-                    for (q, s), t in ((q1, self.gu[ex]), (q3, self.gu[ex]), (q2, self.dn[ex]))]
+            if NATIVE:   # integer codes computed on the GPU: int8 to the host instead of fp32 values (4x fewer bytes)
+                mats = [(_gpu_codes(q, s, t).cpu().numpy(), s.cpu().numpy(), t)
+                        for (q, s), t in ((q1, self.gu[ex]), (q3, self.gu[ex]), (q2, self.dn[ex]))]
+            else:
+                mats = [(q.cpu().numpy(), s.cpu().numpy(), t)
+                        for (q, s), t in ((q1, self.gu[ex]), (q3, self.gu[ex]), (q2, self.dn[ex]))]
             if WRITE_THREADS == 0:                 # V41_WRITE_THREADS=0: in-line, as before
                 self._encode_put(ex, mats)
                 self.done.add(ex)
@@ -208,6 +212,12 @@ class Layer:
         done by native/qkern.cu for the whole batch: ~10x less GPU time per expert, no per-column launches."""
         a = self.a
         prep = []
+        tm = self.tm = getattr(self, "tm", {})
+        def mark(k, t0):
+            torch.cuda.synchronize()
+            tm[k] = tm.get(k, 0.0) + time.time() - t0
+            return time.time()
+        t0 = time.time()
         for ex, exp, xe, ge, fit, lim, out_t in items:
             W1, W3, W2 = self.weights(exp)
             n_fit = int(fit.sum())
@@ -217,6 +227,7 @@ class Layer:
             else:
                 H1, H2 = torch.eye(C.D, device=xe.device), torch.eye(W2.shape[1], device=xe.device)
             prep.append((ex, W1, W3, W2, H1, H2, do, n_fit))
+        t0 = mark("dequant+hessians", t0)
         q = {}
         for part in ("gu", "dn"):
             tiers = self.gu if part == "gu" else self.dn
@@ -231,17 +242,20 @@ class Layer:
                 Wst = torch.cat(mats)
                 Sst = torch.cat([G.expand_scales(x, t, H.shape[0]) for x in sc])
                 if not do:   # no GPTQ: static scales, round to nearest (as quant(..., do_gptq=False))
-                    lov = torch.full((Wst.shape[0], 1), float(lo), device=Wst.device)
-                    hiv = torch.full((Wst.shape[0], 1), float(hi), device=Wst.device)
+                    lov = torch.full((Wst.shape[0], 1), float(lo), device=Wst.device, dtype=torch.float32)
+                    hiv = torch.full((Wst.shape[0], 1), float(hi), device=Wst.device, dtype=torch.float32)
                     Q = G.rtn(Wst, Sst, lov, hiv)
                     q[(i, part)] = self._split(Q, mats, sc)
                     continue
                 Ws.append(Wst); Ss.append(Sst); Hs.append(H); idx.append((i, mats, sc))
-                los.append(torch.full((Wst.shape[0],), float(lo), device=Wst.device))
-                his.append(torch.full((Wst.shape[0],), float(hi), device=Wst.device))
+                los.append(torch.full((Wst.shape[0],), float(lo), device=Wst.device, dtype=torch.float32))
+                his.append(torch.full((Wst.shape[0],), float(hi), device=Wst.device, dtype=torch.float32))
+            t0 = mark("scales", t0)
             if Ws:
                 Hinv, dead = _hinv_chol_batched(torch.stack(Hs), a.damp)
+                t0 = mark("hinv", t0)
                 Qb = NV.gptq_batched(torch.stack(Ws), torch.stack(Ss), torch.stack(los), torch.stack(his), Hinv, dead)
+                t0 = mark("gptq", t0)
                 del Hinv
                 for k, (i, mats, sc) in enumerate(idx):
                     q[(i, part)] = self._split(Qb[k], mats, sc)
@@ -250,19 +264,23 @@ class Layer:
             _, _, xe, ge, fit, lim, out_t = items[i]
             q1, q3 = q[(i, "gu")]
             (q2,) = q[(i, "dn")]
+            t0 = time.time()
             self.write(ex, q1, q3, q2)
+            t0 = mark("write (to host)", t0)
             st = {"gu": self.gu[ex], "dn": self.dn[ex], "n_fit": n_fit, "gptq": do}
             xv, gv = xe[~fit], ge[~fit]
             if len(xv):
                 Y = C.expert_f(xv, W1, W3, W2, gv, lim)
                 st["q_err"] = C.sq_err(xv, q1[0], q3[0], q2[0], gv, lim, Y)
                 st["y_energy"] = float(Y.square().sum())
+            t0 = mark("held-out error", t0)
             if a.propagate == "quant":
                 out = torch.empty((len(xe), C.D), dtype=out_t.dtype, device=xe.device)
                 for c in range(0, len(xe), C.ROWS):
                     out[c:c + C.ROWS] = C.expert_f(xe[c:c + C.ROWS], q1[0], q3[0], q2[0], ge[c:c + C.ROWS], lim).to(out.dtype)
             else:
                 out = out_t
+            mark("quantized forward", t0)
             res.append((out, st))
         return res
 
@@ -289,10 +307,33 @@ class Layer:
         tmp = C.wpath("q", f"L{L:02d}.json.tmp")
         json.dump(j, open(tmp, "w"))
         os.replace(tmp, C.wpath("q", f"L{L:02d}.json"))
+        if getattr(self, "tm", None):
+            C.log(f"quant L{L} time: " + ", ".join(f"{k} {v:.1f} s" for k, v in self.tm.items()))
         e_q = sum(s.get("q_err", 0) for s in stats.values())
         e_y = sum(s.get("y_energy", 0) for s in stats.values())
         C.log(f"quant L{L}: {sum(2 * g + d for g, d in self.size) / 2**30:.2f} GiB -> {self.sink.mode}, held-out rel err {e_q / max(e_y, 1e-30):.4f}, "
               f"tiers gu {dict((t, self.gu.count(t)) for t in G.TIERS)} dn {dict((t, self.dn.count(t)) for t in G.TIERS)}")
+
+
+def _gpu_codes(Q, S, tier):
+    """GPTQ values Q [R, C] / stored-format scales S [R, C/group] -> int8 codes [R, C] on the GPU (v41_formats._codes
+    without the host round trip: Q is exactly codes x scales)."""
+    lo, hi, Gs, _ = G.TIERS[tier]
+    Se = S.float().repeat_interleave(Gs, dim=1)
+    c = torch.where(Se.abs() < 1e-20, torch.zeros_like(Q), Q.float() / Se)
+    return torch.clamp(torch.round(c), lo, hi).to(torch.int8)
+
+
+def _pack_codes(codes, S, tier):
+    """v41_formats.encode_tier from codes already computed (same bytes)."""
+    if tier == "q2_0":
+        return F.pack_q2_0(codes, S)
+    if tier == "ptq1":
+        return F.pack_ptq1_0(codes, S)
+    if tier == "q3_k":
+        dsup, sc = F.q3k_split(S)
+        return F.pack_q3_k(codes, dsup, sc)
+    raise ValueError(tier)
 
 
 def _hinv_chol_batched(H, damp):
