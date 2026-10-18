@@ -51,6 +51,8 @@ pub struct PrefillBufs {
     estage: [Buf; 2],
     ev_ready: [crate::gpu::Event; 2],
     ev_free: [crate::gpu::Event; 2],
+    /// x shipped to GPU1 (prefill_moe_gpu1)
+    ev_x: crate::gpu::Event,
     out: Buf,
     logits: Buf,
     attn_tc: crate::attn::SparseAttnTc,
@@ -149,6 +151,7 @@ impl PrefillBufs {
             estage: [g.alloc(3 * c.inter * c.dim / 32 * 34 + 4096)?, g.alloc(3 * c.inter * c.dim / 32 * 34 + 4096)?],
             ev_ready: [g.event()?, g.event()?],
             ev_free: [g.event()?, g.event()?],
+            ev_x: g.event()?,
             out: f(tmax * c.dim)?,
             logits: f(c.vocab)?,
             attn_tc: crate::attn::SparseAttnTc::new(g)?,
@@ -170,11 +173,13 @@ impl GpuModel<'_> {
         let c = &self.m.cfg;
         let (d, inter) = (c.dim, c.inter);
         let (g1, gp, s1) = (self.g1.as_ref().unwrap(), self.g1p.as_ref().unwrap(), self.exp1.as_ref().unwrap());
-        // x -> f16 on GPU0 -> pinned host -> GPU1
+        // x -> f16 on GPU0 -> pinned host -> GPU1; the host waits for this copy only (an event), not for the rest of
+        // GPU0's queue: a full sync here stalled every layer behind the shared expert while no weights were copying
         self.g.launch(self.k["to_f16"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(x), Arg::P(pb.act16.ptr), Arg::I((n * d) as i32)])?;
         let xh = unsafe { std::slice::from_raw_parts_mut(gp.x_host.host_ptr() as *mut u16, n * d) };
         self.g.dtoh(xh, pb.act16.ptr)?;
-        self.g.sync()?;
+        self.g.record(pb.ev_x, false)?;
+        self.g.event_sync(pb.ev_x)?;
         g1.htod(gp.x16.ptr, &xh[..])?;
         g1.htod_sync(gp.rows.ptr, all_rows)?;
         g1.htod_sync(gp.wrow.ptr, all_w)?;
@@ -649,6 +654,40 @@ impl GpuModel<'_> {
         self.g.launch(self.k["router_topk"], (n as u32, 1, 1), 32, 0, &[Arg::P(pb.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(sel_buf), Arg::P(wts_buf), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
         let sel: Vec<i32> = self.g.download(sel_buf, n * c.top_k)?;
         let wts: Vec<f32> = self.g.download(wts_buf, n * c.top_k)?;
+        // routed experts grouped by expert
+        let mut by: Vec<Vec<(i32, f32)>> = vec![vec![]; c.n_experts];
+        for t in 0..n {
+            for j in 0..c.top_k {
+                by[sel[t * c.top_k + j] as usize].push((t as i32, wts[t * c.top_k + j]));
+            }
+        }
+        let ml = &m.layers[li];
+        // one upload of every expert's token rows and weights, then the per-expert kernels run without host syncs
+        let mut all_rows: Vec<i32> = Vec::with_capacity(n * c.top_k);
+        let mut all_w: Vec<f32> = Vec::with_capacity(n * c.top_k);
+        let mut spans = vec![];
+        for (e, toks) in by.iter().enumerate() {
+            if !toks.is_empty() {
+                spans.push((e, all_rows.len(), toks.len()));
+                all_rows.extend(toks.iter().map(|x| x.0));
+                all_w.extend(toks.iter().map(|x| x.1));
+            }
+        }
+        self.g.htod_sync(pb.rows.ptr, &all_rows)?;
+        self.g.htod_sync(pb.wrow.ptr, &all_w)?;
+        // GPU1's resident experts: ship x there, run them concurrently, add their sum at the end
+        let g1_spans: Vec<(usize, usize, usize)> =
+            spans.iter().cloned().filter(|&(e, _, _)| self.exp1.as_ref().is_some_and(|s1| s1.has(li, e))).collect();
+        let use_g1 = !g1_spans.is_empty() && self.g1p.is_some() && !self.skip_experts;
+        if use_g1 {
+            self.prefill_moe_gpu1(pb, li, x, n, &g1_spans, &all_rows, &all_w)?;
+        }
+        let spans: Vec<(usize, usize, usize)> = if use_g1 {
+            spans.into_iter().filter(|&(e, _, _)| !self.exp1.as_ref().unwrap().has(li, e)).collect()
+        } else {
+            spans
+        };
+        let tp1 = std::time::Instant::now();
         // shared expert over all rows -> out
         self.gemm(pb, &l.sh_gate, x, pb.gg.ptr, n)?;
         self.gemm(pb, &l.sh_up, x, pb.gu.ptr, n)?;
@@ -675,41 +714,7 @@ impl GpuModel<'_> {
             self.g.dtod(a, pb.out.ptr, n * d * 4)?;
             return Ok(());
         }
-        // routed experts grouped by expert
-        let mut by: Vec<Vec<(i32, f32)>> = vec![vec![]; c.n_experts];
-        for t in 0..n {
-            for j in 0..c.top_k {
-                by[sel[t * c.top_k + j] as usize].push((t as i32, wts[t * c.top_k + j]));
-            }
-        }
-        let ml = &m.layers[li];
-        // one upload of every expert's token rows and weights, then the per-expert kernels run without host syncs
-        let mut all_rows: Vec<i32> = Vec::with_capacity(n * c.top_k);
-        let mut all_w: Vec<f32> = Vec::with_capacity(n * c.top_k);
-        let mut spans = vec![];
-        for (e, toks) in by.iter().enumerate() {
-            if !toks.is_empty() {
-                spans.push((e, all_rows.len(), toks.len()));
-                all_rows.extend(toks.iter().map(|x| x.0));
-                all_w.extend(toks.iter().map(|x| x.1));
-            }
-        }
-        self.g.htod_sync(pb.rows.ptr, &all_rows)?;
-        self.g.htod_sync(pb.wrow.ptr, &all_w)?;
-        // GPU1's resident experts: ship x there, run them concurrently, add their sum at the end
-        let g1_spans: Vec<(usize, usize, usize)> =
-            spans.iter().cloned().filter(|&(e, _, _)| self.exp1.as_ref().is_some_and(|s1| s1.has(li, e))).collect();
-        let use_g1 = !g1_spans.is_empty() && self.g1p.is_some();
-        if use_g1 {
-            self.prefill_moe_gpu1(pb, li, x, n, &g1_spans, &all_rows, &all_w)?;
-        }
-        let spans: Vec<(usize, usize, usize)> = if use_g1 {
-            spans.into_iter().filter(|&(e, _, _)| !self.exp1.as_ref().unwrap().has(li, e)).collect()
-        } else {
-            spans
-        };
         self.prof_mark("prefill moe . router+shared+gpu1 ship", tp0)?;
-        let tp1 = std::time::Instant::now();
         let mut nstaged = 0usize;
         // the side stream must not start copying before the main stream reaches this layer's experts
         self.g.record(pb.ev_free[0], false)?;

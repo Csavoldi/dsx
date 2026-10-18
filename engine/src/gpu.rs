@@ -404,6 +404,12 @@ impl Gpu {
         }
     }
 
+    /// host waits for the work recorded before `e` (and nothing queued after it)
+    pub fn event_sync(&self, e: Event) -> Result<()> {
+        self.bind();
+        unsafe { check(cu::cuEventSynchronize(e.0), "cuEventSynchronize") }
+    }
+
     pub fn side_sync(&self) -> Result<()> {
         self.bind();
         unsafe { check(cu::cuStreamSynchronize(self.side), "cuStreamSynchronize") }
