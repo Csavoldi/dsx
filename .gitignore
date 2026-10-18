@@ -1,1 +1,3 @@
 engine/target/
+libqkern.so
+__pycache__/

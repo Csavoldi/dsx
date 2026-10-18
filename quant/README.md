@@ -21,3 +21,18 @@ git apply /path/to/ds41/quant/xolotl-v41.patch
 # then, from tools/v41 with the paths in the scripts adjusted:
 ./calib_all.sh & ./quant_chain.sh & ./finish.sh
 ```
+
+## Native quantizer (faster runs)
+
+`native/qkern.cu` (+ `native/build.sh`) replaces the two hot loops with CUDA kernels, batched over experts:
+GPTQ (a warp per row, the 128-column block in registers, the H^-1 block in shared memory; the trailing update one
+batched GEMM) and the static-group scale search (one pass, every candidate per group in registers).
+`v41/v41_native.py` wraps them; `v41/v41_quant.py` + `v41/v41_calib.py` (Xolotl's files with our changes) queue
+experts (8 or 160K routed tokens per batch) and quantize each batch in one call. `V41_NATIVE=0` keeps the old path.
+
+| per expert (RTX 5090) | before | native |
+|---|---:|---:|
+| GPTQ gate+up / down | 73 / 31 ms | 6.9 / 2.5 ms |
+| scale search | 3-49 ms | 0.7-9.7 ms |
+
+Integer codes match the old path to >= 99.999% (rounding ties under FMA contraction), same H-weighted error.
