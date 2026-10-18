@@ -691,7 +691,7 @@ impl Decoder {
             act_h: Act::new(&g, 7 * INTER)?,
             act_head: Act::new(&g, D)?,
             act_eng: Act::new(&g, 6144)?,
-            v1: std::env::var("DSXA_V1").map(|v| v == "1").unwrap_or(false),
+            v1: !std::env::var("DSXA_V2").map(|v| v == "1").unwrap_or(false),
             gtime: Default::default(),
             last_blocks: Default::default(),
             layers,
@@ -799,8 +799,8 @@ impl Decoder {
             (_, X_Q, _, _, _) => "gemv wo_a",
             (_, X_BF16R, _, _, _) => "gemv wo_b",
             (_, X_PLAIN, _, _, _) => "gemv head",
-            (_, X_SWIGLU, _, 3, _) => "gemv experts down",
-            (_, _, _, 3, _) => "gemv experts gate/up",
+            (_, X_SWIGLU, _, _, _) => "gemv experts down",
+            (_, _, _, 1, _) => "gemv experts gate/up",
             (W_BF16, _, _, _, 3) => "gemv router+shared g/u",
             _ => "gemv q_a/kv/comp/idxw",
         };
@@ -1318,10 +1318,7 @@ impl Decoder {
             let am = self.accp(li, A_HMIX_A);
             self.hc_step(self.accp(li, A_A), false, am, &l.hc_attn, am, &l.hc_attn, l.hc_ffn_fn.ptr, self.accp(li, A_HMIX_F), self.x_f.ptr, self.accp(li, A_XSS_F), None)?;
             let xs = self.accp(li, A_XSS_F);
-            let mut gj = Job::dense(&l.gate, W_BF16, self.accp(li, A_LOGITS), X_NORM, self.x_f.ptr).norm(l.ffn_norm.ptr, xs).split(0);
-            gj.epi = 3;
-            gj.x2 = self.accp(li, A_RCNT);
-            gj.sc = l.experts.ptr; // the last router block reads the expert table for the picks
+            let gj = Job::dense(&l.gate, W_BF16, self.accp(li, A_LOGITS), X_NORM, self.x_f.ptr).norm(l.ffn_norm.ptr, xs).split(0);
             self.jobs(
                 vec![
                     gj,
@@ -1342,7 +1339,7 @@ impl Decoder {
                     jobs.push(j);
                 }
             }
-            self.jobs(jobs, 3, Some(li))?;
+            self.jobs(jobs, 1, Some(li))?;
             // down projections (+ shared expert) into y
             let mut jobs = vec![];
             for s in 0..6 {
@@ -1360,7 +1357,7 @@ impl Decoder {
             for j in jobs.iter_mut() {
                 j.split = 2;
             }
-            self.jobs(jobs, 3, Some(li))?;
+            self.jobs(jobs, 2, Some(li))?;
             if let Some(d) = &self.dump {
                 // h after layer li = the next residual step's post; run it on a copy via a post-only hc_step
                 let tmp: Vec<f32> = g.dtoh(self.h.ptr, HC * D)?;

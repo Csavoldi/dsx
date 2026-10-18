@@ -1,5 +1,17 @@
 # DeepSeek-V4.1-Flash-1017 on one AMD MI325X: findings
 
+## Results so far
+
+| | |
+|---|---|
+| Decode, single stream | 110.7 tok/s at 4K context, 109.0 at 128K, 107.9 at 256K (9.0-9.3 ms per token, one HIP graph) |
+| Quality vs FP8 (Lucebox 1017 eval, 8 x 1024 tokens) | KL 0.051, top-1 90.8%, perplexity 8.64 (FP8: 8.56) |
+| Model in HBM | 270.8 GB: dense FP8 as in the checkpoint (7.2 GB), 8,804 experts exact MXFP4 + 6,556 re-quantized to a 3-bit codebook (259.8 GB), bf16 embeddings and head |
+
+For comparison on the same eval: dsx's 2-bit quant (148 GB) KL 0.395; Lucebox ROCMFP2S (158 GiB) 0.265, ROCMFP23S
+(179 GiB) 0.194. With 256 GiB of HBM there is room to keep 57% of the experts in the checkpoint's own FP4 (the model
+was trained with them) and give the coldest 43% (by measured routing frequency) a fitted 3-bit codebook.
+
 Goal: run the whole model (minus Engram tables) from the HBM of one MI325X with a runner written for this model and
 this GPU, then measure decode at 128K and 256K context, prefill, and quality against FP8. Work log and results below;
 the architecture and quant background is in [FINDINGS.md](FINDINGS.md).

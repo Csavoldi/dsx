@@ -162,8 +162,21 @@ struct XOut {
 extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h, const float* __restrict__ y, int round_y,
                                                const float* pmix, HcArgs pa, const float* premix, HcArgs prea,
                                                const float* __restrict__ fn, float* nmix, float* x_raw, float* xss,
-                                               const float* eng_val, const float* eng_sum, const float* eng_qk,
+                                               const float* eng_val, const float* eng_sum, const float* eng_qk_unused,
                                                float hc_eps, float eps, int iters, XOut xo) {
+    {
+        // prompt path: token blockIdx.y of a batch (decode: 0)
+        const int ty = blockIdx.y;
+        h += (size_t)ty * HC * D;
+        if (y) y += (size_t)ty * D;
+        if (pmix) pmix += (size_t)ty * NPART * 32;
+        if (premix) premix += (size_t)ty * NPART * 32;
+        if (nmix) nmix += (size_t)ty * NPART * 32;
+        if (x_raw) x_raw += (size_t)ty * D;
+        if (xss) xss += (size_t)ty * NPART;
+        if (eng_val) eng_val += (size_t)ty * 25600;
+        if (eng_sum) eng_sum += (size_t)ty * 16;
+    }
     __shared__ float hs[HC][64];
     __shared__ float post[4], comb[16], pre[4];
     __shared__ float m0[32], m1[32];
@@ -694,6 +707,9 @@ extern "C" __global__ void __launch_bounds__(256) gemv_jobs(Jobs js, const State
 extern "C" __global__ void engram_sums(const float* __restrict__ kv, const float* __restrict__ h, const float* __restrict__ qk, float* out) {
     __shared__ float red[16];
     const int k = blockIdx.y;
+    kv += (size_t)blockIdx.z * 25600;
+    h += (size_t)blockIdx.z * HC * D;
+    out += (size_t)blockIdx.z * 16;
     float a = 0, b = 0, c = 0;
     for (int d = blockIdx.x * 256 + threadIdx.x; d < D; d += gridDim.x * 256) {
         const float hv = h[k * D + d], kv_ = kv[k * D + d];
@@ -1593,3 +1609,4 @@ extern "C" __global__ void __launch_bounds__(256) engram_act(const uint8_t* rows
         return round_bf16(v * __uint_as_float((uint32_t)sc << 23));
     }, oq, os, nullptr);
 }
+#include "prefill.h"
