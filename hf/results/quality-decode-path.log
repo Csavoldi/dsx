@@ -1,0 +1,9 @@
+=== decode eval, new attention
+seq 0: running ppl 11.469 kl 0.3475 top1 0.7341 (57 s)
+seq 1: running ppl 10.088 kl 0.4606 top1 0.7297 (112 s)
+{"tokens": 2046, "nll": 2.311379, "ppl": 10.0883, "kl_top256": 0.460554, "top1_agree": 0.729717}
+=== decode eval, old attention
+seq 0: running ppl 11.545 kl 0.3481 top1 0.7351 (67 s)
+seq 1: running ppl 10.076 kl 0.4584 top1 0.7248 (131 s)
+{"tokens": 2046, "nll": 2.310165, "ppl": 10.0761, "kl_top256": 0.458405, "top1_agree": 0.724829}
+DEC_DONE

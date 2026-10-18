@@ -1,0 +1,23 @@
+{
+  "model": "DeepSeek-V4.1-Flash-1017, ds41 2-bit (2.03 bpw experts, Q8_0 dense)",
+  "machine": "i7-12700K, 128 GB DDR4-3200, RTX 3090 (PCIe 4.0 x16) + RTX 3090 (PCIe 3.0 x4)",
+  "placement": {"vram_experts": 3052, "vram_gb": 34.0, "ram_arena_experts": 12258, "ram_arena_gb": 103.6, "disk_experts": 0},
+  "speed": {
+    "decode_tok_s_gen_3000_prompt": 31.5,
+    "decode_ms_per_token": 31.7,
+    "decode_tok_s_api_server": "19-23",
+    "prefill_tok_s_3000": 340,
+    "verify_6_tokens_ms": 157
+  },
+  "quality_lucebox_1017_eval": {
+    "set": "8 x 1024 tokens, teacher top-256 log-probs (FP8 1017)",
+    "teacher_ppl": 8.56,
+    "exact": {"kl_top256": 0.462284, "top1": 0.715054, "ppl": 11.6631},
+    "bias_0.05": {"kl_top256": 0.464015, "top1": 0.714076, "ppl": 11.7137},
+    "bias_0.1": {"kl_top256": 0.478239, "top1": 0.706378, "ppl": 11.9713},
+    "bias_0.2": {"kl_top256": 0.525857, "top1": 0.694892, "ppl": 12.5325},
+    "decode_path_2x1024": {"kl_top256": 0.460554, "top1": 0.729717, "ppl": 10.0883},
+    "reference_lucebox_rocmfp_2.5bpw": {"kl_top256": 0.253, "top1": 0.787, "ppl": 9.78}
+  },
+  "date": "2026-10-17"
+}

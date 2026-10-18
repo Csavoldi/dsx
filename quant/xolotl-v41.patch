@@ -1,0 +1,163 @@
+--- a/tools/v41/build_corpus.py
++++ b/tools/v41/build_corpus.py
+@@ -21,8 +21,8 @@
+ import dsv41_encoding as E  # noqa: E402
+ 
+ WORK = os.environ.get("V41_WORK", "/media/Crucial1TB/v41-calib")
+-MODEL = "/media/Crucial1TB/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8"
+-ANTIREZ = os.path.join(HERE, "../../docs/ds4/calib-refs/antirez-ds4-imatrix/dataset/prompts.jsonl")
++MODEL = os.environ.get("V41_MODEL", os.path.expanduser("~/ai/ds41/fp8-1017"))
++ANTIREZ = os.path.expanduser("~/ai/xolotl/docs/ds4/calib-refs/antirez-ds4-imatrix/dataset/prompts.jsonl")
+ TOOL_RESULT_CHARS = 6000
+ 
+ SECRETS = [
+@@ -171,7 +171,7 @@
+ 
+ 
+ def build_sessions(a, tok):
+-    roots = [os.path.expanduser(p) for p in ("~/.claude/projects", "~/.quetza-data", "~/.claude-data")]
++    roots = [os.path.expanduser("~/ai/ds41/calib-sessions")]
+     files = []
+     for r in roots:
+         for f in glob.glob(os.path.join(r, "**", "*.jsonl"), recursive=True):
+--- a/tools/v41/dspark_accept.py
++++ b/tools/v41/dspark_accept.py
+@@ -29,7 +29,7 @@
+ import torch
+ 
+ HERE = os.path.dirname(os.path.abspath(__file__))
+-REF = os.path.expanduser("~/AI/gsq-rco/dsv41-inference")
++REF = os.environ.get("V41_REF", os.path.expanduser("~/ai/ds41/fp8-1017/inference"))
+ sys.path[:0] = [os.path.join(HERE, "torch_kernels"), REF, HERE]
+ import model as M  # noqa: E402
+ from v41_gguf import Source  # noqa: E402
+--- a/tools/v41/v41_alloc.py
++++ b/tools/v41/v41_alloc.py
+@@ -108,6 +108,7 @@
+     ap.add_argument("--min-eval", type=int, default=8)
+     ap.add_argument("--unseen-floor", default="q2_0", choices=TIERS)
+     ap.add_argument("--out", default=None)
++    ap.add_argument("--budget-bpw", type=float, default=None, help="ds41: budget in bits/weight (default: all-Q2_0 = 2.25)")
+     a = ap.parse_args()
+     layers = None
+     if a.layers:
+@@ -118,6 +119,8 @@
+     items = items_for(stats, a)
+     layer_n = {L: len(j["experts"]) for L, j in stats.items()}
+     budget = sum(it[3][[c[0] for c in it[3]].index("q2_0")][2] for it in items)
++    if a.budget_bpw:
++        budget = budget * a.budget_bpw / BPW["q2_0"]
+     sel, used = solve(items, budget, a, layer_n)
+     err = lambda t: sum(next(c[1] for c in it[3] if c[0] == t) for it in items if t in [c[0] for c in it[3]])
+     mixed_err = sum(items[k][3][i][1] for k, i in enumerate(sel))
+--- a/tools/v41/v41_calib.py
++++ b/tools/v41/v41_calib.py
+@@ -27,16 +27,14 @@
+ from torch import nn
+ 
+ HERE = os.path.dirname(os.path.abspath(__file__))
+-REF = os.path.expanduser("~/AI/gsq-rco/dsv41-inference")
++REF = os.environ.get("V41_REF", os.path.expanduser("~/ai/ds41/fp8-1017/inference"))
+ sys.path[:0] = [os.path.join(HERE, "torch_kernels"), REF, HERE]
+ import model as M  # noqa: E402
+ import kernel as K  # noqa: E402  (our torch stand-in)
+ import v41_gptq as G  # noqa: E402
+ 
+-MAIN = "/media/Crucial1TB/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8"
+-DIRS = [MAIN, "/media/mal/NVME1TB/Models/DeepSeek-V4.1-Flash-UNCENSORED-FP8",   # shard 48 (Engram L14) copied here 2026-10-11: NVMe, not Team CX2
+-        "/media/mal/Crucible/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8",
+-        "/media/mal/Team CX2/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8"]
++MAIN = os.environ.get("V41_MODEL", os.path.expanduser("~/ai/ds41/fp8-1017"))
++DIRS = [MAIN]
+ WORK = os.environ.get("V41_WORK", "/media/Crucial1TB/v41-calib")
+ D, HC, NE, TOPK = 5120, 4, 384, 6
+ TIERS = list(G.TIERS)
+@@ -308,14 +306,40 @@
+         self.w = np.memmap(path, np.uint8, "r", offset=base + wa, shape=(num_embeddings, dim))
+         self.s = np.memmap(path, np.uint8, "r", offset=base + sa, shape=(num_embeddings, dim // 32))
+         for m in (self.w, self.s):
+-            m._mmap.madvise(mmap.MADV_RANDOM)
++            m._mmap.madvise(mmap.MADV_SEQUENTIAL)
+         self.dim, self.bytes_read, self.rows = dim, 0, 0
+ 
++    PRELOAD = None  # ds41: all row ids the run will need (np.int64), gathered once by one sequential sweep
++
++    def _preload(self):
++        u = np.unique(self.PRELOAD)
++        wu, su = np.empty((len(u), self.dim), np.uint8), np.empty((len(u), self.dim // 32), np.uint8)
++        step = 1 << 22
++        for r0 in range(0, self.w.shape[0], step):
++            a, b = np.searchsorted(u, [r0, r0 + step])
++            if a < b:
++                wu[a:b] = np.asarray(self.w[r0:r0 + step])[u[a:b] - r0]
++                su[a:b] = np.asarray(self.s[r0:r0 + step])[u[a:b] - r0]
++        self.cache = (u, wu, su)
++        log(f"engram: {len(u)} rows gathered in one sweep")
++
+     def forward(self, indices):
+         dev = indices.device
++        if self.PRELOAD is not None and not hasattr(self, "cache"):
++            self._preload()
++        if hasattr(self, "cache"):
++            cu, cw, cs = self.cache
++            u, inv = np.unique(indices.reshape(-1).cpu().numpy(), return_inverse=True)
++            pos = np.searchsorted(cu, u)
++            w = torch.from_numpy(cw[pos]).to(dev).view(torch.float8_e4m3fn).float()
++            s = torch.from_numpy(cs[pos]).to(dev).to(torch.int32)
++            s = torch.ldexp(torch.ones_like(s, dtype=torch.float32), s - 127)
++            v = (w.view(len(u), -1, 32) * s.unsqueeze(-1)).view(len(u), self.dim).to(BF16)
++            return v[torch.from_numpy(inv.reshape(-1)).to(dev)].view(*indices.shape, self.dim)
+         u, inv = np.unique(indices.reshape(-1).cpu().numpy(), return_inverse=True)
+-        w = torch.from_numpy(np.ascontiguousarray(self.w[u])).to(dev).view(torch.float8_e4m3fn).float()
+-        s = torch.from_numpy(np.ascontiguousarray(self.s[u])).to(dev).to(torch.int32)
++        wu, su = np.ascontiguousarray(self.w[u]), np.ascontiguousarray(self.s[u])
++        w = torch.from_numpy(wu).to(dev).view(torch.float8_e4m3fn).float()
++        s = torch.from_numpy(su).to(dev).to(torch.int32)
+         s = torch.ldexp(torch.ones_like(s, dtype=torch.float32), s - 127)
+         v = (w.view(len(u), -1, 32) * s.unsqueeze(-1)).view(len(u), self.dim).to(BF16)
+         self.rows += len(u)
+@@ -448,6 +472,7 @@
+                                      f"layers.{L}.engram.embed.weight", f"layers.{L}.engram.embed.scale")
+         M.ParallelEngramEmbedding = MemmapEngramEmbedding
+         hashes = np.load(wpath("hashes.npy"), mmap_mode="r")
++        MemmapEngramEmbedding.PRELOAD = np.asarray(hashes[:, :, e, :]).reshape(-1)
+     with torch.device(dev):
+         blk = M.Block(L, args, layout)
+     n = load_block(blk, L)
+--- a/tools/v41/v41_formats.py
++++ b/tools/v41/v41_formats.py
+@@ -205,11 +205,13 @@
+     the writer's fallback when no quantized expert exists.  W [R, C] float."""
+     import torch
+     import v41_gptq as G
+-    Wt = torch.from_numpy(np.ascontiguousarray(W, np.float32))
+-    S = G.search_scales(Wt, torch.ones(Wt.shape[1]), tier)
++    import os
++    dev = os.environ.get("V41_RTN_DEVICE", "cpu")   # ds41: the scale search on a GPU (CPU torch oversubscribes)
++    Wt = torch.from_numpy(np.ascontiguousarray(W, np.float32)).to(dev)
++    S = G.search_scales(Wt, torch.ones(Wt.shape[1], device=dev), tier)
+     lo, hi, grp, _ = G.TIERS[tier]
+     Q = G._rtn(Wt, G.expand_scales(S, tier, Wt.shape[1]), lo, hi)
+-    return encode_tier(Q.numpy(), S.numpy(), tier)
++    return encode_tier(Q.cpu().numpy(), S.cpu().numpy(), tier)
+ 
+ 
+ # ------------------------------------------------------------------ decoders (tests, validation)
+--- a/tools/v41/v41_gguf.py
++++ b/tools/v41/v41_gguf.py
+@@ -52,11 +52,10 @@
+ import v41_formats as F  # noqa: E402
+ import v41_gguf_meta as MD  # noqa: E402
+ 
+-MAIN = "/media/Crucial1TB/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8"
+-DIRS = [MAIN, "/media/mal/Crucible/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8",
+-        "/media/mal/Team CX2/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8"]          # = v41_calib.DIRS
+-NAME = "DeepSeek V4.1 Flash UNCENSORED (Strata v41 GSQ-RCO mixed tier)"
+-URL = "https://huggingface.co/dealignai/DeepSeek-V4.1-Flash-UNCENSORED-FP8"
++MAIN = os.environ.get("V41_MODEL", os.path.expanduser("~/ai/ds41/fp8-1017"))
++DIRS = [MAIN]
++NAME = "DeepSeek V4.1 Flash 1017 (ds41-102 quant)"
++URL = "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+ ROLES = (("gate", "w1"), ("up", "w3"), ("down", "w2"))
+ ENGRAM_ROW = 264
+ ALIGN = MD.GGUF_ALIGNMENT
