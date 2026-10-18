@@ -163,7 +163,7 @@ def size_quality():
     return page("Size against perplexity", "Lucebox 1017 eval set. Sizes include the 203 GB Engram tables.", svg)
 
 POST = {  # the X post: a few big numbers, one comparison
-    "speed": "30+", "size": "148",
+    "speed": "30+", "size": "148", "prefill": "500",  # prefill: 508 tok/s on an 8K prompt
     # top-1 match with FP8 on the Lucebox 1017 eval set (QUALITY above), rounded
     "match": [("FP8 original", 100, "#c9d6da"), ("Lucebox 2.5-bit", 79, "#9aa8ff"), ("dsx 2-bit", 74, "#7df0d4")],
 }
@@ -202,7 +202,7 @@ h1 em{{color:#7df0d4;font-style:italic}}
 <div class=hero>
   <div class=tile><div class=big>{POST['speed']}<small>tok/s</small></div><div class=lab>generation speed</div></div>
   <div class=tile><div class=big>{POST['size']}<small>GB</small></div><div class=lab>model download</div></div>
-  <div class=tile><div class=big>exact</div><div class=lab>routing, no expert pruning</div></div>
+  <div class=tile><div class=big>{POST['prefill']}<small>tok/s</small></div><div class=lab>prompt processing</div></div>
 </div>
 <div class=cmp><h2>Same next token as FP8 <span>top-1 match</span></h2>{bars}</div>
 <div class=foot><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div>
