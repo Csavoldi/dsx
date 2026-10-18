@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | Decode, single stream | 110.7 tok/s at 4K context, 109.0 at 128K, 107.9 at 256K (9.0-9.3 ms per token, one HIP graph); after real 128K / 256K prompts: 108.3 / 107.4 tok/s |
-| Prefill | 773 tok/s (4K prompt), 850 (16K), 883 (128K), 1,091 (256K, 240 s) |
+| Prefill | 1,658 tok/s (4K prompt), 1,154 (16K); earlier build: 883 (128K), 1,091 (256K, 240 s) |
 | Quality vs FP8 (Lucebox 1017 eval, 8 x 1024 tokens) | KL 0.051, top-1 90.8%, perplexity 8.64 (FP8: 8.56) |
 | Model in HBM | 270.8 GB: dense FP8 as in the checkpoint (7.2 GB), 8,804 experts exact MXFP4 + 6,556 re-quantized to a 3-bit codebook (259.8 GB), bf16 embeddings and head |
 
