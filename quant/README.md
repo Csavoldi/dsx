@@ -12,7 +12,7 @@ How `DeepSeek-V4.1-Flash-1017-ds41-2bit.gguf` was made. Built on the V4.1 tools 
 | `make_rank.py` | expert hotness from the calibration routing counts: `expert-rank.json`, used to put the hottest experts in VRAM |
 | `guard.sh`, `watchdog.sh` | every job in a memory-capped cgroup; a watchdog stops jobs on GPU Xid errors, low RAM or high temperatures |
 
-Calibration text: the author's own coding-agent sessions plus antirez's agent/code prompts (agentic, long-context).
+Calibration text: coding-agent sessions plus antirez's agent and code prompts (agentic, long-context).
 About 5 hours on 2x RTX 3090 for the whole model.
 
 ```bash

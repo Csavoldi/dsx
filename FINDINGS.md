@@ -1,357 +1,194 @@
-# DeepSeek-V4.1-Flash-1017 on the 2x3090 box (.102)
+# DeepSeek-V4.1-Flash-1017 on a two-GPU desktop: findings
 
-2026-10-17 (Pacific). Speed model: `roofline.py` (edit and rerun). Engine plan: `DESIGN.md`.
+How fast can a 552B-parameter MoE run on a desktop with two RTX 3090s and 128 GB of DDR4, with exact routing, and
+what limits it? This document collects the analysis, measurements and results behind ds41. Engine architecture:
+[DESIGN.md](DESIGN.md). Hardware microbenchmarks: [bench/RESULTS.md](bench/RESULTS.md). Speed model:
+[roofline.py](roofline.py).
 
-## Short answer
+## Summary
 
-- It **is MoE**: 552B backbone, 16B active per token, 384 experts (6 used per token), plus 196B of Engram lookup tables.
-- **Strata can't run it.** Strata is a Qwen3.8-Flash-Next-only engine. But a Strata fork, **Xolotl**
-  ([Indras-Mirror/Strata-DSV4.1](https://github.com/Indras-Mirror/Strata-DSV4.1)), runs V4.1 on one RTX 4090 +
-  90 GB RAM at **~26 tok/s decode, ~250 tok/s prefill** (its author's measurements).
-- Catches with Xolotl: single GPU only, 3090 (sm_86) untested, its only quant is the **September V4.1, uncensored**
-  (not 1017), and the 26 tok/s needs **biased routing** (it changes which experts the model picks; with exact routing it measured 3.5 tok/s).
-- **No 1017 quant fits this box yet.** The 1017 GGUFs are 264 GB and up and need a llama.cpp fork.
-- Physics of this box: the ceiling is **~17-19 tok/s with exact routing, ~25 biased**, x1.5-2 with speculative decoding.
-  Prefill ceiling is ~1,500-3,700 tok/s; today's engines reach 250. Section 6.
+| | |
+|---|---|
+| Decode | 30-37 tok/s on 2x RTX 3090 + 128 GB DDR4, exact routing |
+| Prefill | 334 tok/s (3K tokens), 508 tok/s (8K tokens) |
+| Quality | KL 0.395, top-1 74.1%, perplexity 10.93 vs the FP8 model's 8.56 (148 GB quant) |
+| Limit | the experts the CPU computes from RAM (~40 GB/s), then the dense half on GPU0 |
+
+The levers that mattered, in order: keep every expert in VRAM or RAM (none on disk); rank VRAM residency by measured
+expert hotness and let it follow the conversation; one CPU core per spinning thread; a parallel decode-attention kernel;
+and a quant whose bit budget is shared across layers.
 
 ## 1. The model
 
-Post: [@deepseek_ai, Oct 17 1:35 AM](https://x.com/deepseek_ai/status/2111375640717033777).
-Weights: [deepseek-ai/DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017).
+[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017), MIT.
 
 | | |
 |---|---|
-| Type | MoE: 384 routed experts + 1 shared, 6 routed per token |
-| Size | 552B backbone + 196B Engram tables + vision + 3 draft (DSpark/MTP) layers |
-| Active | 16B per token decoding, 8B prefill |
+| Type | MoE: 384 routed experts + 1 shared per layer, 6 routed per token |
+| Size | 552B backbone + 196B Engram tables + vision + 3 draft (DSpark / MTP) layers |
+| Active | 16B parameters per decoded token |
 | Layers | 40 (20 "encoder" + 20 "decoder"), hidden 5120, expert width 2304 |
-| Attention | sparse (CSA2 + indexers), 128-token window, FP4 KV: **890 bytes/token** (128K = 117 MB) |
-| Context / license | 1M / MIT |
-| Files | 510 GB: dense FP8, experts packed FP4, Engram FP8. No Jinja chat template |
+| Attention | MQA sparse attention: 128-token window + top-512 compressed rows chosen by an indexer |
+| KV cache | FP4, 890 bytes per token (128K tokens = 117 MB) |
+| Checkpoint | 510 GB: dense FP8, experts FP4, Engram FP8 |
 
-- **1017 vs V4.1 (Oct 16):** identical config and size, but every weight shard changed, Engram tables included.
-  V4.1 quants run the same code but are not 1017.
-- Not the same as **V4-Flash (0731)**: that one is ~284B with 256 experts, and plenty of engines already run it.
+1017 has the same architecture as the October 16 V4.1 release, but every weight shard changed, the Engram tables
+included. A V4.1 quant is not a 1017 quant.
 
-Where the bytes are:
-
-| Part | Params | Where it goes |
+| Part | Parameters | Placement in ds41 |
 |---|---:|---|
-| Routed experts | 544B (15,360 x 35.4M) | quantized; split across VRAM / RAM / NVMe |
-| Dense (attention, shared expert, routers, embed/head) | ~8B | GPU |
-| Engram tables | 196B, 2 x 384M rows | NVMe, mmap: 48 random 256-byte rows per token |
-| Draft layers | ~14B | optional, GPU |
+| Routed experts | 544B (15,360 × 35.4M) | quantized; VRAM, RAM, a few on disk |
+| Dense (attention, shared expert, routers, embeddings, head) | ~8B | GPU0, Q8_0 |
+| Engram tables | 196B, 2 × 384M rows | disk, read per token (~48 rows of 264 bytes per table) |
 
-## 2. The box (.102)
+## 2. Target hardware
 
 | | |
 |---|---|
-| Board / CPU | MSI PRO Z690-A DDR4, i7-12700K (8P+4E), AVX2 + AVX-VNNI, **no AVX-512** |
-| RAM | 4 x 32 GB DDR4-3200, dual channel: **51 GB/s peak, ~40 real**. This is the bottleneck |
-| GPU0 | 3090, CPU slot, PCIe 4.0 x16 (~25 GB/s) |
-| GPU1 | 3090, **chipset slot, PCIe 3.0 x4 (~3.5 GB/s)**. Fine for holding experts, bad for streaming them |
-| Disk | SN850X 4 TB (/home, 2.1 TB free). The second NVMe is the Windows (NTFS) disk |
-| Running now | Strata (Qwen3.8-Flash-Next IQ3_XXS uncensored): both GPUs full, 56 GB RSS |
+| CPU | i7-12700K (8P + 4E), AVX2 + AVX-VNNI, no AVX-512 |
+| RAM | 4 × 32 GB DDR4-3200, dual channel: 51 GB/s peak, **39.5 GB/s measured** |
+| GPU0 | RTX 3090, PCIe 4.0 x16: 24.7 GB/s host-to-device from hugepage memory |
+| GPU1 | RTX 3090, chipset slot, PCIe 3.0 x4: 3.3 GB/s |
+| Disk | NVMe, ~6 GB/s sequential |
 
-Anything that runs DeepSeek here needs Strata stopped while it runs: the RAM and VRAM don't fit both.
+Two properties shape everything: RAM bandwidth is the slow tier, and GPU1's link is too slow to stream experts, so it
+holds a fixed set.
 
-## 3. Strata and its forks
+## 3. Performance model
 
-- [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.1.44.1 in `~/ai/Strata`. Hand-written kernels for one
-  model. The tricks: hot experts cached in VRAM, all experts pinned in RAM and computed by the CPU in place, n-gram table on SSD, MTP drafting.
-- Its author on DeepSeek: "a new loader, packer, kernels and drafter. Not on the roadmap" ([#479](https://github.com/Niko1221/Strata/issues/479)).
-- **Xolotl** ([Strata-DSV4.1](https://github.com/Indras-Mirror/Strata-DSV4.1)), V4.1:
-  - Tiers: VRAM cache (~1,300-1,600 experts), pinned RAM arena (60 GiB), the rest read from NVMe. Its own GPTQ-style "GSQ" quant: ternary / 2-bit / 3-bit per expert, 152 GiB.
-  - Measured on 4090 + 5700X + 90 GB DDR4: decode 25.5-26.3 tok/s (agent sessions 22.7-28.2), prefill 244-288 tok/s.
-  - Quality: GSQ top-1 agreement 0.674 vs the FP8 model's 0.701. The routing bias raises code perplexity 2.38 to 2.87.
-  - **One GPU only.** The author says sm_86 "should build", untested, and multi-GPU is not planned
-    ([#1](https://github.com/Indras-Mirror/Strata-DSV4.1/issues/1)). A 1017 + multi-GPU request is open ([#2](https://github.com/Indras-Mirror/Strata-DSV4.1/issues/2)).
-  - Quant: [IndrasMirror/DeepSeek-V4.1-Flash-GSQ-Uncensored](https://huggingface.co/IndrasMirror/DeepSeek-V4.1-Flash-GSQ-Uncensored),
-    163 GB, plus the 203 GB Engram shards fetched separately. It is quantized from dealignai's abliterated V4.1.
-- [PolyStrata](https://github.com/VecSzn/PolyStrata): **V4-Flash (0731) only.** UD-IQ2_XXS (91 GB): 48-56 tok/s on a 5090 + 120 GB.
-  A 24 GB card + 128 GB box ran UD-IQ3_XXS at 27-31 tok/s.
+**Decode.** Each token passes through 40 layers. The dense half runs on GPU0 every token (~14 ms on a 3090 after
+optimization). The routed experts are 6 per layer, 8.5B parameters, ~2.1 GB per token at ~2 bits per weight. Each byte
+costs according to where its expert lives:
 
-## 4. Runtimes for V4.1 / 1017
+| Tier | Bandwidth | Computed by |
+|---|---:|---|
+| VRAM | 936 GB/s | GPU |
+| RAM | ~40 GB/s | CPU, in place |
+| NVMe | ~6 GB/s | read, then CPU |
+
+One NVMe read costs ~7× the same read from RAM, so the first rule is to keep every expert in VRAM or RAM. With two
+24 GB GPUs and 128 GB of RAM that allows ~140 GB of experts: about 2 bits per weight.
+
+**Routing is skewed on real text.** On the agentic calibration set, the hottest 10% of experts take 32-41% of routed
+tokens, the hottest 25% take 55-61%, the hottest 50% ~80%, the coldest 10% 1.0-1.7%. Ranking VRAM residency by
+hotness lets ~34 GB of VRAM serve over half of the traffic; RAM carries the rest.
+
+**Prefill.** Every chunk of a long prompt uses nearly every expert, so the non-resident experts stream over GPU0's
+PCIe link once per chunk (~100 GB at 24.7 GB/s ≈ 4 s). Larger chunks amortize it. Decoder layers only need the last
+`(40 − L) × 128` tokens, so they run on that tail only.
+
+**Long agentic contexts.** KV is small (117 MB at 128K), and attention reads a fixed window plus 512 rows, so long
+context barely slows decode. A server that keeps each conversation's KV and only prefills new tokens makes follow-up
+turns cheap.
+
+## 4. Ecosystem (October 2026)
+
+Runtimes that load V4.1 / 1017:
 
 | Runtime | Status |
 |---|---|
-| llama.cpp mainline | **No.** [PR #28696](https://github.com/ggml-org/llama.cpp/pull/28696) open since Sep 10. Forks run it (vcruz305, smalinin). Known bug: past ~1K tokens, layers that reuse indices attend densely (wrong but fluent output) |
-| ik_llama.cpp | **Merged** ([#2455](https://github.com/ikawrakow/ik_llama.cpp/pull/2455), Sep 21) + DSpark, vision. Open: long-context bug [#2683](https://github.com/ikawrakow/ik_llama.cpp/issues/2683) |
-| vLLM / SGLang | Day-0, but **no Ampere path** ([vLLM #57144](https://github.com/vllm-project/vllm/issues/57144)) |
-| ktransformers | Not upstream; one community recipe on dual EPYC |
-| ExLlamaV3 | PR #449 open. EXL3 quants are served through a vLLM plugin today |
-| Xolotl | Yes, one GPU, see above |
+| llama.cpp | not merged ([PR #28696](https://github.com/ggml-org/llama.cpp/pull/28696)); forks run it |
+| ik_llama.cpp | merged, with DSpark; open long-context issue |
+| vLLM / SGLang | supported; no Ampere path |
+| ExLlamaV3 (EXL3) | served through a vLLM-based kit, multi-GPU or DGX Spark |
+| antirez/ds4 and derivatives | DS4 GGUFs on Mac, ROCm, CUDA |
+| [Xolotl](https://github.com/Indras-Mirror/Xolotl) | one GPU + RAM + NVMe tiers, GSQ quant; ~26 tok/s on a 4090 with biased routing |
 
-## 5. Quants
+Published 1017 quants span 2-bit GGUFs (~150-375 GB with Engram), EXL3 2.8-3.5 bpw (196-240 GiB, perplexity within
+0.4-1.8% of FP8), MLX, NVFP4 and VQ formats. Few publish quality numbers; few target 24 GB GPUs with 128 GB of RAM.
 
-| Quant | Size | Runtime | Ran? |
-|---|---:|---|---|
-| **1017** mrfakename GGUF Q2_K / Q3_K_M / Q4_K_M (mondk = byte-identical mirror) | 265 / 347 / 445 GB | vcruz305 llama.cpp fork | no reports |
-| **1017** EXL3 2.9 / 3.0 / 3.5 bpw (LibertAIDAI, PixelML) | 211-258 GB + 203 GB Engram | vLLM + EXL3 plugin | perplexity only |
-| **1017** Lucebox ROCMFP | 383-405 GB | own engine | quality only |
-| **1017** MLX (oQ2e-oQ4e, Q9, LSQ3) | 177-452 GB | Mac | Q9: 15.9 tok/s on M3 Ultra |
-| V4.1 GSQ-Uncensored (Xolotl) | 163 + 203 GB | Xolotl | **yes, 26.8 tok/s on a 4090 + 90 GB** |
-| V4.1 vcruz305 GGUF Q2_K / Q3_K_M | 265 / 347 GB | ik_llama / fork | yes: ik_llama author, A6000 + 3090 + 251 GB, Q3_K_M ~21 tok/s |
-| V4.1 EXL3 3.0 (0xSero offload) | ~200 GB host | own | yes: one 3090 + 503 GB 8-channel, 16-21 tok/s |
+## 5. Engine results
 
-None of the big quant makers (unsloth, bartowski, ubergarm) has posted V4.1 yet. The 1017 GGUFs keep experts near
-4 bits, and at 265 GB they would page from NVMe on a 128 GB box: expect a few tok/s.
+Correctness: GPU decode matches a CPU reference implementation of DeepSeek's `model.py` to bf16 rounding (differences
+only at router near-ties), and prefill matches token-by-token decode.
 
-## 6. First principles: what limits speed on this box
+Decode on 2x RTX 3090 (3000-token agent prompt, exact routing):
 
-**Decode** (one token = one pass over 40 layers):
-
-1. The dense half (attention, shared expert, routers) runs on GPU0 every token: **~20 ms**. Xolotl measured 19 ms on a 4090; a 3090 has about the same bandwidth. That alone caps decode at ~50 passes/s.
-2. Routed experts: 6 per layer = 8.5B params per token = **~2.0-2.5 GB per token** at ~2 bits. Each byte comes from wherever that expert lives:
-
-   | Tier | Speed | Who computes |
-   |---|---:|---|
-   | VRAM (936 GB/s) | free | GPU |
-   | RAM (~40 GB/s) | ~50 ms per GB | CPU in place. Copying to the GPU is slower: 25 GB/s |
-   | NVMe (~6 GB/s) | ~170 ms per GB | read, then CPU |
-
-3. **DeepSeek balances its experts on purpose**, so with exact routing each tier serves traffic roughly in proportion to how much of the model it holds. Caching hot experts helps less than it did for Qwen. This fits Xolotl's numbers: 3.5 tok/s exact vs 26 biased on a box where half the experts live on NVMe.
-4. So the rule is: **keep zero experts on NVMe, put as many as possible in VRAM, and the rest in RAM.**
-   With Strata stopped: ~32 GB of experts in VRAM (both GPUs), ~95 GB pinned in RAM, so **~127 GB total → ~1.9 bits/weight on average.**
-
-| Experts avg bpw | Pool | GPUs | Exact routing | Biased (60% VRAM hits) |
-|---:|---:|---:|---:|---:|
-| 2.4 (Xolotl GSQ) | 163 GB | 1 | 5.6 tok/s | 11 |
-| 2.4 | 163 GB | 2 | 8.0 | 14 |
-| 2.1 | 143 GB | 2 | 13.9 | 21 |
-| **1.9** | **129 GB** | **2** | **17.0** | **25** |
-| 1.75 (ternary) | 119 GB | 2 | 18.5 | 26 |
-
-(Single-token passes from `roofline.py`, no speculative decoding. The model is on the pessimistic side for the 1-GPU
-row: Xolotl gets 26 there with biased routing, using its NVMe penalty as well.)
-
-5. **The second 3090 is worth ~2x** at the same quant: it holds 21 GB more experts. Its x4 link doesn't matter for decode, because only activations (~40 KB per layer) cross it.
-6. **Speculative decoding** (DSpark: 3 draft layers, blocks of 5) verifies several tokens in one pass. Each pass reads more experts, but the dense 20 ms is shared. Expect ~1.5-2x on code and agent text, so **~25-40 tok/s is the realistic target**.
-7. CPU risk: 8 P-cores must decode ~1.5 GB of 2-bit weights per token. With i-quant style lookup tables, AVX2 may run out of compute before RAM runs out of bandwidth. **Use quant formats the CPU unpacks cheaply** (Q2_0-style, ternary). Measure this first.
-
-**Long agentic contexts:**
-
-- KV is tiny (117 MB at 128K, 0.9 GB at 1M), so long context barely slows decode. Per-token attention reads a fixed top-512 rows plus the window. The indexer that picks them scales with context but is small.
-- **Never re-read the prompt.** Each agent turn appends a 1-5K tool result to a 30-200K context. Keep every session's KV (a 200K session is 180 MB, so dozens fit in RAM, and they can spill to disk), and replay only the last 128 window tokens.
-- A typical turn of 2K tokens in and 400 out: at 1,000 tok/s prefill and 25 tok/s decode that is 2 s + 16 s. **Decode dominates agent turns.**
-- **Prefill ceiling:** a long prompt is processed in chunks. Each chunk must stream every non-resident expert over GPU0's PCIe once (~100 GB / 25 GB/s = 4 s), so 8K chunks give ~2,000 tok/s and 16K chunks ~3,700 with both GPUs computing. Xolotl's 250 and llama.cpp's ~50-100 are far below this, so engineering can still win a lot here.
-- Long prompts lose some speed to the indexer (O(n²) in total), roughly +4 s of compute at 128K.
-
-Cheap hardware levers (lxe's call, none done): DDR4-3600 XMP if the DIMMs allow it (+12% bandwidth). GPU1 can't get a better slot on this board.
-
-## 7. Options
-
-| Option | Model | Download | Expected | Effort / risk |
-|---|---|---:|---|---|
-| A. Xolotl + GSQ-Uncensored, GPU0 only | V4.1 (Sept), abliterated | 163 + 203 GB | ~20-26 tok/s biased, ~200-250 prefill | sm_86 untested; 1 GPU; not 1017 |
-| B. ik_llama.cpp, both GPUs, own ~2-bit 1017 quant | 1017 | 508 GB source + ~140 GB output | ~8-15 tok/s, ~100-300 prefill | needs an imatrix run and a quantize pass; long-context bug open |
-| C. V4-Flash-0731 UD-IQ2_XXS on PolyStrata | V4-Flash (older, 284B) | 91 GB | 27-50 tok/s, ~1,000 prefill | proven on 24 GB + 128 GB boxes; not V4.1 |
-| D. Custom Rust engine for this box + 1017 | 1017 | 510 GB FP8 | target 25-40 tok/s, 1,000+ prefill | weeks; see DESIGN.md |
-
-## 8. Recommendation
-
-1. **Today, to try it:** Option A on GPU0 with Strata stopped. 366 GB on /home (2.1 TB free), plus 203 GB temporary
-   while the Engram tables are extracted. It gives us real routing and tier numbers on this exact box, which the custom engine needs anyway.
-2. **For 1017 and max speed:** Option D, a Rust engine built around the section 6 rules: both GPUs, no NVMe expert tier,
-   CPU-friendly ~1.9 bpw experts, persistent session KV, DSpark. Start with the measurements in DESIGN.md phase 0 (an hour, read-only, no downloads).
-3. Watch [Xolotl #2](https://github.com/Indras-Mirror/Strata-DSV4.1/issues/2) and ik_llama for a 1017 quant. Someone may publish a GSQ-1017.
-
-Nothing has been downloaded or started on .102. Downloads need lxe's go-ahead.
-
-## 9. Update, 2026-10-17 1:45 PM
-
-- Fresh sweep: still no 1017 quant runnable on this box. [Baekpica 1017 VQ GGUF](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-VQ-GGUF)
-  (~114 GB, ~1.6 bpw VQ experts) needs its own DGX Spark engine with the whole model resident. unsloth created an empty 1017 repo at 1:36 PM.
-- 1017 = September layout with new weights; the Engram shards and vision changed too (September Engram loads silently and mismatches).
-- Quality yardstick for our quant: Lucebox's 1017 eval set with teacher log-probs (`eval/` in
-  [Lucebox ROCMFP repo](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF)): 2.5 bpw fp2s experts = KL 0.253, top-1 78.7%; 3-bit down = KL 0.195.
-- ik_llama #2683: V4.1 loses context past ~200K, blamed on f16 indexer math. Our indexer runs in f32.
-- Xolotl: sm_86 build works on .102 (built 2026-10-17). Author: multi-GPU not planned; a 1017 GSQ is planned, no date.
-- Downloads on .102 via aria2 at 1.9 Gbps (capped at 2 Gbps per lxe), 1017 first.
-
-## 10. Progress, 2026-10-17 3 PM
-
-- Downloaded and checksum-verified: 1017 FP8/FP4 checkpoint (510 GB), the V4.1 GSQ baseline is still downloading.
-- **Engine (`engine/`, Rust + CUDA) runs 1017 end to end.** The CPU reference (exact model.py math on the original
-  FP8/FP4 weights) answers "Paris" to "What is the capital of France?". The GPU path matches it to bf16 rounding; the
-  only differences come from router near-ties (expert scores equal to 4 decimals, so rounding noise picks either).
-- Built: GPU decode (dense half on GPU0), CPU expert kernels at RAM speed, GPU expert stores on GPU0 and GPU1,
-  a sync-free per-layer handoff between them through mapped memory (5-8 us per hop), GPU top-k for the sparse indexer,
-  prefill (encoder over every token, decoder over the exact dependency cone only, tensor-core GEMMs), session snapshots
-  for prefix reuse, the DSpark draft stack (reference), and an optional routing bias (off by default).
-- Quant: a round-to-nearest Q2_0 1017 export is converting (a stand-in for engine work). The calibrated quant
-  (Xolotl's GSQ pipeline, agentic calibration from lxe's sessions + antirez's prompts) is calibrating on GPU1, ~8 min/layer.
-- Expert pool budget from the measurements: GPU0 ~9-10 GB spare after the dense half and prefill buffers, GPU1 ~23 GB,
-  RAM arena ~100 GB, so **~133-138 GB of experts (~2.0 bpw)** with nothing on NVMe.
-
-## 11. Expert usage is skewed on agentic text (calibration, 2026-10-17 4:45 PM)
-
-From the 1017 calibration pass (128 x 2048 tokens: lxe's agent sessions + antirez's agent/code prompts), tokens
-routed per expert, layers 2-6:
-
-| | share of routed tokens |
+| Change | Decode |
 |---|---:|
-| hottest 10% of experts | 32-41% |
-| hottest 25% | 55-61% |
-| hottest 50% | ~80% |
-| coldest 10% | 1.0-1.7% |
+| Baseline | 12.5 tok/s |
+| One CPU per spinning thread (the CPU-expert coordinator shared a core with the GPU launch thread and saw routed picks up to 1.5 ms late) | 20.3 tok/s |
+| Tiled split-K decode attention (276 → 21 µs per layer) | 31.5 tok/s |
 
-The section 6 model assumed balanced routing (traffic share = capacity share). It isn't: the hottest 25% of experts
-(~32 GB at ~2 bpw, what fits in both GPUs) serve ~58% of routed traffic. RAM then carries ~42%: ~0.84 GB/token
-= ~21 ms + ~10 ms dense, so **~30 tok/s with exact routing**, before speculative decoding. Placement must rank
-experts by measured hotness (GPU1 then GPU0 get the hottest).
+Dense-half optimizations: repacked Q8 GEMV (22.6 → 10.6 ms per token), hyper-connection mixing (6.1 → 1.1 ms), partial
+top-token selection instead of a full vocabulary sort, Engram row prefetch on its own threads (6.2 → 0.6 ms).
 
-## 12. DSpark (built-in speculative drafts), first measurement on 1017
+Prefill: a tensor-core attention kernel for long chunks (0.53 → 0.15 s per 4K chunk), deduplicated Engram reads, no
+host stalls before the expert stream, and four staging buffers: 8K-token prefill 478 → 508 tok/s.
 
-CPU reference, 60-token agent prompt, 40 greedy tokens, 5-token drafts: accepted drafts per step histogram
-[0:14, 1:10, 2:6, 3:3, 4:2, 5:0], **mean 1.11** (2.1 tokens per verify pass). Expert union per layer over windows of
-consecutive tokens: 1 token 6.0, 2 tokens 9.8, 4 tokens 15.9, **6 tokens 20.9** (3.5x the bytes of one token).
-So a verify pass would cost ~3.5x a decode step's expert traffic for ~2.1 tokens: a net loss on this box as measured.
-Caveat: the prompt ended mid-text and the model emitted EOS first, so this understates a real assistant turn.
-Re-measure on proper agent turns before deciding; parked for now.
+## 6. Expert placement follows the conversation
 
-## 13. Engine status and measurements, 2026-10-17 6:15 PM
+A VRAM set ranked on agentic text fits agentic text. Logging decode-time expert picks for three kinds of output:
 
-Correctness (V4.1 GSQ quant as a stand-in, same architecture): GPU decode matches the CPU reference except at router
-near-ties; prefill vs token-by-token decode gives identical continuations; the API server answers OpenAI and Anthropic
-requests, including a structured tool call.
+| Text | Picks served from VRAM, static ranking | With an adaptive GPU0 cache | Best possible for the turn |
+|---|---:|---:|---:|
+| Prose essay | 15% | 68-72% | 90% |
+| Python module | 43% | 73-74% | 84% |
+| Agent / tool-call JSON | 47% | 78-79% | 86% |
 
-| Optimization (decode, dense half) | before | after |
-|---|---:|---:|
-| Dense Q8 GEMV (repacked int8 rows + scales, 16-byte loads), 3090 | 22.6 ms/token | 10.6 ms |
-| hc mixes (24 blocks + warp Sinkhorn), 3090 | 6.1 ms | ~1.1 ms |
-| Top-token selection (partial select, not a full 129K sort) | ~40 ms | ~0 |
-| Engram rows (helper thread, plain threads instead of rayon next to the spinning pool), 5090 | 6.2 ms | 0.6 ms |
-| Dense-only decode, 5090, end to end | 15 tok/s | **73 tok/s** |
+GPU0's experts are therefore a cache over the RAM arena. After each token, the hottest non-resident experts (by
+decayed usage, seeded from calibration counts) replace the coldest resident expert of the same quant type in place:
+up to 8 per token (~72 MB over PCIe, overlapped with compute), committed between tokens. Short prose decode went from
+26.0 to 29.9 tok/s on v1 with quality unchanged. The arena keeps copies of GPU0's experts (110 GB); the ~530 coldest
+experts stay in the file.
 
-VRAM-resident experts: repacked layouts + int8 mma.sync, 1.0-1.3 TB/s on the 5090 at T = 1 and T = 6 (a verify pass
-costs the same as one token for GPU experts); were 100-170 GB/s on the 3090.
+## 7. Quantization
 
-Prefill, 4096-token chunk without routed experts, 5090: 3.1 s (attention kernel 0.53, indexer 0.18, projections ~0.6,
-Engram 0.67 warm, shared expert 0.4). Engram rows are deduplicated per chunk (3x fewer reads); a tensor-core prefill
-attention kernel is in progress.
+Each routed expert gets one of three tiers, chosen from its measured output error on held-out calibration text:
 
-## 14. First full runs of our 1017 quant on .102, 2026-10-17 evening
-
-Quant: GSQ pipeline on 1017, 2.03 bpw experts (edge layers 2.25), 148 GB file, finished 8:43 PM. Placement: 34 GB
-of the hottest experts on the GPUs (by our calibration ranking), all other experts in a 104 GB RAM arena, nothing on NVMe.
-
-**Speed, 3000-token agent prompt, exact routing:**
-
-| Step | Decode | Notes |
+| Tier | Bits per weight | Grid |
 |---|---:|---|
-| First run | 12.5 tok/s (80 ms) | |
-| One CPU per spinning thread | 20.3 tok/s (49 ms) | main thread, CPU-expert coordinator, Engram and CUDA helper threads were all on CPU 16; the coordinator saw routed picks up to 1.5 ms late |
-| Tiled split-K decode attention | **31.5 tok/s (32 ms)** | 276 -> 21 us per layer |
+| PTQ1_0 | 1.75 | ternary, fp16 scale per 128 |
+| Q2_0 | 2.25 | {-1, 0, 1, 2}, fp16 scale per 64 |
+| Q3_K | 3.44 | 8 levels, 6-bit sub-scales per 16 |
 
-Where the 32 ms go now: dense half on GPU0 ~14 ms (q projection 3.2, o projection 4.6, Engram 1.4, hc 2), CPU
-experts 14 ms (the GPU waits 12 ms for them), shared expert + router + GPU experts ~5 ms. GPU1's experts run in
-parallel and cost ~0.
+Method: layer-by-layer calibration through DeepSeek's reference `model.py` on the FP8/FP4 checkpoint (128 × 2048
+tokens of coding-agent sessions and agent/code prompts), GPTQ per expert, then tier allocation by error per byte
+(Xolotl's GSQ pipeline). Dense weights are Q8_0; Engram stays unquantized.
 
-Prefill: 340 tok/s on 3000 tokens (not tuned yet). Verify pass of 6 tokens: 157 ms (26 ms per token if all are
-accepted), so DSpark breaks even only above ~1.2 accepted drafts per pass.
+What moves quality at a fixed size (Lucebox's 1017 eval, 8 × 1024 tokens against FP8 top-256 log-probs):
 
-**Quality, Lucebox's 1017 eval (8 x 1024 tokens, teacher top-256):**
-
-| | KL | top-1 | ppl |
+| Allocation, 148 GB | KL | Top-1 | Perplexity |
 |---|---:|---:|---:|
-| Teacher (FP8 1017) | 0 | 100% | 8.56 |
-| Lucebox 2.5 bpw | 0.253 | 78.7% | 9.78 |
-| **Ours, 2.03 bpw, exact routing** | **0.462** | **71.5%** | **11.66** |
-| Ours, routing bias 0.05 | 0.464 | 71.4% | 11.71 |
-| Ours, routing bias 0.1 | 0.478 | 70.6% | 11.97 |
-| Ours, routing bias 0.2 | 0.526 | 69.5% | 12.53 |
+| 2.0 bpw per layer (v1) | 0.462 | 71.5% | 11.66 |
+| 2.0 bpw per layer, no limit on ternary | 0.463 | 71.8% | 11.93 |
+| **One budget for layers 2-36 (v2)** | **0.395** | **74.1%** | **10.93** |
+| Reference: 2.5 bpw (Lucebox ROCMFP) | 0.253 | 78.7% | 9.78 |
 
-Routing bias buys little (measured before the attention fix: 20.3 tok/s exact, 21.5 at 0.05, 24.4 at 0.2) and costs
-KL; leave it off. The quality gap to Lucebox's 2.5 bpw is large: 2.03 bpw is what fits in
-RAM + VRAM without NVMe, so the next quality step is better bit allocation or spilling the coldest experts to NVMe
-to afford ~2.3-2.5 bpw.
+Sharing the budget across layers gives sensitive layers (3-13, 17, 32) 2.2-2.75 bpw and most decoder layers ~1.76.
+Separate tiers for down and gate/up projections did not help. v2 is also faster: its smaller decoder-layer experts let
+~200 more experts fit in VRAM (prose 37.2 tok/s, agent 30.0).
 
-## 15. colibri (JustVugg/colibri), reference research, 2026-10-18
+Quantizer speed: GPTQ's column loop and the scale search run as native CUDA kernels batched over experts, the H^-1
+factor comes from one Cholesky of the reversed Hessian, and integer codes rather than fp32 values go to the writer.
+One layer's experts: 159 → 70 s; a full model: ~2.5 h → ~1.5 h on two 3090s.
 
-Pure-C MoE engines (Apache-2.0, ~43K stars) that keep the dense part in RAM and stream routed experts from disk,
-with a GPU tier for hot experts. It has a DeepSeek V4.1 Flash engine (docs/deepseek-v41.md): 0.21-0.56 tok/s on
-CPU servers, reading the official FP4 experts from NVMe (4.5 GB of experts per token at FP4). Different niche from
-ds41 (low-RAM machines, unquantized weights); useful for us:
+## 8. Other hardware: RTX 5090 + 128 GB DDR5
 
-- **Index-key slot.** In the original V4.1 `model.py` a ratio-2 KV-source layer republished its index keys only
-  when it completed a group, so on every other decode step layers 2/8/14 scored against layer 20's keys; colibri
-  reproduces that by default. **The 1017 `model.py` republishes unconditionally** (`if self.owns_k:
-  shared_attn.index_k = self.k_cache`), which is what ds41's reference and GPU paths do. Checked: no change needed.
-- **DSpark measured on CPU:** a draft round costs ~1/5 of a main token (window-only attention, 128 experts, top-3);
-  +17% with an acceptance guard (stop drafting below 60% acceptance); without the guard the gain mostly vanishes.
-  Exact speculative decoding needs rollback of three modulo-addressed states a draft can clobber: the window ring,
-  the compressor's half-filled group slots, and the published index-key slot. ds41's verify pass has no rollback yet;
-  this is the list to implement.
-- **Disk tier (for v2's NVMe spill):** resolve a step's experts to cache slots first (hits stamped, victims
-  reserved), then read the misses together at queue depth ~8 (6.8 GB/s on two striped PM9A1; deeper steals cores);
-  one `pread` per expert for all three matrices; router lookahead prefetch one layer ahead (71.6% predictable on
-  GLM-5.2); O_DIRECT measured per drive; a mirror on a second NVMe gave +37.5%.
-- **Learned placement:** a per-user hot set updated every turn (`.coli_usage`) on top of per-layer LRU; ds41's
-  ranking is static from calibration. Worth doing with the RAM arena once part of the pool lives on NVMe.
-- **Engram:** ~13 KB per token, at most 48 rows of 264 bytes per table; streaming it is the right call (as ds41 does).
+| | Static placement, 80 GB arena | Adaptive, 75 GB arena |
+|---|---:|---:|
+| Decode, prose | 12.0 tok/s | 7.6 tok/s |
+| Decode, 3K-token agent prompt | 15.2 tok/s | 7.8 tok/s |
+| Prefill, 3K / 8K tokens | 93 / 172 tok/s | 68 / 114 tok/s |
 
-## 16. Expert placement must follow the conversation (2026-10-18)
+With one 32 GB GPU and ~90 GB of usable RAM, ~40 GB of experts are read from disk through the page cache, and that
+sets the speed. Static placement wins there: the adaptive cache's RAM copies of GPU0's experts cost space the machine
+doesn't have. Such a machine needs ~160 GB of RAM, or a disk tier with batched direct reads and prefetch.
 
-The "API server is slower" reading was wrong: the server decodes at the engine's speed. Speed depends on the text,
-because the VRAM hot set was ranked on agentic calibration text. Decode-time picks logged from the CPU worker
-(600 tokens each, server, greedy):
+## 9. Negative results
 
-| Text | tok/s | picks served from VRAM (static) | per-layer LRU on GPU0 | best possible for the turn |
-|---|---:|---:|---:|---:|
-| prose essay | 16.8 | 15.4% | 71.6% | 90.0% |
-| Python module | 21.5 | 42.7% | 73.7% | 83.6% |
-| agent / tool-call JSON | 22.7 | 46.9% | 78.8% | 86.4% |
+- **Speculative decoding (DSpark).** A 6-token verify pass costs 157 ms, ~5 decode steps, because the CPU's expert work
+  grows with the union of the tokens' experts (20.9 distinct experts per layer for 6 tokens vs 6.0 for one). It pays only
+  above ~4 accepted drafts per pass.
+- **Routing bias toward VRAM-resident experts.** +4 tok/s at a bias of 0.2, for 2 points of top-1. Off by default.
+- **EXL2 / EXL3.** ExLlama keeps all weights in VRAM and has no RAM tier. EXL3's trellis codes would improve quality per
+  bit for GPU-resident experts, but decoding them on the CPU is likely compute-bound.
+- **Experts on disk.** Each token needs ~2 GB of expert weights; serving 10% of it from a 6 GB/s drive adds ~30 ms.
 
-LRU needs 50-68 expert copies per token; a decayed-frequency policy with a budget of 8 copies/token (~72 MB over
-PCIe, overlapped) gets 68-78%. Implemented as adaptive GPU0 residency (engine/src/experts.rs, gpumodel.rs
-adapt_step): GPU0's experts are copies of arena experts; same-type in-place replacement, committed between tokens;
-scores seeded from the calibration counts. Measured: short prose prompt 26.0 -> 29.9 tok/s (CPU share of picks 43%
--> 27%), 3000-token agent prompt 31.5 -> 31.2 (swap traffic offsets its gain). Quality unchanged (decode-path KL
-0.451 vs 0.461). The arena grows to 110 GB (the coldest ~530 experts stay in the file: 0.6-2 picks/token on prose);
-13 GB of RAM stays free.
+## 10. Open problems
 
-## 17. Quantization: what limits quality at a fixed size, and a 2.3x faster quant pass
-
-- v1's quant is plain GPTQ with static-group scales (Xolotl's GSQ refinement is a TODO in their code).
-- Per-projection tiers (down vs gate/up) do not help by the allocator's own held-out error proxy (1.415 vs 1.407).
-- More bits do: 2.0 -> 2.25 bpw cuts the proxy 27%, but needs ~17 GB more than RAM + VRAM hold.
-- At the same size, **allocating across layers** is the lever: one budget for layers 2-36 instead of 2.0 bpw each.
-  Proxy error 1.35 (v1-style, per layer) -> 1.16 (per layer, no ternary cap) -> **0.68 (cross-layer, no cap)**. The
-  cross-layer plan gives layers 3-13, 17 and 32 2.2-2.75 bpw and makes most decoder layers (20-36) nearly all
-  ternary (their measured error is tiny at every tier). Being tested end to end (Lucebox eval) against v1.
-- Quant speed: the GPTQ column loop ran as ~1,000 tiny tensor kernels per 128-column block. Native kernels
-  (quant/native/qkern.cu: GPTQ block with a warp per row, scale search, batched over experts), H^-1's factor from
-  one Cholesky of the reversed matrix, and int8 codes to the writer: a layer's MoE step 159 s -> 70 s on .102
-  (GPTQ 73 -> 7 ms/expert and scale search ~45 -> ~1 ms on a 5090; codes identical to >= 99.999%, bytes identical).
-
-## 18. Dead ends checked
-
-- **DSpark speculation on this box:** a 6-token verify costs 157 ms (~5 decode steps) because the CPU's expert work
-  grows with the union of the tokens' experts; it pays only above ~4 accepted drafts per pass. The draft head's
-  weights are also not in our GGUF. Parked.
-- **EXL2 / EXL3:** ExLlama needs all weights in VRAM (138 GB of experts vs 48 GB) and has no V4.1 support; EXL2's
-  per-layer mixed GPTQ is what we already do per expert. EXL3's trellis codes (QTIP) would improve quality per bit
-  for GPU-resident experts, but decoding them on the CPU would likely be compute-bound. Revisit only if the
-  cross-layer allocation leaves a large gap.
-- **SSD offload of experts:** each token needs ~2 GB of expert weights; 10% from a 6 GB/s drive adds ~30 ms. Kept
-  out by design; the GGUF size is chosen so every routed expert is in VRAM or RAM.
-
-## 19. v2 quant results (2026-10-18)
-
-Lucebox 1017 eval (8 x 1024 tokens), same 148 GB size:
-
-| | KL | top-1 | ppl |
-|---|---:|---:|---:|
-| v1 (2.0 bpw per layer, ternary cap 75%) | 0.462 | 71.5% | 11.66 |
-| per layer, no ternary cap | 0.463 | 71.8% | 11.93 |
-| **v2: one budget for layers 2-36, no cap** | **0.395** | **74.1%** | **10.93** |
-
-The cross-layer allocation is the win (-15% KL, +2.6 points top-1); the allocator's proxy predicted -52%, so its
-held-out error overstates how forgiving the decoder layers are. Speed on .102 (v2): prose 37.2 tok/s (v1 29.9), agent
-30.0 (31.2), prefill 3K 334, 8K 508 (with the prefill reorder + four staging buffers: 478 -> 505 on the same model).
-
-RTX 5090 + 128 GB DDR5 (~90 GB free): RAM-bound. Static placement, 80 GB arena:
-prose 12.0, agent 15.2 tok/s, prefill 93 (3K) / 172 (8K). Adaptive placement is worse there (7.6-7.8 tok/s): it keeps
-RAM copies of GPU0's experts, and ~5,000 experts (~40 GB) already come from the disk through page faults. A 5090 box
-needs ~160 GB of RAM for this quant, or a real SSD tier (batched O_DIRECT reads, lookahead prefetch: section 15).
+- The quality gap to 2.5 bpw (KL 0.395 vs 0.253) at a size that fits 128 GB + 48 GB.
+- A disk tier for RAM-limited machines: batched direct reads, one read per expert, next-layer prefetch (as in
+  [colibri](https://github.com/JustVugg/colibri)).
+- Prefill: the expert stream runs at ~75% of the PCIe floor.
+- The dense half (~14 ms per token) as decode's next floor.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Back-of-envelope speed model for DeepSeek-V4.1-Flash(-1017) on the .102 box.
+"""Back-of-envelope speed model for DeepSeek-V4.1-Flash(-1017) on a two-RTX-3090, 128 GB DDR4 machine.
 
 Every number is a bandwidth or FLOP ceiling, not a measurement. Edit BOX / scenarios and rerun.
 Model shape is from the official config.json; the measured anchors are Xolotl's RTX 4090 numbers.
