@@ -8,6 +8,7 @@ mod load;
 mod prefill;
 mod selftest;
 mod serve;
+mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -251,6 +252,37 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         for (nm, t, k) in p.iter().take(25) {
                             println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
                         }
+                    }
+                    "vtest" => {
+                        // decode a greedy continuation, then replay it through verify with the true continuation as
+                        // drafts: every draft should be accepted; times the verify passes
+                        let t: usize = w[1].parse()?;
+                        let prompt: Vec<u32> = vec![0, 671, 6102, 294, 8760, 344, 11111, 16, 455, 6102, 294, 10322, 344];
+                        let mut next = dec.prefill(&prompt)?;
+                        let mut cont = vec![next];
+                        for _ in 0..40 {
+                            next = dec.step(next)?;
+                            cont.push(next);
+                        }
+                        dec.reset()?;
+                        let _ = dec.prefill(&prompt)?;
+                        let (mut i, mut passes, mut acc_tot, mut us) = (0usize, 0usize, 0usize, 0f64);
+                        while i + t < cont.len() {
+                            let feed = &cont[i..i + t];
+                            dec.g.sync()?;
+                            let t0 = Instant::now();
+                            let out = dec.verify(feed)?;
+                            us += t0.elapsed().as_secs_f64() * 1e6;
+                            let mut acc = 0;
+                            while acc + 1 < t && out[acc] == cont[i + acc + 1] {
+                                acc += 1;
+                            }
+                            dec.commit(t, acc + 1)?;
+                            passes += 1;
+                            acc_tot += acc;
+                            i += acc + 1;
+                        }
+                        println!("verify T={t}: {passes} passes, {:.2} drafts accepted per pass (of {}), {:.0} us per pass", acc_tot as f64 / passes as f64, t - 1, us / passes as f64);
                     }
                     "pbench" => {
                         // prompt throughput on synthetic tokens from an empty context, then decode at that context

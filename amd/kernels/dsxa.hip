@@ -1643,3 +1643,4 @@ extern "C" __global__ void hc_mix_t(const float* pmix, HcArgs pa, const float* p
         hc_finish16(m1, prea, hc_eps, eps, iters, ln, o + 24, nullptr, nullptr);
     }
 }
+#include "verify.h"
