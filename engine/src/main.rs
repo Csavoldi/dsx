@@ -281,6 +281,8 @@ fn main() -> Result<()> {
                 p.clear();
             }
             let busy0 = gm.cpu_busy_s();
+            let (p0, c0) = gm.cpu_picks();
+            let ad0 = gm.adapt_s;
             let split0 = gm.cpu_split_s();
             let td = Instant::now();
             for _ in 0..n {
@@ -289,7 +291,15 @@ fn main() -> Result<()> {
                 logits = gm.step(next)?;
             }
             let el = td.elapsed().as_secs_f64();
-            println!("decode {n} tokens in {el:.2} s ({:.2} tok/s); CPU experts busy {:.1} ms/token", n as f64 / el, (gm.cpu_busy_s() - busy0) * 1e3 / n as f64);
+            let (p1, c1) = gm.cpu_picks();
+            println!(
+                "decode {n} tokens in {el:.2} s ({:.2} tok/s); CPU experts busy {:.1} ms/token, {:.1}% of picks on the CPU; GPU0 expert swaps {} ({:.2} ms/token host)",
+                n as f64 / el,
+                (gm.cpu_busy_s() - busy0) * 1e3 / n as f64,
+                100.0 * (c1 - c0) as f64 / (p1 - p0).max(1) as f64,
+                gm.adapt_swaps,
+                (gm.adapt_s - ad0) * 1e3 / n as f64
+            );
             if let Some(p) = &gm.prof {
                 for (k, v) in p {
                     println!("  {k:<28} {:.2} ms/token", v * 1e3 / n as f64);

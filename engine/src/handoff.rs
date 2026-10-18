@@ -72,6 +72,12 @@ pub struct CpuWorker {
     pub split_ns: Arc<[std::sync::atomic::AtomicU64; 3]>,
     /// per layer: [sum of (CPU wall clock when the picks were seen - GPU globaltimer at publish) ns, count]
     pub leg1_ns: Arc<Vec<[std::sync::atomic::AtomicU64; 2]>>,
+    /// [layer * E + expert]: the CPU computes it (not resident on a GPU); changed only between tokens
+    pub on_cpu: Arc<Vec<AtomicBool>>,
+    /// [layer * E + expert]: picks, decayed x0.97 per decode pass (f32 bits), for adaptive GPU residency
+    pub score: Arc<Vec<AtomicU32>>,
+    /// [routed picks, picks computed by the CPU]
+    pub picks: Arc<[std::sync::atomic::AtomicU64; 2]>,
 }
 
 /// u64 slots next to the flags: GPU publish time (ROUTE + 8), CPU store time (CPU + 8); per-layer GPU-side
@@ -85,6 +91,12 @@ pub fn wall_ns() -> u64 {
 impl CpuWorker {
     /// `on_cpu[l][e]`: the CPU computes expert e of layer l (not resident on a GPU).
     pub fn spawn(m: &'static Model, xch: &'static Xch, on_cpu: Vec<Vec<bool>>, top_k: usize, arena: Option<&'static crate::experts::Arena>) -> CpuWorker {
+        let ne = m.cfg.n_experts;
+        let on_cpu: Arc<Vec<AtomicBool>> = Arc::new(on_cpu.iter().flatten().map(|&b| AtomicBool::new(b)).collect());
+        let score: Arc<Vec<AtomicU32>> = Arc::new((0..on_cpu.len()).map(|_| AtomicU32::new(0)).collect());
+        let (oc, sc) = (on_cpu.clone(), score.clone());
+        let picks: Arc<[std::sync::atomic::AtomicU64; 2]> = Arc::new(Default::default());
+        let pk = picks.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let busy_ns = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let split_ns: Arc<[std::sync::atomic::AtomicU64; 3]> = Arc::new(Default::default());
@@ -107,6 +119,8 @@ impl CpuWorker {
                 let mut t_done = std::time::Instant::now();
                 // profiling only (DS41_CPU_NOOP=1): skip the CPU experts to time the bare handoff (wrong output)
                 let noop = std::env::var_os("DS41_CPU_NOOP").is_some();
+                // DS41_LOG_ROUTES=path: one line per (pass, layer) with every token's picks, for placement studies
+                let mut route_log = std::env::var("DS41_LOG_ROUTES").ok().and_then(|p| std::fs::File::create(p).ok()).map(std::io::BufWriter::new);
                 loop {
                     seq += 1;
                     let l = (seq as usize - 1) % nl;
@@ -126,15 +140,26 @@ impl CpuWorker {
                     y.resize(nt * d, 0.0);
                     x.copy_from_slice(xch.x(nt));
                     let (sel, wts) = (xch.sel(nt * top_k).to_vec(), xch.wts(nt * top_k).to_vec());
+                    if let Some(f) = route_log.as_mut() {
+                        use std::io::Write;
+                        let _ = writeln!(f, "{l} {}", sel.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(" "));
+                        if l + 1 == nl {
+                            let _ = f.flush();
+                        }
+                    }
                     // distinct CPU-side experts over the tokens, with per-token weights (0 = not routed there)
                     let mut experts: Vec<usize> = vec![];
                     let mut w: Vec<f32> = vec![];
                     for t in 0..nt {
                         for j in 0..top_k {
                             let e = sel[t * top_k + j] as usize;
-                            if !on_cpu[l][e] {
+                            let a = &sc[l * ne + e];
+                            a.store((f32::from_bits(a.load(Ordering::Relaxed)) + 1.0).to_bits(), Ordering::Relaxed);
+                            pk[0].fetch_add(1, Ordering::Relaxed);
+                            if !oc[l * ne + e].load(Ordering::Relaxed) {
                                 continue;
                             }
+                            pk[1].fetch_add(1, Ordering::Relaxed);
                             let i = match experts.iter().position(|&x| x == e) {
                                 Some(i) => i,
                                 None => {
@@ -166,12 +191,21 @@ impl CpuWorker {
                     xch.y_cpu(nt).copy_from_slice(&y);
                     unsafe { std::ptr::write_volatile(xch.at::<u64>(CPU + 8), wall_ns()) };
                     xch.flag(CPU).store(seq, Ordering::Release);
+                    if l + 1 == nl {
+                        // end of a pass: decay the usage scores (after the flag, off the critical path)
+                        for a in sc.iter() {
+                            let v = f32::from_bits(a.load(Ordering::Relaxed));
+                            if v != 0.0 {
+                                a.store(if v < 0.01 { 0.0 } else { v * 0.97 }.to_bits(), Ordering::Relaxed);
+                            }
+                        }
+                    }
                     t_done = std::time::Instant::now();
                     busy.fetch_add((t_done - t0).as_nanos() as u64, Ordering::Relaxed);
                 }
             })
             .expect("spawn cpu-experts");
-        CpuWorker { stop, handle: Some(handle), busy_ns, split_ns, leg1_ns }
+        CpuWorker { stop, handle: Some(handle), busy_ns, split_ns, leg1_ns, on_cpu, score, picks }
     }
 }
 

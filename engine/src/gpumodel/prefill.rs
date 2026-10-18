@@ -257,6 +257,7 @@ impl GpuModel<'_> {
     }
 
     pub(super) fn prefill_pass(&mut self, pb: &PrefillBufs, tokens: &[u32], last: bool, all_logits: bool) -> Result<Option<Vec<Vec<f32>>>> {
+        self.adapt_flush()?;
         let m = self.m;
         let c = &m.cfg;
         let (d, hc, hd, nh, w) = (c.dim, c.hc, c.head_dim, c.n_heads, c.window);

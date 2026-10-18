@@ -386,6 +386,30 @@ impl Gpu {
     }
 
     pub fn launch(&self, k: Kernel, grid: (u32, u32, u32), block: u32, smem: u32, args: &[Arg]) -> Result<()> {
+        self.launch_on(self.stream, k, grid, block, smem, args)
+    }
+
+    /// launch on the side stream (background work that must not wait behind the main stream)
+    pub fn launch_side(&self, k: Kernel, grid: (u32, u32, u32), block: u32, smem: u32, args: &[Arg]) -> Result<()> {
+        self.launch_on(self.side, k, grid, block, smem, args)
+    }
+
+    /// true once all work recorded before `e` has finished (non-blocking)
+    pub fn done(&self, e: Event) -> Result<bool> {
+        self.bind();
+        match unsafe { cu::cuEventQuery(e.0) } {
+            cu::CUresult::CUDA_SUCCESS => Ok(true),
+            cu::CUresult::CUDA_ERROR_NOT_READY => Ok(false),
+            r => check(r, "cuEventQuery").map(|_| false),
+        }
+    }
+
+    pub fn side_sync(&self) -> Result<()> {
+        self.bind();
+        unsafe { check(cu::cuStreamSynchronize(self.side), "cuStreamSynchronize") }
+    }
+
+    fn launch_on(&self, stream: cu::CUstream, k: Kernel, grid: (u32, u32, u32), block: u32, smem: u32, args: &[Arg]) -> Result<()> {
         let mut vals = [0u64; 32];
         let mut ptrs = [std::ptr::null_mut::<c_void>(); 32];
         for (i, a) in args.iter().enumerate() {
@@ -401,7 +425,7 @@ impl Gpu {
         self.bind();
         unsafe {
             check(
-                cu::cuLaunchKernel(k.0, grid.0, grid.1, grid.2, block, 1, 1, smem, self.stream, ptrs.as_mut_ptr(), std::ptr::null_mut()),
+                cu::cuLaunchKernel(k.0, grid.0, grid.1, grid.2, block, 1, 1, smem, stream, ptrs.as_mut_ptr(), std::ptr::null_mut()),
                 "cuLaunchKernel",
             )
         }

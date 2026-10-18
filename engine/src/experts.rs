@@ -4,7 +4,7 @@
 //! mma, int8 activations, up to 8 tokens per weight read); DS41_OLD_MOE=1 keeps the GGUF blocks and moe_gu / moe_down.
 
 use crate::gguf::GType;
-use crate::gpu::{Arg, Buf, Gpu, Kernel};
+use crate::gpu::{Arg, Buf, Event, Gpu, Kernel};
 use crate::model::Model;
 use anyhow::{Result, bail};
 use std::collections::HashMap;
@@ -79,6 +79,28 @@ pub struct GpuExperts {
     pub bytes: usize,
     /// weights repacked for the fast kernels (expert_fast.cuh); None = raw GGUF blocks (DS41_OLD_MOE=1)
     fast: Option<Fast>,
+    /// adaptive residency (enable_swaps): in-flight replacements
+    swap: Option<Swapper>,
+}
+
+/// An expert replacing a same-type victim in place: its raw matrices go to a staging buffer and are repacked into the
+/// victim's slot on the side stream; it becomes resident (table entry, `slots`) only at commit, between tokens.
+struct Pending {
+    l: usize,
+    e: usize,
+    slot: Slot,
+    stage: usize,
+}
+
+struct Swapper {
+    /// one staging buffer (gate | up | down raw) and one event per in-flight replacement
+    stage: Vec<(Buf, Event)>,
+    /// pinned ring of 32-byte table entries for async writes (at most a few dozen per token; the main stream is
+    /// synchronized every token, so a slot is free again long before the ring wraps)
+    ring: crate::gpu::HostBuf,
+    ring_i: usize,
+    free: Vec<usize>,
+    pending: Vec<Pending>,
 }
 
 fn gemv_name(t: GType) -> Result<&'static str> {
@@ -99,9 +121,15 @@ pub fn repacked_id(t: GType) -> Result<i32> {
 
 /// Enqueue: dst (a matrix of rows x k, same size as src) = src (raw GGUF blocks of type t) repacked.
 pub fn repack(g: &Gpu, t: GType, src: u64, dst: u64, rows: usize, k: usize) -> Result<()> {
+    repack_on(g, false, t, src, dst, rows, k)
+}
+
+fn repack_on(g: &Gpu, side: bool, t: GType, src: u64, dst: u64, rows: usize, k: usize) -> Result<()> {
     repacked_id(t)?;
     let blocks = rows * k / t.block().0;
-    g.launch(g.kernel("repack_expert")?, ((blocks as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::I(t as u32 as i32), Arg::P(src), Arg::P(dst), Arg::I(rows as i32), Arg::I(k as i32)])
+    let args = [Arg::I(t as u32 as i32), Arg::P(src), Arg::P(dst), Arg::I(rows as i32), Arg::I(k as i32)];
+    let grid = ((blocks as u32).div_ceil(256), 1, 1);
+    if side { g.launch_side(g.kernel("repack_expert")?, grid, 256, 0, &args) } else { g.launch(g.kernel("repack_expert")?, grid, 256, 0, &args) }
 }
 
 impl GpuExperts {
@@ -213,7 +241,112 @@ impl GpuExperts {
             lim: c.lim,
             bytes: total,
             fast,
+            swap: None,
         })
+    }
+
+    /// Allow up to `n` in-flight replacements (fast layout only), each staging at most `max_raw` bytes.
+    pub fn enable_swaps(&mut self, g: &Gpu, n: usize, max_raw: usize) -> Result<()> {
+        if self.fast.is_none() || n == 0 {
+            return Ok(());
+        }
+        let stage = (0..n).map(|_| Ok((g.alloc(max_raw)?, g.event()?))).collect::<Result<Vec<_>>>()?;
+        self.swap = Some(Swapper { stage, ring: crate::gpu::HostBuf::new(32 * 1024)?, ring_i: 0, free: (0..n).rev().collect(), pending: vec![] });
+        Ok(())
+    }
+
+    /// (gate/up type, down type) of a resident expert
+    pub fn types(&self, l: usize, e: usize) -> Option<(GType, GType)> {
+        self.slots.get(&(l, e)).map(|s| (s.gu, s.dn))
+    }
+
+    pub fn residents(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.slots.keys().copied()
+    }
+
+    /// replacements started and not committed yet
+    pub fn pending(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.swap.iter().flat_map(|s| s.pending.iter().map(|p| (p.l, p.e)))
+    }
+
+    /// free staging buffers (how many replacements can start now)
+    pub fn swap_room(&self) -> usize {
+        self.swap.as_ref().map_or(0, |s| s.free.len())
+    }
+
+    /// ExpSlot entry of `sl` (None = not resident) written to the device table, ordered on the main stream
+    fn write_entry(&mut self, g: &Gpu, l: usize, e: usize, sl: Option<&Slot>) -> Result<()> {
+        let mut b = [0u8; 32];
+        match sl {
+            Some(sl) => {
+                let id = |t: GType| if self.fast.is_some() { 2000 + t as u32 } else { t as u32 };
+                b[0..8].copy_from_slice(&(sl.gate - self.buf.ptr).to_le_bytes());
+                b[8..16].copy_from_slice(&(sl.up - self.buf.ptr).to_le_bytes());
+                b[16..24].copy_from_slice(&(sl.down - self.buf.ptr).to_le_bytes());
+                b[24..28].copy_from_slice(&id(sl.gu).to_le_bytes());
+                b[28..32].copy_from_slice(&id(sl.dn).to_le_bytes());
+            }
+            None => b[0..8].copy_from_slice(&u64::MAX.to_le_bytes()),
+        }
+        let dst = self.tab.ptr + ((l * self.n_experts + e) * 32) as u64;
+        match self.swap.as_mut() {
+            Some(sw) => {
+                let i = sw.ring_i % 1024;
+                sw.ring_i += 1;
+                let r = &mut sw.ring.as_mut_slice::<u8>()[i * 32..i * 32 + 32];
+                r.copy_from_slice(&b);
+                g.htod(dst, r)
+            }
+            None => g.htod_sync(dst, &b),
+        }
+    }
+
+    /// Between tokens (both streams idle on this store's experts): drop `victim` now and start loading `new`
+    /// (raw GGUF matrices `raw`, same types as the victim) into its slot. `new` is resident after commit_ready.
+    pub fn begin_swap(&mut self, g: &Gpu, victim: (usize, usize), new: (usize, usize), raw: [&[u8]; 3]) -> Result<bool> {
+        let (Some(sw), Some(vs)) = (self.swap.as_mut(), self.slots.get(&victim)) else { return Ok(false) };
+        let Some(si) = sw.free.pop() else { return Ok(false) };
+        let (stage, ev) = (sw.stage[si].0.ptr, sw.stage[si].1);
+        let (gu, dn, inter, dim) = (vs.gu, vs.dn, self.inter, self.dim);
+        let slot = Slot { gate: vs.gate, up: vs.up, down: vs.down, gu, dn };
+        let _ = sw;
+        self.slots.remove(&victim);
+        self.write_entry(g, victim.0, victim.1, None)?;
+        let (og, ou) = (raw[0].len() as u64, (raw[0].len() + raw[1].len()) as u64);
+        g.htod_side(stage, raw[0])?;
+        g.htod_side(stage + og, raw[1])?;
+        g.htod_side(stage + ou, raw[2])?;
+        repack_on(g, true, gu, stage, slot.gate, inter, dim)?;
+        repack_on(g, true, gu, stage + og, slot.up, inter, dim)?;
+        repack_on(g, true, dn, stage + ou, slot.down, dim, inter)?;
+        g.record(ev, true)?;
+        self.swap.as_mut().unwrap().pending.push(Pending { l: new.0, e: new.1, slot, stage: si });
+        Ok(true)
+    }
+
+    /// Make finished replacements resident (`all`: wait for every one). Returns the experts committed.
+    pub fn commit_ready(&mut self, g: &Gpu, all: bool) -> Result<Vec<(usize, usize)>> {
+        let Some(sw) = self.swap.as_mut() else { return Ok(vec![]) };
+        if all && !sw.pending.is_empty() {
+            g.side_sync()?;
+        }
+        let mut done = vec![];
+        let mut i = 0;
+        while i < sw.pending.len() {
+            if g.done(sw.stage[sw.pending[i].stage].1)? {
+                done.push(sw.pending.swap_remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        let mut out = vec![];
+        for p in done {
+            self.write_entry(g, p.l, p.e, Some(&p.slot))?;
+            self.slots.insert((p.l, p.e), p.slot);
+            self.swap.as_mut().unwrap().free.push(p.stage);
+            out.push((p.l, p.e));
+        }
+        Ok(out)
     }
 
     /// device pointers (gate, up, down) of a resident expert and the type ids of gate/up and down as dequant_f16

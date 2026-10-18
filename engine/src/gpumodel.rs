@@ -145,6 +145,11 @@ pub struct GpuModel<'m> {
     xch: Option<&'static crate::handoff::Xch>,
     worker: Option<crate::handoff::CpuWorker>,
     arena: Option<&'static crate::experts::Arena>,
+    /// adaptive GPU0 residency: replacements started per token (DS41_ADAPT, default 8; 0 = static placement)
+    adapt: usize,
+    pub adapt_swaps: usize,
+    pub adapt_s: f64,
+    warned_nan: bool,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
     /// DS41_ROUTE_BIAS=x: per-layer selection bonus x for GPU-resident experts ([layers][E] f32), off by default
@@ -319,6 +324,10 @@ impl<'m> GpuModel<'m> {
             xch: None,
             worker: None,
             arena: None,
+            adapt: std::env::var("DS41_ADAPT").ok().and_then(|v| v.parse().ok()).unwrap_or(8),
+            adapt_swaps: 0,
+            adapt_s: 0.0,
+            warned_nan: false,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
             pb: None,
@@ -379,10 +388,12 @@ impl<'m> GpuModel<'m> {
         } else {
             (pl.gpu1_gb * 1e9) as usize
         };
+        let mut prior: Vec<(usize, usize, u64)> = vec![];
         let rank: Option<Vec<(usize, usize)>> = match &pl.rank {
             None => None,
             Some(p) => {
                 let v: Vec<(usize, usize, u64)> = serde_json::from_slice(&std::fs::read(p)?)?;
+                prior = v.clone();
                 let mut seen = std::collections::HashSet::new();
                 let mut r: Vec<(usize, usize)> = v.into_iter().map(|(l, e, _)| (l, e)).filter(|x| seen.insert(*x)).collect();
                 // experts the ranking does not cover go last, layer-major
@@ -399,7 +410,15 @@ impl<'m> GpuModel<'m> {
         if gpu0_bytes > 0 || gpu1_bytes > 0 {
             let (a, b) = crate::experts::place(m, rank.as_deref(), gpu0_bytes, gpu1_bytes);
             if !a.is_empty() {
-                gm.exp0 = Some(crate::experts::GpuExperts::new(&gm.g, m, &a)?);
+                let mut s0 = crate::experts::GpuExperts::new(&gm.g, m, &a)?;
+                // staging for in-flight replacements: the largest expert's raw bytes
+                let max_raw = (0..c.n_layers)
+                    .flat_map(|l| (0..c.n_experts).map(move |e| (l, e)))
+                    .map(|(l, e)| { let x = &m.layers[l].experts[e]; x.gate.bytes().len() + x.up.bytes().len() + x.down.bytes().len() })
+                    .max()
+                    .unwrap_or(0);
+                s0.enable_swaps(&gm.g, gm.adapt, max_raw)?;
+                gm.exp0 = Some(s0);
             }
             if !b.is_empty() {
                 let g1 = Gpu::new(ordinal + 1)?;
@@ -438,7 +457,11 @@ impl<'m> GpuModel<'m> {
             let ms: &'static Model = unsafe { std::mem::transmute::<&Model, &'static Model>(m) };
             let arena: Option<&'static crate::experts::Arena> = if pl.arena_gb > 0.0 {
                 let order: Vec<(usize, usize)> = rank.clone().unwrap_or_else(|| (0..c.n_experts).flat_map(|e| (0..c.n_layers).map(move |l| (l, e))).collect());
-                let cpu: Vec<(usize, usize)> = order.into_iter().filter(|&(l, e)| on_cpu[l][e]).collect();
+                let adaptive = gm.adapt > 0 && gm.exp0.as_ref().is_some_and(|s| s.is_fast());
+                let cpu: Vec<(usize, usize)> = order
+                    .into_iter()
+                    .filter(|&(l, e)| on_cpu[l][e] || (adaptive && !gm.exp1.as_ref().is_some_and(|s| s.has(l, e))))
+                    .collect();
                 let t = std::time::Instant::now();
                 let (a, rest) = crate::experts::Arena::new(m, &cpu, (pl.arena_gb * 1e9) as usize)?;
                 eprintln!("arena: {} experts, {:.1} GB in {:.0} s; {} left in the file", a.slots.len(), a.bytes as f64 / 1e9, t.elapsed().as_secs_f64(), rest.len());
@@ -448,6 +471,16 @@ impl<'m> GpuModel<'m> {
             };
             gm.arena = arena;
             gm.worker = Some(crate::handoff::CpuWorker::spawn(ms, xch, on_cpu, c.top_k, arena));
+            // adaptive residency starts from the calibration prior: each expert's expected decayed score (its share of
+            // the calibration tokens per layer x 1 / (1 - 0.97)), so placed experts keep their slots until the live
+            // routing disagrees, instead of every slot looking idle at the first token
+            if let Some(w) = gm.worker.as_ref() {
+                let per_layer: u64 = prior.iter().filter(|x| x.0 == 0).map(|x| x.2).sum::<u64>().max(1) / c.top_k as u64;
+                for &(l, e, n) in &prior {
+                    let v = n as f32 / per_layer as f32 / (1.0 - 0.97);
+                    w.score[l * c.n_experts + e].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             let d0 = xch.buf.dev_ptr(&gm.g)?;
             let d1 = match gm.g1.as_ref() { Some(g1) => xch.buf.dev_ptr(g1)?, None => 0 };
             gm.g.bind();
@@ -563,6 +596,74 @@ impl<'m> GpuModel<'m> {
         self.g.launch(self.k["sparse_attn_merge"], (t as u32, nh as u32, 1), 256, 0, &[Arg::P(self.attn_part.ptr), Arg::I(s as i32), Arg::P(sinks), Arg::P(o), Arg::I(nh as i32), Arg::I(hd as i32)])
     }
 
+    /// Between tokens: make finished GPU0 replacements resident, then start up to `adapt` more: non-resident experts
+    /// with the highest decayed usage take the slot of the lowest-scoring resident of the same quant types.
+    /// Both GPUs and the CPU worker are idle here (step downloaded the logits). An expert is computed by exactly one
+    /// side in every token: the CPU stops at commit, starts again at eviction.
+    fn adapt_step(&mut self) -> Result<()> {
+        let ne = self.m.cfg.n_experts;
+        let (Some(w), Some(arena)) = (self.worker.as_ref(), self.arena) else { return Ok(()) };
+        let Some(s0) = self.exp0.as_mut() else { return Ok(()) };
+        for (l, e) in s0.commit_ready(&self.g, false)? {
+            w.on_cpu[l * ne + e].store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        let room = s0.swap_room();
+        if room == 0 {
+            return Ok(());
+        }
+        let sc = |l: usize, e: usize| f32::from_bits(w.score[l * ne + e].load(std::sync::atomic::Ordering::Relaxed));
+        let pending: std::collections::HashSet<(usize, usize)> = s0.pending().collect();
+        let mut cand: Vec<(f32, usize, usize)> = (0..w.score.len())
+            .filter_map(|i| {
+                let (l, e) = (i / ne, i % ne);
+                let v = sc(l, e);
+                (v >= 1.0 && w.on_cpu[i].load(std::sync::atomic::Ordering::Relaxed) && !pending.contains(&(l, e)) && arena.get(l, e).is_some()).then_some((v, l, e))
+            })
+            .collect();
+        cand.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        cand.truncate(room * 4);
+        // residents by quant types, coldest last (popped first)
+        let mut victims: std::collections::HashMap<(crate::gguf::GType, crate::gguf::GType), Vec<(f32, usize, usize)>> = Default::default();
+        for (vl, ve) in s0.residents() {
+            victims.entry(s0.types(vl, ve).unwrap()).or_default().push((sc(vl, ve), vl, ve));
+        }
+        for v in victims.values_mut() {
+            v.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        }
+        let mut started = 0;
+        for &(v, l, e) in cand.iter() {
+            if started == room {
+                break;
+            }
+            let x = &self.m.layers[l].experts[e];
+            let Some(list) = victims.get_mut(&(x.gate.ty, x.down.ty)) else { continue };
+            let Some(&(vs, vl, ve)) = list.last() else { continue };
+            if vs >= v * 0.5 {
+                continue; // hysteresis: replace only clearly colder residents
+            }
+            list.pop();
+            let raw = arena.get(l, e).unwrap();
+            w.on_cpu[vl * ne + ve].store(true, std::sync::atomic::Ordering::Relaxed);
+            if !s0.begin_swap(&self.g, (vl, ve), (l, e), raw)? {
+                w.on_cpu[vl * ne + ve].store(false, std::sync::atomic::Ordering::Relaxed);
+                break;
+            }
+            started += 1;
+            self.adapt_swaps += 1;
+        }
+        Ok(())
+    }
+
+    /// Before a multi-token pass (prefill, verify, eval): finish and commit every in-flight replacement.
+    pub(crate) fn adapt_flush(&mut self) -> Result<()> {
+        let ne = self.m.cfg.n_experts;
+        let (Some(w), Some(s0)) = (self.worker.as_ref(), self.exp0.as_mut()) else { return Ok(()) };
+        for (l, e) in s0.commit_ready(&self.g, true)? {
+            w.on_cpu[l * ne + e].store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     /// DS41_PROF=host: add host time since `t0` under `name`
     fn hmark(&mut self, t0: std::time::Instant, name: &'static str) {
         if self.prof_host {
@@ -663,6 +764,11 @@ impl<'m> GpuModel<'m> {
                 (s1 as f64 / n1 / 1e3, d[0] as i64 as f64 / (d[1].max(1) as f64) / 1e3)
             })
             .collect()
+    }
+
+    /// routed picks so far and how many the CPU computed
+    pub fn cpu_picks(&self) -> (u64, u64) {
+        self.worker.as_ref().map_or((0, 0), |w| (w.picks[0].load(std::sync::atomic::Ordering::Relaxed), w.picks[1].load(std::sync::atomic::Ordering::Relaxed)))
     }
 
     /// CPU worker [idle, prep, forward] seconds
@@ -1108,8 +1214,19 @@ impl<'m> GpuModel<'m> {
     pub fn step(&mut self, token: u32) -> Result<Vec<f32>> {
         let t_step = std::time::Instant::now();
         let r = self.step_inner(token);
+        if let Ok(l) = &r {
+            if l.iter().any(|v| !v.is_finite()) && !self.warned_nan {
+                self.warned_nan = true;
+                eprintln!("warning: non-finite logits at position {} (token {token}); the routers fall back to valid experts", self.pos);
+            }
+        }
         if r.is_ok() {
             self.ev_collect()?;
+            if self.adapt > 0 {
+                let t = std::time::Instant::now();
+                self.adapt_step()?;
+                self.adapt_s += t.elapsed().as_secs_f64();
+            }
         }
         if let Some(p) = self.prof.as_mut() {
             *p.entry("step total").or_default() += t_step.elapsed().as_secs_f64();

@@ -746,6 +746,9 @@ extern "C" __global__ void router_topk(const float *logits, const float *bias, i
     sc[e] = sqrtf(sp);
     // sel_bonus (optional, off by default): a selection-only nudge toward GPU-resident experts; weights stay exact
     key[e] = sc[e] + bias[e] + (sel_bonus ? sel_bonus[e] : 0.f);
+    // a NaN hidden state must not become an out-of-range expert index downstream
+    if (isnan(key[e])) key[e] = -INFINITY;
+    if (isnan(sc[e])) sc[e] = 0.f;
   }
   __syncwarp();
   float wsum = 0.f;
@@ -760,6 +763,7 @@ extern "C" __global__ void router_topk(const float *logits, const float *bias, i
       int oi = __shfl_xor_sync(0xffffffff, bi, o);
       if (ob > best || (ob == best && oi < bi)) { best = ob; bi = oi; }
     }
+    if (bi >= E) bi = r;  // every key -inf (NaN input): any valid expert, zero weight below
     sel[r] = bi;
     wsum += sc[bi];
     __syncwarp();
