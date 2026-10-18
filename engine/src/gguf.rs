@@ -279,3 +279,88 @@ impl Gguf {
         }
     }
 }
+
+/// Write `src` as `n` llama.cpp-style split files `<prefix>-0000k-of-0000n.gguf`, tensors in file order, balanced by
+/// bytes. Shard 1 carries all metadata; every shard carries `split.no`, `split.count`, `split.tensors.count`.
+pub fn split(src: &Path, prefix: &str, n: usize) -> Result<Vec<PathBuf>> {
+    use std::io::{BufWriter, Write};
+    let g = Gguf::open(src)?;
+    anyhow::ensure!(g.paths.len() == 1, "{} is already split", src.display());
+    let map = &g.maps[0];
+    // the metadata section verbatim: after magic, version, tensor count, kv count
+    let mut c = Cursor { b: map, p: 24 };
+    let nkv = u64::from_le_bytes(map[16..24].try_into()?) as usize;
+    for _ in 0..nkv {
+        c.string()?;
+        let t = c.u32()?;
+        c.value(t)?;
+    }
+    let kv_raw = &map[24..c.p];
+    let align = g.kv.get("general.alignment").and_then(|v| v.as_u64()).unwrap_or(32);
+    let total: u64 = g.order.iter().map(|k| g.tensors[k].bytes).sum();
+    // cut points: shard s ends at the first tensor boundary past s/n of the bytes
+    let mut groups: Vec<Vec<&TensorInfo>> = vec![vec![]; n];
+    let mut acc = 0u64;
+    for k in &g.order {
+        let t = &g.tensors[k];
+        let s = ((acc as u128 * n as u128 / total as u128) as usize).min(n - 1);
+        groups[s].push(t);
+        acc += t.bytes;
+    }
+    anyhow::ensure!(groups.iter().all(|v| !v.is_empty()), "too many shards for {} tensors", g.order.len());
+    let s64 = |w: &mut Vec<u8>, s: &str| {
+        w.extend((s.len() as u64).to_le_bytes());
+        w.extend(s.as_bytes());
+    };
+    let mut out = vec![];
+    for (si, ts) in groups.iter().enumerate() {
+        let mut h: Vec<u8> = b"GGUF".to_vec();
+        h.extend(3u32.to_le_bytes());
+        h.extend((ts.len() as u64).to_le_bytes());
+        let split_kv = 3u64;
+        h.extend((if si == 0 { nkv as u64 + split_kv } else { split_kv + 1 }).to_le_bytes());
+        if si == 0 {
+            h.extend(kv_raw);
+        } else {
+            s64(&mut h, "general.alignment");
+            h.extend(4u32.to_le_bytes());
+            h.extend((align as u32).to_le_bytes());
+        }
+        s64(&mut h, "split.no");
+        h.extend(2u32.to_le_bytes());
+        h.extend((si as u16).to_le_bytes());
+        s64(&mut h, "split.count");
+        h.extend(2u32.to_le_bytes());
+        h.extend((n as u16).to_le_bytes());
+        s64(&mut h, "split.tensors.count");
+        h.extend(5u32.to_le_bytes());
+        h.extend((g.order.len() as i32).to_le_bytes());
+        let mut off = 0u64;
+        for t in ts {
+            s64(&mut h, &t.name);
+            h.extend((t.dims.len() as u32).to_le_bytes());
+            for d in &t.dims {
+                h.extend(d.to_le_bytes());
+            }
+            h.extend((t.ty as u32).to_le_bytes());
+            h.extend(off.to_le_bytes());
+            off = (off + t.bytes).div_ceil(align) * align;
+        }
+        h.resize((h.len() as u64).div_ceil(align) as usize * align as usize, 0);
+        let path = PathBuf::from(format!("{prefix}-{:05}-of-{n:05}.gguf", si + 1));
+        let mut w = BufWriter::with_capacity(64 << 20, File::create(&path).with_context(|| format!("create {}", path.display()))?);
+        w.write_all(&h)?;
+        let mut pos = 0u64;
+        for t in ts {
+            w.write_all(g.bytes(t))?;
+            pos += t.bytes;
+            let pad = pos.div_ceil(align) * align - pos;
+            w.write_all(&vec![0u8; pad as usize])?;
+            pos += pad;
+        }
+        w.into_inner().map_err(|e| anyhow::anyhow!("{e}"))?.sync_all()?;
+        eprintln!("{}: {} tensors, {:.2} GB", path.display(), ts.len(), pos as f64 / 1e9);
+        out.push(path);
+    }
+    Ok(out)
+}
