@@ -1452,6 +1452,38 @@ impl Decoder {
     }
 
     /// Host side of the Engram lookup for the newest token: hash ids -> rows (fp8 + e8m0) into pinned memory.
+    /// Engram rows for a batch of new tokens into `out` ([t][2][ENG_ROW_BYTES]): hashes on the host, the 48 random
+    /// row reads per token in parallel (the tables are on NVMe; serial reads cost ~100 us each on a page-cache miss).
+    pub(crate) fn engram_rows_batch(&mut self, tokens: &[u32], out: &mut [u8]) -> Result<()> {
+        use rayon::prelude::*;
+        let c = &self.cfg;
+        let base_len = self.hist_tokens.len();
+        for &t in tokens {
+            self.hist_tokens.push(c.engram_token_map[t as usize] as i64);
+        }
+        let est = self.engram_st.as_ref().context("engram tables")?;
+        let hd = c.engram_dim;
+        let mut tabs = vec![];
+        for &l in &c.engram_layers {
+            let wt = est.get(&format!("layers.{l}.engram.embed.weight"))?;
+            let sct = est.get(&format!("layers.{l}.engram.embed.scale"))?;
+            tabs.push((est.bytes(wt), est.bytes(sct)));
+        }
+        let hist = &self.hist_tokens;
+        out.par_chunks_mut(2 * ENG_ROW_BYTES).enumerate().for_each(|(i, o)| {
+            for (ei, (wb, sb)) in tabs.iter().enumerate() {
+                let ids = engram_hashes(c, &hist[..base_len + i + 1], ei);
+                let ob = &mut o[ei * ENG_ROW_BYTES..(ei + 1) * ENG_ROW_BYTES];
+                for (r, &id) in ids.iter().enumerate() {
+                    let id = id as usize;
+                    ob[r * 256..(r + 1) * 256].copy_from_slice(&wb[id * hd..id * hd + 256]);
+                    ob[24 * 256 + r * 8..24 * 256 + r * 8 + 8].copy_from_slice(&sb[id * (hd / 32)..id * (hd / 32) + 8]);
+                }
+            }
+        });
+        Ok(())
+    }
+
     pub(crate) fn engram_rows(&mut self, token: u32) -> Result<()> {
         let c = &self.cfg;
         self.hist_tokens.push(c.engram_token_map[token as usize] as i64);
@@ -1462,14 +1494,16 @@ impl Decoder {
             let wt = est.get(&format!("layers.{l}.engram.embed.weight"))?;
             let sct = est.get(&format!("layers.{l}.engram.embed.scale"))?;
             let (wb, sb) = (est.bytes(wt), est.bytes(sct));
-            let base = unsafe { self.host.add(256 + ei * ENG_ROW_BYTES) };
-            for (r, &id) in ids.iter().enumerate() {
+            let base = unsafe { self.host.add(256 + ei * ENG_ROW_BYTES) } as usize;
+            use rayon::prelude::*;
+            ids.par_iter().enumerate().for_each(|(r, &id)| {
                 let id = id as usize;
+                let base = base as *mut u8;
                 unsafe {
                     std::ptr::copy_nonoverlapping(wb[id * hd..].as_ptr(), base.add(r * 256), 256);
                     std::ptr::copy_nonoverlapping(sb[id * (hd / 32)..].as_ptr(), base.add(24 * 256 + r * 8), 8);
                 }
-            }
+            });
         }
         Ok(())
     }

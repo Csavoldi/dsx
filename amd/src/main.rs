@@ -226,6 +226,21 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                     }
                     "bench" => bench(&mut dec, w[1].parse()?, w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(24), false)?,
                     "prof" => bench(&mut dec, w[1].parse()?, 8, true)?,
+                    "pprof" => {
+                        let n: usize = w[1].parse()?;
+                        let toks: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % 120000) as u32).collect();
+                        dec.g.sync()?;
+                        dec.g.prof_start();
+                        let t0 = Instant::now();
+                        let r = dec.prefill(&toks);
+                        let p = dec.g.prof_end()?;
+                        r?;
+                        let tot: f32 = p.iter().map(|x| x.1).sum();
+                        println!("prefill {n}: {:.2} s wall, {:.0} us in kernels ({} launches)", t0.elapsed().as_secs_f64(), tot, p.iter().map(|x| x.2).sum::<usize>());
+                        for (nm, t, k) in p.iter().take(25) {
+                            println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
+                        }
+                    }
                     "pbench" => {
                         // prompt throughput on synthetic tokens from an empty context, then decode at that context
                         let n: usize = w[1].parse()?;

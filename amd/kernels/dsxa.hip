@@ -131,11 +131,21 @@ DEV void hc_finish16(const float* mix, const HcArgs& a, float hc_eps, float eps,
 }
 
 // v[i] for i < n (block-wide) -> FP8 codes/scales per 32 and bf16 copy. f(i) gives the value.
-template <class F> DEV void write_act(int n, F&& f, uint8_t* oq, float* os, uint16_t* ob) {
+template <class F> DEV void write_act(int n, F&& f, uint8_t* oq, float* os, uint16_t* ob, uint16_t* obq = nullptr) {
     for (int i4 = threadIdx.x; i4 < n / 4; i4 += blockDim.x) {
         float v[4];
 #pragma unroll
         for (int q = 0; q < 4; q++) v[q] = f(4 * i4 + q);
+        if (obq) {
+            // bf16 copy of the FP8-quantized values (exact): what the prompt-path bf16 GEMM multiplies
+            float a = fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3])));
+            a = group_max<8>(a);
+            const float s = pow2_ceil(fmaxf(a, 1e-4f) / 448.f);
+            const uint32_t c = cvt_fp8x4(v[0] * (0.5f / s), v[1] * (0.5f / s), v[2] * (0.5f / s), v[3] * (0.5f / s));
+            const float d0 = fp8_to_f32(c, 0) * 2.f * s, d1 = fp8_to_f32(c, 1) * 2.f * s, d2 = fp8_to_f32(c, 2) * 2.f * s, d3 = fp8_to_f32(c, 3) * 2.f * s;
+            reinterpret_cast<uint32_t*>(obq)[2 * i4] = bf16_bits(d0) | bf16_bits(d1) << 16;
+            reinterpret_cast<uint32_t*>(obq)[2 * i4 + 1] = bf16_bits(d2) | bf16_bits(d3) << 16;
+        }
         // device-scope stores: consumers on other XCDs must not see stale L2 lines
         if (ob) {
             st_dev_u(reinterpret_cast<uint32_t*>(ob) + 2 * i4, bf16_bits(v[0]) | bf16_bits(v[1]) << 16);

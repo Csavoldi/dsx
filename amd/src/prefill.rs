@@ -7,7 +7,7 @@ use crate::hip::{Arg, Buf, Gpu};
 use anyhow::Result;
 
 /// tokens per chunk, and query rows per indexer sub-batch
-pub const TMAX: usize = 512;
+pub const TMAX: usize = 2048;
 const QB: usize = 32;
 
 #[repr(C)]
@@ -49,6 +49,11 @@ pub struct PfBufs {
     aq: Buf,
     as_: Buf,
     ab: Buf,
+    aqb: Buf,
+    hqb: Buf,
+    shqb: Buf,
+    eqb: Buf,
+    oqb: Buf,
     qraw: Buf,
     kvraw: Buf,
     ckv: Buf,
@@ -116,6 +121,11 @@ impl PfBufs {
             aq: b(t * 8192)?,
             as_: f(t * 256)?,
             ab: b(t * D * 2)?,
+            aqb: b(t * 8192 * 2)?,
+            hqb: b(t * 6 * INTER * 2)?,
+            shqb: b(t * INTER * 2)?,
+            eqb: b(t * 6144 * 2)?,
+            oqb: b(t * NH * HD * 2)?,
             qraw: f(t * QL)?,
             kvraw: f(t * HD)?,
             ckv: f(t * HD)?,
@@ -175,7 +185,8 @@ pub fn test_mm(g: &Gpu, fmt: i32, w: u64, sc: u64, woff: i64, soff: i64, n: usiz
     }
     let jb = g.upload(unsafe { std::slice::from_raw_parts(&j as *const MmJob as *const u8, std::mem::size_of::<MmJob>()) })?;
     let bb = g.upload(&blk)?;
-    g.launch("mm", (blk.len() as u32, 1, 1), 256, 0, &[Arg::P(jb.ptr), Arg::P(bb.ptr), Arg::I(cb.0 as i32), Arg::I(cb.1 as i32), Arg::I(cb.2 as i32)])?;
+    let kern = if xb != 0 && fmt != 4 || std::env::var_os("TEST_MM2").is_some() { "mm2" } else { "mm" };
+    g.launch(kern, (blk.len() as u32, 1, 1), 256, 0, &[Arg::P(jb.ptr), Arg::P(bb.ptr), Arg::I(cb.0 as i32), Arg::I(cb.1 as i32), Arg::I(cb.2 as i32)])?;
     g.sync()
 }
 
@@ -188,14 +199,46 @@ impl MmJob {
 impl Decoder {
     /// Run a batch of matrix jobs (each over `ntok` tokens) through the `mm` kernel.
     fn mm(&self, jobs: &[MmJob]) -> Result<()> {
+        self.mm_l("mm", jobs)
+    }
+
+    fn mm_l(&self, label: &str, jobs: &[MmJob]) -> Result<()> {
+        self.g.set_label(Some(label));
+        let r = self.mm_inner(jobs);
+        self.g.set_label(None);
+        r
+    }
+
+    fn mm_inner(&self, jobs: &[MmJob]) -> Result<()> {
         let pf = self.pf.as_ref().unwrap();
+        // mm2 multiplies bf16 copies of the FP8 activations: map each job's code buffer to its bf16 twin
+        let mm2 = std::env::var("DSXA_MM1").is_err();
+        let mut jobs = jobs.to_vec();
+        if mm2 {
+            for j in jobs.iter_mut() {
+                if j.fmt == 4 {
+                    continue;
+                }
+                let pairs = [(&pf.aq, &pf.aqb), (&pf.hq, &pf.hqb), (&pf.shq, &pf.shqb), (&pf.eq, &pf.eqb), (&pf.oq, &pf.oqb)];
+                let mut found = false;
+                for (q, b) in pairs {
+                    if j.xq >= q.ptr && j.xq < q.ptr + q.bytes as u64 {
+                        j.xb = b.ptr + (j.xq - q.ptr) * 2;
+                        found = true;
+                    }
+                }
+                anyhow::ensure!(found, "mm2: no bf16 activation for a job");
+            }
+        }
+        let jobs = &jobs[..];
         let mut blk: Vec<i32> = vec![];
         for (ji, j) in jobs.iter().enumerate() {
             let rbs = (j.n as usize).div_ceil(64);
             let tbs = (j.ntok as usize).div_ceil(128);
             for tb in 0..tbs {
                 for rb in 0..rbs {
-                    blk.push(((ji as i32) << 24) | ((rb as i32) << 8) | tb as i32);
+                    debug_assert!(rb < 4096 && tb < 256);
+                    blk.push(((ji as i32) << 20) | ((rb as i32) << 8) | tb as i32);
                 }
             }
         }
@@ -208,17 +251,17 @@ impl Decoder {
         // stream-ordered copies: an earlier mm launch on the stream may still read the previous table
         g.htod_async(pf.jobs.ptr, jb.as_ptr(), jb.len())?;
         g.htod_async(pf.blk.ptr, blk.as_ptr() as *const u8, blk.len() * 4)?;
-        g.launch("mm", (blk.len() as u32, 1, 1), 256, 0, &[Arg::P(pf.jobs.ptr), Arg::P(pf.blk.ptr), Arg::I(self.cb3[0] as i32), Arg::I(self.cb3[1] as i32), Arg::I(self.cb2 as i32)])
+        g.launch(if mm2 { "mm2" } else { "mm" }, (blk.len() as u32, 1, 1), 256, 0, &[Arg::P(pf.jobs.ptr), Arg::P(pf.blk.ptr), Arg::I(self.cb3[0] as i32), Arg::I(self.cb3[1] as i32), Arg::I(self.cb2 as i32)])
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn prep(&self, mode: i32, src: u64, src2: u64, lds: usize, nw: u64, part: u64, wt: u64, n: usize, rows: usize, oq: u64, os: u64, ob: u64) -> Result<()> {
+    fn prep(&self, mode: i32, src: u64, src2: u64, lds: usize, nw: u64, part: u64, wt: u64, n: usize, rows: usize, oq: u64, os: u64, ob: u64, obq: u64) -> Result<()> {
         self.g.launch(
             "prep_t",
             (rows as u32, 1, 1),
             256,
             0,
-            &[Arg::I(mode), Arg::P(src), Arg::P(src2), Arg::I(lds as i32), Arg::P(nw), Arg::P(part), Arg::P(wt), Arg::I(n as i32), Arg::F(self.cfg.eps), Arg::F(self.cfg.swiglu_limit), Arg::P(oq), Arg::P(os), Arg::P(ob)],
+            &[Arg::I(mode), Arg::P(src), Arg::P(src2), Arg::I(lds as i32), Arg::P(nw), Arg::P(part), Arg::P(wt), Arg::I(n as i32), Arg::F(self.cfg.eps), Arg::F(self.cfg.swiglu_limit), Arg::P(oq), Arg::P(os), Arg::P(ob), Arg::P(obq)],
         )
     }
 
@@ -242,11 +285,7 @@ impl Decoder {
         }
         // Engram rows for every token (host), into the device rows buffer [t][2][ER]
         let mut rows = vec![0u8; t * 2 * ER];
-        for (i, &tok) in tk.iter().enumerate() {
-            self.engram_rows(tok)?;
-            let src = unsafe { std::slice::from_raw_parts(self.host.add(256), 2 * ER) };
-            rows[i * 2 * ER..(i + 1) * 2 * ER].copy_from_slice(src);
-        }
+        self.engram_rows_batch(tk, &mut rows)?;
         let g = &self.g;
         let c = self.cfg.clone();
         let pf = self.pf.as_ref().unwrap();
@@ -277,10 +316,10 @@ impl Decoder {
                 if let Some((wkv, qk)) = &l.engram {
                     hc(pf.y.ptr, true, pf.mix_f.ptr, &p.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
                     let ei = c.engram_layers.iter().position(|&x| x == li).unwrap();
-                    g.launch("engram_act_t", (t as u32, 1, 1), 256, 0, &[Arg::P(pf.erows.at(ei * ER)), Arg::I((2 * ER) as i32), Arg::P(pf.eq.ptr), Arg::P(pf.es.ptr)])?;
+                    g.launch("engram_act_t", (t as u32, 1, 1), 256, 0, &[Arg::P(pf.erows.at(ei * ER)), Arg::I((2 * ER) as i32), Arg::P(pf.eq.ptr), Arg::P(pf.es.ptr), Arg::P(pf.eqb.ptr)])?;
                     let mut j = MmJob::dense(wkv, 0, pf.eq.ptr, pf.es.ptr, 6144, pf.ekv.ptr, 25600);
                     j.ntok = t as i32;
-                    self.mm(&[j])?;
+                    self.mm_l("mm engram", &[j])?;
                     g.memset(pf.esum.ptr, 0, t * 16 * 4)?;
                     g.launch("engram_sums", (5, 4, t as u32), 256, 0, &[Arg::P(pf.ekv.ptr), Arg::P(pf.h.ptr), Arg::P(qk.ptr), Arg::P(pf.esum.ptr)])?;
                     hc(0, false, 0, &none, pf.mix_f.ptr, &p.hc_ffn, l.hc_attn_fn.ptr, pf.mix_a.ptr, pf.xr_a.ptr, pf.xss_a.ptr, Some((pf.ekv.at(4 * D * 4), pf.esum.ptr)))?;
@@ -289,7 +328,7 @@ impl Decoder {
                 }
             }
             // ---- attention projections
-            self.prep(0, pf.xr_a.ptr, 0, D, l.attn_norm.ptr, pf.xss_a.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr)?;
+            self.prep(0, pf.xr_a.ptr, 0, D, l.attn_norm.ptr, pf.xss_a.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr, pf.aqb.ptr)?;
             let mut jobs = vec![MmJob::dense(&l.wq_a, 0, pf.aq.ptr, pf.as_.ptr, D, pf.qraw.ptr, QL), MmJob::dense(&l.wkv, 0, pf.aq.ptr, pf.as_.ptr, D, pf.kvraw.ptr, HD)];
             let mut bf = |m: &crate::load::DMat, y: u64, ldy: usize| {
                 let mut j = MmJob::dense(m, 4, 0, 0, D, y, ldy);
@@ -308,9 +347,9 @@ impl Decoder {
             for j in jobs.iter_mut() {
                 j.ntok = t as i32;
             }
-            self.mm(&jobs)?;
+            self.mm_l("mm q_a/kv/comp", &jobs)?;
             // q_b (+ indexer q) from rmsnorm(qr)
-            self.prep(1, pf.qraw.ptr, 0, QL, l.q_norm.ptr, 0, 0, QL, t, pf.aq.ptr, pf.as_.ptr, 0)?;
+            self.prep(1, pf.qraw.ptr, 0, QL, l.q_norm.ptr, 0, 0, QL, t, pf.aq.ptr, pf.as_.ptr, 0, pf.aqb.ptr)?;
             let mut jobs = vec![MmJob::dense(&l.wq_b, 0, pf.aq.ptr, pf.as_.ptr, QL, pf.q.ptr, NH * HD)];
             if let Some(m) = &l.idx_wq_b {
                 jobs.push(MmJob::dense(m, 0, pf.aq.ptr, pf.as_.ptr, QL, pf.iq.ptr, IH * ID));
@@ -318,7 +357,7 @@ impl Decoder {
             for j in jobs.iter_mut() {
                 j.ntok = t as i32;
             }
-            self.mm(&jobs)?;
+            self.mm_l("mm q_b", &jobs)?;
             let rf = if l.ratio > 0 { self.rope_fc.ptr } else { self.rope_f.ptr };
             g.launch("rope_t", (t as u32, NH as u32, 1), 32, 0, &[Arg::P(pf.q.ptr), Arg::I(NH as i32), Arg::I(HD as i32), Arg::P(rf), Arg::I(p0 as i32), Arg::I(0)])?;
             if l.idx_wq_b.is_some() {
@@ -365,7 +404,7 @@ impl Decoder {
                 (t as u32, 4, 1),
                 256,
                 0,
-                &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr)],
+                &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)],
             )?;
             if let (true, Ok(dir)) = (li == 0, std::env::var("DSXA_DUMPQ")) {
                 let w = |n: &str, v: Vec<u8>| std::fs::write(format!("{dir}/pf_{n}_p{p0}.bin"), v);
@@ -394,21 +433,21 @@ impl Decoder {
                     j
                 })
                 .collect();
-            self.mm(&jobs)?;
-            self.prep(2, pf.r.ptr, 0, 8192, 0, 0, 0, 8192, t, pf.aq.ptr, pf.as_.ptr, 0)?;
+            self.mm_l("mm wo_a", &jobs)?;
+            self.prep(2, pf.r.ptr, 0, 8192, 0, 0, 0, 8192, t, pf.aq.ptr, pf.as_.ptr, 0, pf.aqb.ptr)?;
             let mut j = MmJob::dense(&l.wo_b, 0, pf.aq.ptr, pf.as_.ptr, 8192, pf.a.ptr, D);
             j.ntok = t as i32;
-            self.mm(&[j])?;
+            self.mm_l("mm wo_b", &[j])?;
             // ---- ffn
             hc(pf.a.ptr, false, pf.mix_a.ptr, &l.hc_attn, pf.mix_a.ptr, &l.hc_attn, l.hc_ffn_fn.ptr, pf.mix_f.ptr, pf.xr_f.ptr, pf.xss_f.ptr, None)?;
-            self.prep(0, pf.xr_f.ptr, 0, D, l.ffn_norm.ptr, pf.xss_f.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr)?;
+            self.prep(0, pf.xr_f.ptr, 0, D, l.ffn_norm.ptr, pf.xss_f.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr, pf.aqb.ptr)?;
             let mut gj = MmJob::dense(&l.gate, 4, 0, 0, D, pf.logits.ptr, NE);
             gj.xb = pf.ab.ptr;
             let mut jobs = vec![gj, MmJob::dense(&l.sh_w1, 0, pf.aq.ptr, pf.as_.ptr, D, pf.sg.ptr, INTER), MmJob::dense(&l.sh_w3, 0, pf.aq.ptr, pf.as_.ptr, D, pf.su.ptr, INTER)];
             for j in jobs.iter_mut() {
                 j.ntok = t as i32;
             }
-            self.mm(&jobs)?;
+            self.mm_l("mm router+shared", &jobs)?;
             g.memset(pf.counts.ptr, 0, NE * 4)?;
             g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
             let counts: Vec<i32> = g.dtoh(pf.counts.ptr, NE)?;
@@ -437,11 +476,11 @@ impl Decoder {
                 }
             }
             for ch in jobs.chunks(1024) {
-                self.mm(ch)?;
+                self.mm_l("mm experts gu", ch)?;
             }
             let rtot = (t * 6) as usize;
-            self.prep(3, pf.gg.ptr, pf.uu.ptr, INTER, 0, 0, pf.wrow.ptr, INTER, rtot, pf.hq.ptr, pf.hs.ptr, 0)?;
-            self.prep(3, pf.sg.ptr, pf.su.ptr, INTER, 0, 0, 0, INTER, t, pf.shq.ptr, pf.shs.ptr, 0)?;
+            self.prep(3, pf.gg.ptr, pf.uu.ptr, INTER, 0, 0, pf.wrow.ptr, INTER, rtot, pf.hq.ptr, pf.hs.ptr, 0, pf.hqb.ptr)?;
+            self.prep(3, pf.sg.ptr, pf.su.ptr, INTER, 0, 0, 0, INTER, t, pf.shq.ptr, pf.shs.ptr, 0, pf.shqb.ptr)?;
             // down projections, scattered into y by token
             g.memset(pf.y.ptr, 0, t * D * 4)?;
             let mut jobs = vec![];
@@ -457,7 +496,7 @@ impl Decoder {
             sj.yatomic = 1;
             jobs.push(sj);
             for ch in jobs.chunks(1024) {
-                self.mm(ch)?;
+                self.mm_l("mm experts down", ch)?;
             }
             if let (true, Ok(dir)) = (li == 0, std::env::var("DSXA_DUMPQ")) {
                 let w = |n: &str, v: Vec<u8>| std::fs::write(format!("{dir}/pf_{n}_p{p0}.bin"), v);

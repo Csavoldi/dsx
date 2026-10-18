@@ -330,6 +330,10 @@ pub fn run() -> Result<()> {
         let got: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
         let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| dsx::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xv[t * k + c]).sum() }).collect();
         report("mm fp8 dense (37 tok)", &got, &cpu);
+        let xbf = g.upload(&bf16r(&xv))?;
+        crate::prefill::test_mm(&g, 0, dw.ptr, dsc.ptr, 0, 0, n, k, dq.ptr, dxs.ptr, xbf.ptr, nt, y.ptr, (0, 0, 0))?;
+        let got2: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
+        report("mm2 fp8 dense (37 tok)", &got2, &cpu);
         // MXFP4
         let w4: Vec<u8> = (0..n * k / 2).map(|_| ((r.f() + 1.0) * 127.9) as u8).collect();
         let s4: Vec<u8> = (0..n * k / 32).map(|_| 118 + ((r.f() + 1.0) * 3.0) as u8).collect();
@@ -343,6 +347,9 @@ pub fn run() -> Result<()> {
         let wd: Vec<Vec<f32>> = (0..n).map(|i| { dsx::formats::dequant_row_scaled(dsx::gguf::GType::Fp4, &w4[i * k / 2..(i + 1) * k / 2], &s4[i * k / 32..(i + 1) * k / 32], &mut row); row.clone() }).collect();
         let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| wd[i][c] * xv[t * k + c]).sum() }).collect();
         report("mm mxfp4 (37 tok)", &got, &cpu);
+        crate::prefill::test_mm(&g, 1, ar.ptr, 0, 0, c4.len() as i64, n, k, dq.ptr, dxs.ptr, xbf.ptr, nt, y.ptr, (0, 0, 0))?;
+        let got2: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
+        report("mm2 mxfp4 (37 tok)", &got2, &cpu);
         // BF16 weights x bf16 activations (xv is bf16-exact)
         let wb: Vec<f32> = (0..n * k).map(|_| r.f() * 0.1).collect();
         let wbb = bf16r(&wb);
@@ -354,6 +361,11 @@ pub fn run() -> Result<()> {
         let wf = from_bf16(&wbb);
         let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| wf[i * k + c] * xv[t * k + c]).sum() }).collect();
         report("mm bf16 (37 tok)", &got, &cpu);
+        unsafe { std::env::set_var("TEST_MM2", "1") };
+        crate::prefill::test_mm(&g, 4, dwb.ptr, 0, 0, 0, n, k, 0, 0, xb.ptr, nt, y.ptr, (0, 0, 0))?;
+        unsafe { std::env::remove_var("TEST_MM2") };
+        let got2: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
+        report("mm2 bf16 (37 tok)", &got2, &cpu);
     }
     // ---- router top-6 vs the reference's sort
     {

@@ -32,12 +32,12 @@ DEV uint64_t mm_xfrag(const uint8_t* xq, int ld, int row, int kb, int g8) {
 }
 
 // One block: 4 waves = 4 row tiles (64 rows), up to 128 tokens; blocks enumerate (job, row-block, token-block).
-// Block table: blk[b] = job index << 24 | rowblock << 8 | tokblock (host-built).
+// Block table: blk[b] = job index << 20 | rowblock << 8 | tokblock (host-built).
 extern "C" __global__ void __launch_bounds__(256) mm(const MmJob* __restrict__ jobs, const int* __restrict__ blk,
                                                      uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
     const int code = blk[blockIdx.x];
-    const MmJob J = jobs[code >> 24];
-    const int rb = (code >> 8) & 0xFFFF, tb = code & 0xFF;
+    const MmJob J = jobs[code >> 20];  // job (10 bits) << 20 | row block (12) << 8 | token block (8)
+    const int rb = (code >> 8) & 0xFFF, tb = code & 0xFF;
     const int lane = threadIdx.x & 63, wv = threadIdx.x >> 6;
     const int rt = rb * 4 + wv;
     if (rt * 16 >= J.n) return;
@@ -57,25 +57,51 @@ extern "C" __global__ void __launch_bounds__(256) mm(const MmJob* __restrict__ j
 #pragma unroll
     for (int g = 0; g < MMG; g++) acc[g] = f4{0, 0, 0, 0};
     const int KB = J.k / 32;
+    const int ldxs = J.ldx / 32;
+    // rows used for loads (invalid columns read row 0 and are masked by a zero scale)
+    int lrow[MMG];
+    float msk[MMG];
+#pragma unroll
+    for (int g = 0; g < MMG; g++) { lrow[g] = xrow[g] >= 0 ? xrow[g] : 0; msk[g] = xrow[g] >= 0 ? 1.f : 0.f; }
     if (J.fmt == 0) {
         const u4v* wp = (const u4v*)J.w + (size_t)rt * (J.k / 64) * 64 + lane;
         const uint8_t* sp = J.sc + (size_t)(rt >> 1) * KB;
-        for (int kp = 0; kp < J.k / 64; kp++) {
-            const u4v w = __builtin_nontemporal_load(wp + (size_t)kp * 64);
+        const int KP = J.k / 64;
+        u4v wc = __builtin_nontemporal_load(wp), wn;
+        uint64_t xc[2][MMG];
+        float sc_[2][MMG];
+        auto ldx = [&](int kb, uint64_t* x, float* sv) {
+#pragma unroll
+            for (int g = 0; g < MMG; g++) {
+                x[g] = *reinterpret_cast<const uint64_t*>(J.xq + (size_t)lrow[g] * J.ldx + kb * 32 + g8);
+                sv[g] = J.xs[(size_t)lrow[g] * ldxs + kb] * msk[g];
+            }
+        };
+        ldx(0, xc[0], sc_[0]);
+        ldx(1, xc[1], sc_[1]);
+        for (int kp = 0; kp < KP; kp++) {
+            if (kp + 1 < KP) wn = __builtin_nontemporal_load(wp + (size_t)(kp + 1) * 64);
+            uint64_t xn[2][MMG];
+            float sn[2][MMG];
+            if (kp + 1 < KP) { ldx(2 * kp + 2, xn[0], sn[0]); ldx(2 * kp + 3, xn[1], sn[1]); }
 #pragma unroll
             for (int h = 0; h < 2; h++) {
                 const int kb = 2 * kp + h;
-                const uint64_t a = h ? ((uint64_t)w.w << 32 | w.z) : ((uint64_t)w.y << 32 | w.x);
+                const uint64_t a = h ? ((uint64_t)wc.w << 32 | wc.z) : ((uint64_t)wc.y << 32 | wc.x);
                 const float ws = __uint_as_float((uint32_t)sp[kb] << 23) * 2.f;
 #pragma unroll
                 for (int g = 0; g < MMG; g++) {
                     if (g < ng) {
-                        const f4 d = mfma_fp8(a, mm_xfrag(J.xq, J.ldx, xrow[g], kb, g8), f4{0, 0, 0, 0});
-                        const float s = xrow[g] >= 0 ? ws * J.xs[(size_t)xrow[g] * (J.ldx / 32) + kb] : 0.f;
-                        acc[g] += d * s;
+                        const f4 d = mfma_fp8(a, xc[h][g], f4{0, 0, 0, 0});
+                        acc[g] += d * (ws * sc_[h][g]);
                     }
                 }
             }
+            wc = wn;
+#pragma unroll
+            for (int h = 0; h < 2; h++)
+#pragma unroll
+                for (int g = 0; g < MMG; g++) { xc[h][g] = xn[h][g]; sc_[h][g] = sn[h][g]; }
         }
     } else if (J.fmt == 4) {
         // BF16 weights (tile 16 rows x 32 k) x bf16 activations
@@ -104,11 +130,17 @@ extern "C" __global__ void __launch_bounds__(256) mm(const MmJob* __restrict__ j
         const u4v* sp = (const u4v*)(base + J.soff) + (size_t)rt * (J.k / 128) * 4 + (lane >> 4);
         const int NDW = J.fmt == 1 ? 4 : (J.fmt == 2 ? 3 : 2);
         const uint32_t* wp = (const uint32_t*)(base + J.woff) + (size_t)rt * (J.k / 128) * 64 * NDW + lane * NDW;
-        for (int u = 0; u < J.k / 128; u++) {
-            uint32_t cw[4];
-            for (int q = 0; q < NDW; q++) cw[q] = __builtin_nontemporal_load(wp + (size_t)u * 64 * NDW + q);
-            const u4v sv = sp[(size_t)u * 4];
-            const uint32_t ss[4] = {sv.x, sv.y, sv.z, sv.w};
+        const int KU = J.k / 128;
+        uint32_t cw[4] = {0, 0, 0, 0}, nw[4] = {0, 0, 0, 0};
+        u4v cs, ns = {0, 0, 0, 0};
+        for (int q = 0; q < NDW; q++) cw[q] = __builtin_nontemporal_load(wp + q);
+        cs = sp[0];
+        for (int u = 0; u < KU; u++) {
+            if (u + 1 < KU) {
+                for (int q = 0; q < NDW; q++) nw[q] = __builtin_nontemporal_load(wp + (size_t)(u + 1) * 64 * NDW + q);
+                ns = sp[(size_t)(u + 1) * 4];
+            }
+            const uint32_t ss[4] = {cs.x, cs.y, cs.z, cs.w};
 #pragma unroll
             for (int m = 0; m < 4; m++) {
                 uint64_t a;
@@ -125,6 +157,13 @@ extern "C" __global__ void __launch_bounds__(256) mm(const MmJob* __restrict__ j
                     a = (uint64_t)perm(thi, tlo, s1) << 32 | perm(thi, tlo, s0);
                 }
                 const int kb = 4 * u + m;
+                uint64_t xf[MMG];
+                float xsv[MMG];
+#pragma unroll
+                for (int g = 0; g < MMG; g++) {
+                    xf[g] = *reinterpret_cast<const uint64_t*>(J.xq + (size_t)lrow[g] * J.ldx + kb * 32 + g8);
+                    xsv[g] = J.xs[(size_t)lrow[g] * ldxs + kb] * msk[g];
+                }
                 float wsj[4];
 #pragma unroll
                 for (int j = 0; j < 4; j++) {
@@ -134,13 +173,14 @@ extern "C" __global__ void __launch_bounds__(256) mm(const MmJob* __restrict__ j
 #pragma unroll
                 for (int g = 0; g < MMG; g++) {
                     if (g < ng) {
-                        const f4 d = mfma_fp8(a, mm_xfrag(J.xq, J.ldx, xrow[g], kb, g8), f4{0, 0, 0, 0});
-                        const float xsv = xrow[g] >= 0 ? J.xs[(size_t)xrow[g] * (J.ldx / 32) + kb] : 0.f;
+                        const f4 d = mfma_fp8(a, xf[g], f4{0, 0, 0, 0});
 #pragma unroll
-                        for (int j = 0; j < 4; j++) acc[g][j] += d[j] * (wsj[j] * xsv);
+                        for (int j = 0; j < 4; j++) acc[g][j] += d[j] * (wsj[j] * xsv[g]);
                     }
                 }
             }
+            for (int q = 0; q < 4; q++) cw[q] = nw[q];
+            cs = ns;
         }
     }
     // lane holds rows 16*rt + 4*(lane/16) + j for token column `col` of each group
@@ -170,7 +210,8 @@ extern "C" __global__ void __launch_bounds__(256) mm(const MmJob* __restrict__ j
 // Writes FP8 codes/scales [r][n] and (ob) bf16 [r][n].
 extern "C" __global__ void __launch_bounds__(256) prep_t(int mode, const float* __restrict__ src, const float* __restrict__ src2,
                                                          int lds, const float* nw, const float* part, const float* wt,
-                                                         int n, float eps, float lim, uint8_t* oq, float* os, uint16_t* ob) {
+                                                         int n, float eps, float lim, uint8_t* oq, float* os, uint16_t* ob,
+                                                         uint16_t* obq) {
     __shared__ float red[16];
     const int r = blockIdx.x;
     const float* x = src + (size_t)r * lds;
@@ -199,7 +240,7 @@ extern "C" __global__ void __launch_bounds__(256) prep_t(int mode, const float* 
             }
             default: return v;
         }
-    }, oq + (size_t)r * n, os + (size_t)r * (n / 32), ob ? ob + (size_t)r * n : nullptr);
+    }, oq + (size_t)r * n, os + (size_t)r * (n / 32), ob ? ob + (size_t)r * n : nullptr, obq ? obq + (size_t)r * n : nullptr);
 }
 
 // RoPE on the last 64 dims of each head for a batch: x [T][heads][hd], position p0 + t (inverse: conjugate)
@@ -477,7 +518,7 @@ extern "C" __global__ void __launch_bounds__(1024) icand_t(int p0, int q0, int r
 extern "C" __global__ void __launch_bounds__(256) attn_t(int p0, const float* __restrict__ q, const uint16_t* __restrict__ lin,
                                                          const uint16_t* __restrict__ comp, const int* __restrict__ cidx,
                                                          const int* ncomp, int ldc, int woff, float scale, const float* sinks,
-                                                         const float* rf, uint8_t* oq, float* os) {
+                                                         const float* rf, uint8_t* oq, float* os, uint16_t* obq) {
     __shared__ uint16_t rows[16][HD + 8];
     __shared__ float p[16][16];
     __shared__ int rowsrc[16];
@@ -573,11 +614,8 @@ extern "C" __global__ void __launch_bounds__(256) attn_t(int p0, const float* __
     // 16 heads x 512 = 8192 values; 4 per thread-step, 8 threads per 32-block (quant32)
     uint8_t* oqt = oq + ((size_t)t * NH + g * 16) * HD;
     float* ost = os + ((size_t)t * NH + g * 16) * HD / 32;
-    for (int i4 = tid; i4 < 16 * HD / 4; i4 += 256) {
-        const int hh = (4 * i4) / HD, j = (4 * i4) % HD;
-        float vv[4] = {ob[hh][j], ob[hh][j + 1], ob[hh][j + 2], ob[hh][j + 3]};
-        quant32(vv, reinterpret_cast<uint32_t*>(oqt) + i4, ost + (i4 >> 3));
-    }
+    uint16_t* obt = obq + ((size_t)t * NH + g * 16) * HD;
+    write_act(16 * HD, [&](int i) -> float { return ob[i / HD][i % HD]; }, oqt, ost, nullptr, obt);
 }
 
 // Router for a batch: one wave per token: top-6 -> sel[t][6], wts[t][6]; counts[e] += 1
@@ -628,7 +666,7 @@ extern "C" __global__ void lin_to_ring(const uint16_t* lin, int p0, int T, uint1
 }
 
 // Engram rows of a batch: rows [T][ENG_ROW_BYTES] (this layer's) -> FP8 activation [T][6144]
-extern "C" __global__ void __launch_bounds__(256) engram_act_t(const uint8_t* rows, int rstride, uint8_t* oq, float* os) {
+extern "C" __global__ void __launch_bounds__(256) engram_act_t(const uint8_t* rows, int rstride, uint8_t* oq, float* os, uint16_t* obq) {
     const int t = blockIdx.x;
     const uint8_t* r = rows + (size_t)t * rstride;
     write_act(24 * 256, [&](int i) -> float {
@@ -639,5 +677,144 @@ extern "C" __global__ void __launch_bounds__(256) engram_act_t(const uint8_t* ro
         float v = e == 0 ? ldexpf((float)m, -9) : ldexpf(1.f + m / 8.f, e - 7);
         v = s ? -v : v;
         return round_bf16(v * __uint_as_float((uint32_t)sc << 23));
-    }, oq + (size_t)t * 6144, os + (size_t)t * 192, nullptr);
+    }, oq + (size_t)t * 6144, os + (size_t)t * 192, nullptr, obq + (size_t)t * 6144);
+}
+
+
+// ------------------------------------------------------------------ mm2: tiled bf16 GEMM for the prompt path
+// Block = 64 weight rows x 128 tokens, 256 threads (wave w: rows 16w..16w+15, all 128 tokens = 8 MFMA columns of 16).
+// K advances 32 at a time through LDS: weights decoded to bf16 with their scales (FP8 E8M0 blocks, MXFP4 E8M0 rows,
+// codebook e4m3 rows x mul), activations = bf16 rows of the FP8-quantized values (job.xb, row stride ldx), so the
+// products are exact and accumulate in f32 with no per-k-block rescaling. fmt 4: bf16 weights.
+DEV uint32_t pack_bf16x2(float a, float b) { return bf16_bits(a) | bf16_bits(b) << 16; }
+
+extern "C" __global__ void __launch_bounds__(256) mm2(const MmJob* __restrict__ jobs, const int* __restrict__ blk,
+                                                      uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
+    __shared__ uint16_t Ws[2][64][32 + 8];
+    __shared__ uint16_t Xs[2][128][32 + 8];
+    const int code = blk[blockIdx.x];
+    const MmJob J = jobs[code >> 20];
+    const int rb = (code >> 8) & 0xFFF, tb = code & 0xFF;
+    const int tid = threadIdx.x, lane = tid & 63, wv = tid >> 6;
+    const int rt = rb * 4 + wv;
+    const bool rowok = rt * 16 < J.n;
+    const int t0 = tb * 128;
+    const int nt = min(128, J.ntok - t0);
+    if (nt <= 0) return;
+    const int ng = (nt + 15) / 16;
+    const int KC = J.k / 32;
+    // ---- this thread's activation slice: token tl = tid / 2, k half (tid & 1) * 16 (16 bf16 = 32 B)
+    const int tl = tid >> 1, kh = (tid & 1) * 16;
+    const int xr = tl < nt ? (J.toks ? J.toks[J.tok0 + t0 + tl] : J.tok0 + t0 + tl) : -1;
+    const uint16_t* xp = J.xb + (size_t)(xr >= 0 ? xr : 0) * J.ldx + kh;
+    // ---- this lane's weight slice per k32 chunk: row l%16 of tile rt, k 8*(l/16)..+8 (8 weights)
+    const int wrow = lane & 15, wk = 8 * (lane >> 4);
+    const int r = rt * 16 + wrow;
+    const char* eb = (const char*)J.w;
+    const int NDW = J.fmt == 1 ? 4 : (J.fmt == 2 ? 3 : 2);
+    auto ldw = [&](int kc, u4v& raw) {
+        if (!rowok) { raw = u4v{0, 0, 0, 0}; return; }
+        if (J.fmt == 0) {
+            const u4v w = __builtin_nontemporal_load((const u4v*)J.w + ((size_t)rt * (J.k / 64) + kc / 2) * 64 + lane);
+            raw = (kc & 1) ? u4v{w.z, w.w, 0, 0} : u4v{w.x, w.y, 0, 0};
+        } else if (J.fmt == 4) {
+            // bf16 tile [rt][k32][lane][8]: lane holds row l%16, k 4*(l/16)..+4 and +16: re-gather to 8 consecutive k
+            raw = __builtin_nontemporal_load((const u4v*)J.w + ((size_t)rt * KC + kc) * 64 + lane);
+        } else {
+            const uint32_t* wp = (const uint32_t*)(eb + J.woff) + ((size_t)rt * (J.k / 128) + kc / 4) * 64 * NDW + lane * NDW;
+            raw.x = __builtin_nontemporal_load(wp + (J.fmt == 1 ? (kc & 3) : ((kc & 3) >> 1)));
+            raw.y = J.fmt == 2 ? __builtin_nontemporal_load(wp + 2) : 0u;
+            const uint8_t* sb = (const uint8_t*)(eb + J.soff) + ((size_t)rt * (J.k / 128) + kc / 4) * 64 + wrow * 4 + (kc & 3);
+            raw.z = *sb;
+        }
+    };
+    // decode the slice to 8 bf16 (k = wk .. wk+7 of chunk kc) and store into Ws[buf]
+    auto stw = [&](int kc, const u4v& raw, int buf) {
+        uint32_t o[4];
+        if (J.fmt == 4) {
+            // lane holds k {4g..4g+3} and {16+4g..} of row: write those two 4-groups directly
+            uint16_t* d = &Ws[buf][wv * 16 + wrow][0];
+            const int g4 = 4 * (lane >> 4);
+            *reinterpret_cast<uint2*>(d + g4) = uint2{raw.x, raw.y};
+            *reinterpret_cast<uint2*>(d + 16 + g4) = uint2{raw.z, raw.w};
+            return;
+        }
+        float v[8];
+        if (J.fmt == 0) {
+            const float sc = __uint_as_float((uint32_t)J.sc[(size_t)(rt >> 1) * KC + kc] << 23) * 2.f;
+            for (int j = 0; j < 8; j++) v[j] = fp8_to_f32(j < 4 ? raw.x : raw.y, j & 3) * sc;
+        } else {
+            uint64_t a8;
+            if (J.fmt == 1) a8 = fp4x8_to_fp8(raw.x);
+            else {
+                const uint32_t tlo = J.fmt == 2 ? cb3lo : cb2, thi = J.fmt == 2 ? cb3hi : 0u;
+                const int m = kc & 3, sh = 4 * (m & 1);
+                uint32_t s0 = (raw.x >> sh) & 0x03030303u, s1 = (raw.x >> (sh + 2)) & 0x03030303u;
+                if (J.fmt == 2) {
+                    s0 |= ((raw.y >> (2 * m)) & 0x01010101u) << 2;
+                    s1 |= ((raw.y >> (2 * m + 1)) & 0x01010101u) << 2;
+                }
+                a8 = (uint64_t)perm(thi, tlo, s1) << 32 | perm(thi, tlo, s0);
+            }
+            const float sc = J.fmt == 1 ? __uint_as_float(raw.z << 23) : fp8_to_f32(raw.z, 0) * J.mul;
+            for (int j = 0; j < 8; j++) v[j] = fp8_to_f32((uint32_t)(a8 >> (32 * (j >> 2))), j & 3) * sc;
+        }
+        for (int j = 0; j < 4; j++) o[j] = pack_bf16x2(v[2 * j], v[2 * j + 1]);
+        *reinterpret_cast<u4v*>(&Ws[buf][wv * 16 + wrow][wk]) = u4v{o[0], o[1], o[2], o[3]};
+    };
+    auto ldx = [&](int kc, u4v* x2) {
+        if (xr >= 0) {
+            x2[0] = *reinterpret_cast<const u4v*>(xp + kc * 32);
+            x2[1] = *reinterpret_cast<const u4v*>(xp + kc * 32 + 8);
+        } else {
+            x2[0] = x2[1] = u4v{0, 0, 0, 0};
+        }
+    };
+    auto stx = [&](const u4v* x2, int buf) {
+        *reinterpret_cast<u4v*>(&Xs[buf][tl][kh]) = x2[0];
+        *reinterpret_cast<u4v*>(&Xs[buf][tl][kh + 8]) = x2[1];
+    };
+    f4 acc[8];
+#pragma unroll
+    for (int g = 0; g < 8; g++) acc[g] = f4{0, 0, 0, 0};
+    u4v wraw, xr2[2];
+    ldw(0, wraw);
+    ldx(0, xr2);
+    stw(0, wraw, 0);
+    stx(xr2, 0);
+    __syncthreads();
+    const int g4 = 4 * (lane >> 4), col = lane & 15;
+    for (int kc = 0; kc < KC; kc++) {
+        const int buf = kc & 1;
+        if (kc + 1 < KC) { ldw(kc + 1, wraw); ldx(kc + 1, xr2); }
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+            const s4v a = *reinterpret_cast<const s4v*>(&Ws[buf][wv * 16 + col][16 * h + g4]);
+#pragma unroll
+            for (int g = 0; g < 8; g++) {
+                if (g < ng) {
+                    const s4v b = *reinterpret_cast<const s4v*>(&Xs[buf][16 * g + col][16 * h + g4]);
+                    acc[g] = mfma_bf16(a, b, acc[g]);
+                }
+            }
+        }
+        if (kc + 1 < KC) { stw(kc + 1, wraw, buf ^ 1); stx(xr2, buf ^ 1); }
+        __syncthreads();
+    }
+    if (!rowok) return;
+    const int r0 = rt * 16 + 4 * (lane >> 4);
+#pragma unroll
+    for (int g = 0; g < 8; g++) {
+        if (g >= ng) continue;
+        const int t = t0 + g * 16 + col;
+        if (t >= J.ntok) continue;
+        const int arow = J.toks ? J.toks[J.tok0 + t] : J.tok0 + t;
+        const int orow = J.yrow ? J.yrow[J.tok0 + t] : arow;
+        float* yp = J.y + (size_t)orow * J.ldy + r0;
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            if (J.yatomic) atomicAdd(yp + j, acc[g][j]);
+            else yp[j] = acc[g][j];
+        }
+    }
 }
