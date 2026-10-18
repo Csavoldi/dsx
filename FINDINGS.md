@@ -290,3 +290,49 @@ ds41 (low-RAM machines, unquantized weights); useful for us:
 - **Learned placement:** a per-user hot set updated every turn (`.coli_usage`) on top of per-layer LRU; ds41's
   ranking is static from calibration. Worth doing with the RAM arena once part of the pool lives on NVMe.
 - **Engram:** ~13 KB per token, at most 48 rows of 264 bytes per table; streaming it is the right call (as ds41 does).
+
+## 16. Expert placement must follow the conversation (2026-10-18)
+
+The "API server is slower" reading was wrong: the server decodes at the engine's speed. Speed depends on the text,
+because the VRAM hot set was ranked on agentic calibration text. Decode-time picks logged from the CPU worker
+(600 tokens each, server, greedy):
+
+| Text | tok/s | picks served from VRAM (static) | per-layer LRU on GPU0 | best possible for the turn |
+|---|---:|---:|---:|---:|
+| prose essay | 16.8 | 15.4% | 71.6% | 90.0% |
+| Python module | 21.5 | 42.7% | 73.7% | 83.6% |
+| agent / tool-call JSON | 22.7 | 46.9% | 78.8% | 86.4% |
+
+LRU needs 50-68 expert copies per token; a decayed-frequency policy with a budget of 8 copies/token (~72 MB over
+PCIe, overlapped) gets 68-78%. Implemented as adaptive GPU0 residency (engine/src/experts.rs, gpumodel.rs
+adapt_step): GPU0's experts are copies of arena experts; same-type in-place replacement, committed between tokens;
+scores seeded from the calibration counts. Measured: short prose prompt 26.0 -> 29.9 tok/s (CPU share of picks 43%
+-> 27%), 3000-token agent prompt 31.5 -> 31.2 (swap traffic offsets its gain). Quality unchanged (decode-path KL
+0.451 vs 0.461). The arena grows to 110 GB (the coldest ~530 experts stay in the file: 0.6-2 picks/token on prose);
+13 GB of RAM stays free.
+
+## 17. Quantization: what limits quality at a fixed size, and a 2.3x faster quant pass
+
+- v1's quant is plain GPTQ with static-group scales (Xolotl's GSQ refinement is a TODO in their code).
+- Per-projection tiers (down vs gate/up) do not help by the allocator's own held-out error proxy (1.415 vs 1.407).
+- More bits do: 2.0 -> 2.25 bpw cuts the proxy 27%, but needs ~17 GB more than RAM + VRAM hold.
+- At the same size, **allocating across layers** is the lever: one budget for layers 2-36 instead of 2.0 bpw each.
+  Proxy error 1.35 (v1-style, per layer) -> 1.16 (per layer, no ternary cap) -> **0.68 (cross-layer, no cap)**. The
+  cross-layer plan gives layers 3-13, 17 and 32 2.2-2.75 bpw and makes most decoder layers (20-36) nearly all
+  ternary (their measured error is tiny at every tier). Being tested end to end (Lucebox eval) against v1.
+- Quant speed: the GPTQ column loop ran as ~1,000 tiny tensor kernels per 128-column block. Native kernels
+  (quant/native/qkern.cu: GPTQ block with a warp per row, scale search, batched over experts), H^-1's factor from
+  one Cholesky of the reversed matrix, and int8 codes to the writer: a layer's MoE step 159 s -> 70 s on .102
+  (GPTQ 73 -> 7 ms/expert and scale search ~45 -> ~1 ms on a 5090; codes identical to >= 99.999%, bytes identical).
+
+## 18. Dead ends checked
+
+- **DSpark speculation on this box:** a 6-token verify costs 157 ms (~5 decode steps) because the CPU's expert work
+  grows with the union of the tokens' experts; it pays only above ~4 accepted drafts per pass. The draft head's
+  weights are also not in our GGUF. Parked.
+- **EXL2 / EXL3:** ExLlama needs all weights in VRAM (138 GB of experts vs 48 GB) and has no V4.1 support; EXL2's
+  per-layer mixed GPTQ is what we already do per expert. EXL3's trellis codes (QTIP) would improve quality per bit
+  for GPU-resident experts, but decoding them on the CPU would likely be compute-bound. Revisit only if the
+  cross-layer allocation leaves a large gap.
+- **SSD offload of experts:** each token needs ~2 GB of expert weights; 10% from a 6 GB/s drive adds ~30 ms. Kept
+  out by design; the GGUF size is chosen so every routed expert is in VRAM or RAM.
