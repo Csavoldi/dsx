@@ -138,6 +138,11 @@ enum Cmd {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Render answered chat requests (JSON lines: system, user, effort, reasoning, answer) as training-style text with
+    /// the server's V4.1 template: prompt, reasoning, `</think>`, answer, end of sentence. JSON lines {"text"} to stdout.
+    Render {
+        input: PathBuf,
+    },
     /// GPU0 decode (experts on the CPU) next to the CPU reference, per-token logit comparison.
     #[cfg(feature = "cuda")]
     Cmp {
@@ -431,6 +436,23 @@ fn main() -> Result<()> {
             let kv_same = a.kv.iter().all(|(k, v)| b.kv.get(k) == Some(v) || (name.is_some() && k == "general.name"));
             anyhow::ensure!(kv_same, "metadata differs");
             println!("{} tensors and {} metadata keys match", a.order.len(), a.kv.len());
+        }
+        Cmd::Render { input } => {
+            use deepseek_recipe::request::{ConversionOptions, ProtocolRequest};
+            use deepseek_recipe_encoding::PromptEncoding;
+            let enc = deepseek_recipe_encoding::v4::dsv41::DeepseekV41Encoding::new();
+            for line in std::fs::read_to_string(&input)?.lines().filter(|l| !l.trim().is_empty()) {
+                let r: serde_json::Value = serde_json::from_str(line)?;
+                let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let req = serde_json::json!({"model": "deepseek-v4.1-flash", "reasoning_effort": s("effort"),
+                    "messages": [{"role": "system", "content": s("system")}, {"role": "user", "content": s("user")}]});
+                let req: deepseek_recipe::openai::ChatCompletionRequest = serde_json::from_value(req)?;
+                let conv = req.convert(ConversionOptions::default()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                let prompt = enc.render_conversation(&conv.conversation).prompt;
+                anyhow::ensure!(prompt.ends_with("<think>"), "prompt does not open a reasoning block: {:?}", &prompt[prompt.len().saturating_sub(80)..]);
+                let text = format!("{prompt}{}</think>{}<｜end▁of▁sentence｜>", s("reasoning"), s("answer"));
+                println!("{}", serde_json::json!({"text": text, "id": s("id")}));
+            }
         }
         #[cfg(feature = "cuda")]
         Cmd::Score { model, engram, tokenizer, request, continuation, gpu0_gb, gpu1_gb, arena_gb, rank, prefill_check } => {
