@@ -5,14 +5,16 @@ A Rust + CUDA inference engine for one model and one class of machine:
 on a desktop with **2x RTX 3090, 128 GB DDR4 and an NVMe drive**. It ships with its own 2-bit quant:
 **[lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit)**.
 
-Measured on that box (i7-12700K, 128 GB DDR4-3200, RTX 3090 on PCIe 4.0 x16 + RTX 3090 on PCIe 3.0 x4), exact routing:
+Measured on that box (i7-12700K, 128 GB DDR4-3200, RTX 3090 on PCIe 4.0 x16 + RTX 3090 on PCIe 3.0 x4), exact routing,
+quant v2:
 
 | | |
 |---|---:|
-| Decode, 3000-token agent prompt (engine benchmark) | **31.5 tok/s** |
-| Decode on general prose (more experts outside the agentic hot set) | 22-24 tok/s |
-| Prefill, 3000 tokens | 340 tok/s |
-| Quality vs the FP8 model (8 x 1024 tokens): KL / top-1 / perplexity | 0.462 / 71.5% / 11.66 (FP8: 0 / 100% / 8.56) |
+| Decode, short prose prompt (v2) | **37.2 tok/s** |
+| Decode, 3000-token agent prompt (v2) | **30.0 tok/s** |
+| Prefill, 3000 / 8000 tokens (v2) | 334 / 508 tok/s |
+| Quality vs the FP8 model (8 x 1024 tokens): KL / top-1 / perplexity | v2 0.395 / 74.1% / 10.93, v1 0.462 / 71.5% / 11.66 (FP8: 0 / 100% / 8.56) |
+| Same quant on an RTX 5090 + 128 GB DDR5 desktop (RAM-bound, ~40 GB of experts from disk) | 12-15 tok/s decode, 93-172 tok/s prefill |
 
 Details: [FINDINGS.md](FINDINGS.md) (research and every measurement), [DESIGN.md](DESIGN.md), [bench/RESULTS.md](bench/RESULTS.md).
 

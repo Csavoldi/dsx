@@ -1,0 +1,17 @@
+=== 5090 freed desktop, static placement: arena 80 GB, cap 98 GB, 10:01 AM
+1367 MiB, 32607 MiB
+Mem:             125          24          73           9          37         101
+--- decode, prompt60
+experts resident: GPU0 1603 (17.2 GB), GPU1 0 (0.0 GB)
+arena: 8677 experts, 80.0 GB in 148 s; 5080 left in the file
+prefill 60 tokens in 9.06 s (7 tok/s); next top5 [(1, 21.077652), (128822, 17.31074), (204, 16.823803), (30, 16.064852), (295, 15.959715)]
+decode 400 tokens in 33.41 s (11.97 tok/s); CPU experts busy 71.2 ms/token, 62.0% of picks on the CPU; GPU0 expert swaps 0 (0.00 ms/token host)
+--- decode, prompt3000
+experts resident: GPU0 1603 (17.2 GB), GPU1 0 (0.0 GB)
+arena: 8677 experts, 80.0 GB in 150 s; 5080 left in the file
+prefill 3000 tokens in 32.21 s (93 tok/s); next top5 [(52002, 28.13779), (2731, 27.652817), (63967, 26.712303), (9543, 25.821156), (55698, 25.657677)]
+decode 400 tokens in 26.39 s (15.16 tok/s); CPU experts busy 54.7 ms/token, 55.0% of picks on the CPU; GPU0 expert swaps 0 (0.00 ms/token host)
+--- prefill 8K
+prefill 8000 tokens in 46.46 s (172 tok/s); next top5 [(1718, 20.703197), (30, 17.28681), (361, 16.193745), (528, 15.502981), (1778, 14.778046)]
+decode 32 tokens in 3.11 s (10.27 tok/s); CPU experts busy 84.8 ms/token, 50.4% of picks on the CPU; GPU0 expert swaps 0 (0.00 ms/token host)
+=== 5090 freed desktop, static placement done 10:12 AM

@@ -1,0 +1,11 @@
+--- decode prompt60
+experts resident: GPU0 1099 (11.0 GB), GPU1 2191 (23.3 GB)
+prefill 60 tokens in 2.02 s (30 tok/s); next top5 [(1, 20.00038), (128822, 18.860592), (295, 16.115719), (204, 15.724204), (30, 15.575669)]
+decode 400 tokens in 10.75 s (37.22 tok/s); CPU experts busy 6.0 ms/token, 10.6% of picks on the CPU; GPU0 expert swaps 2278 (0.20 ms/token host)
+--- decode prompt3000
+experts resident: GPU0 1099 (11.0 GB), GPU1 2191 (23.3 GB)
+prefill 3000 tokens in 8.98 s (334 tok/s); next top5 [(82511, 32.444283), (102601, 30.015472), (72468, 28.595133), (72295, 28.176128), (72850, 27.849861)]
+decode 400 tokens in 13.35 s (29.96 tok/s); CPU experts busy 14.1 ms/token, 24.5% of picks on the CPU; GPU0 expert swaps 3188 (0.26 ms/token host)
+--- prefill 8K
+prefill 8000 tokens in 15.76 s (508 tok/s); next top5 [(1718, 20.213802), (30, 16.094753), (361, 16.041264), (528, 14.83124), (671, 14.456962)]
+V2_SPEED_DONE
