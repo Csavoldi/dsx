@@ -126,6 +126,7 @@ Pipeline: [github.com/lxe/dsx/tree/main/quant](https://github.com/lxe/dsx/tree/m
 | `reassemble.sh` | checks, joins and verifies the parts |
 | `SHA256SUMS` | checksums of the parts and the joined file |
 | `expert-rank.json` | expert hotness, used to place experts in VRAM |
+| `config.json` | build metadata: base model, quant tiers, files |
 | `results/` | raw quality and speed logs |
 | `assets/` | charts and the script that draws them |
 
