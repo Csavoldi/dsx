@@ -4,6 +4,7 @@ base_model:
 - deepseek-ai/DeepSeek-V4.1-Flash-1017
 base_model_relation: quantized
 pipeline_tag: text-generation
+library_name: dsx
 tags:
 - deepseek
 - deepseek-v4.1
@@ -23,7 +24,7 @@ exact routing. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engi
 
 | | |
 |---|---|
-| Size | 148 GB (4 parts) + the official Engram shards (203 GB) |
+| Size | 148 GB (4 GGUF shards) + the official Engram shards (203 GB) |
 | Format | per-expert mixed precision: ternary, Q2_0 or Q3_K for each expert, Q8_0 dense |
 | Routing | exact: no expert pruning, no router bias |
 | Quality vs FP8 | KL 0.395 · top-1 74.1% · perplexity 10.93 (FP8: 8.56) |
@@ -67,9 +68,8 @@ Decode speed comes down to how many experts fit in VRAM + RAM. Two 24 GB GPUs + 
 ## Run
 
 ```bash
-# the quant: download, join, verify
+# the quant: 4 GGUF shards, loaded as one model
 hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit --local-dir dsx-2bit
-bash dsx-2bit/reassemble.sh dsx-2bit
 
 # Engram tables + tokenizer from the official checkpoint
 hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
@@ -79,7 +79,7 @@ hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
 git clone https://github.com/lxe/dsx && cd dsx/engine
 CUDA_ARCHS=86 cargo build --release --features cuda      # 86 = RTX 30xx, 120 = RTX 50xx
 
-./target/release/dsx-server --model ../../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf \
+./target/release/dsx-server --model ../../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
   --engram ../../v41-1017 --tokenizer ../../v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
   --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../../dsx-2bit/expert-rank.json
 ```
@@ -123,9 +123,8 @@ Pipeline: [github.com/lxe/dsx/tree/main/quant](https://github.com/lxe/dsx/tree/m
 
 | File | |
 |---|---|
-| `DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf.part-0N-of-04` | the GGUF, split into byte ranges |
-| `reassemble.sh` | checks, joins and verifies the parts |
-| `SHA256SUMS` | checksums of the parts and the joined file |
+| `DeepSeek-V4.1-Flash-1017-dsx-2bit-0000N-of-00004.gguf` | the model in 4 GGUF shards; dsx loads them from the first |
+| `SHA256SUMS` | checksums of the shards |
 | `expert-rank.json` | expert hotness, used to place experts in VRAM |
 | `config.json` | build metadata: base model, quant tiers, files |
 | `results/` | raw quality and speed logs |

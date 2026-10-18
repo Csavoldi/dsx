@@ -26,13 +26,12 @@ On the single-GPU box, ~40 GB of experts live on disk, which sets its speed.
 ```bash
 # weights: the quant, plus the Engram tables and tokenizer from the official checkpoint
 hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit --local-dir dsx-2bit
-bash dsx-2bit/reassemble.sh dsx-2bit
 hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
   --include model.safetensors.index.json model-00047-of-00048.safetensors model-00048-of-00048.safetensors tokenizer.json
 
 # build (86 = RTX 30xx, 120 = RTX 50xx) and serve
 cd engine && CUDA_ARCHS=86 cargo build --release --features cuda
-./target/release/dsx-server --model ../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf \
+./target/release/dsx-server --model ../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
   --engram ../v41-1017 --tokenizer ../v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
   --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../dsx-2bit/expert-rank.json
 ```

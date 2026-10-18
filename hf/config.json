@@ -1,6 +1,6 @@
 {
   "base_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
-  "format": "dsx GGUF (split into byte-range parts; join with reassemble.sh)",
+  "format": "dsx GGUF, 4 shards (llama.cpp split naming); load the first",
   "runtime": "https://github.com/lxe/dsx",
   "quantization": {
     "routed_experts": "per-expert tiers: PTQ1_0 (1.75 bpw), Q2_0 (2.25), Q3_K (3.44); 2.03 bpw on average, budget shared across layers 2-36",
@@ -8,12 +8,11 @@
     "engram": "not included; read from the official checkpoint's model-00047/00048 shards"
   },
   "files": {
-    "gguf": "DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf",
-    "parts": [
-      "DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf.part-01-of-04",
-      "DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf.part-02-of-04",
-      "DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf.part-03-of-04",
-      "DeepSeek-V4.1-Flash-1017-dsx-2bit.gguf.part-04-of-04"
+    "gguf": [
+      "DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-2bit-00002-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-2bit-00003-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-2bit-00004-of-00004.gguf"
     ],
     "size_bytes": 148090863616,
     "expert_rank": "expert-rank.json"
