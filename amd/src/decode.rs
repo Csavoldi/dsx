@@ -4,6 +4,7 @@ use crate::hip::{Arg, Buf, Gpu, Graph};
 use crate::load::{self, DMat};
 use anyhow::{Context, Result, bail};
 use dsx::model::Config;
+use crate::ck::Ck;
 use dsx::safetensors::SafeTensors;
 use std::path::Path;
 
@@ -353,7 +354,7 @@ pub struct Decoder {
 pub(crate) const ENG_ROW_BYTES: usize = 24 * 256 + 24 * 8;
 pub(crate) const HOST_BYTES: usize = 256 + 2 * ENG_ROW_BYTES;
 
-fn hc_args(st: &SafeTensors, l: usize, which: &str) -> Result<(Vec<f32>, HcArgs)> {
+fn hc_args(st: &Ck, l: usize, which: &str) -> Result<(Vec<f32>, HcArgs)> {
     let p = |s: &str| format!("layers.{l}.hc_{which}_{s}");
     let fnw = load::f32_of(st, &p("fn"))?;
     let scale = load::f32_of(st, &p("scale"))?;
@@ -555,7 +556,8 @@ impl Decoder {
         }
         let g = Gpu::new(image)?;
         let cfg = Config::from_hf(dir)?;
-        let st = SafeTensors::open(dir, &[])?;
+        let wpath = std::env::var("DSXA_WEIGHTS").map(std::path::PathBuf::from).unwrap_or_else(|_| dir.to_path_buf());
+        let st = Ck::open(&wpath)?;
         let t0 = std::time::Instant::now();
         let nl = n_layers_limit.unwrap_or(cfg.n_layers);
         let mut layers = vec![];
@@ -637,7 +639,20 @@ impl Decoder {
         let (free, _) = g.mem_info()?;
         let reserve = 3usize << 30;
         let budget = free.saturating_sub(reserve + (64 << 20));
-        let pl = Placement::plan(rank, budget, force_fp4, nl);
+        let pl = if st.is_export() {
+            // an export fixes the formats: re-quantized experts carry `.cb` tiles
+            let mut fmt = vec![E_FP4; nl * NE];
+            for l in 0..nl {
+                for e in 0..NE {
+                    if let Some(&(f, _)) = st.cb.get(&format!("layers.{l}.ffn.experts.{e}.w1.cb")) {
+                        fmt[l * NE + e] = f;
+                    }
+                }
+            }
+            Placement { fmt }
+        } else {
+            Placement::plan(rank, budget, force_fp4, nl)
+        };
         let c = pl.counts();
         eprintln!("experts: {} MXFP4, {} 3-bit, {} 2-bit: {:.1} GB (free {:.1} GB)", c[0], c[1], c[2], pl.bytes() as f64 / 1e9, free as f64 / 1e9);
         let arena = g.alloc(pl.bytes())?;
@@ -713,7 +728,7 @@ impl Decoder {
         Ok(dec)
     }
 
-    fn load_experts(&mut self, st: &SafeTensors, pl: &Placement) -> Result<()> {
+    fn load_experts(&mut self, st: &Ck, pl: &Placement) -> Result<()> {
         use rayon::prelude::*;
         let t0 = std::time::Instant::now();
         let g = &self.g;
@@ -735,6 +750,12 @@ impl Decoder {
                 .map(|&(e, mi, fmt)| {
                     let wn = ["w1", "w3", "w2"][mi];
                     let name = format!("layers.{l}.ffn.experts.{e}.{wn}.weight");
+                    if fmt != E_FP4 && st.is_export() {
+                        // device tiles straight from the export (codes then scales); shapes from the matrix role
+                        let (n, k) = if mi == 2 { (D, INTER) } else { (INTER, D) };
+                        let cb = st.bytes(st.get(&name.replace(".weight", ".cb"))?).to_vec();
+                        return Ok((n, k, cb, vec![]));
+                    }
                     let (n, kh) = load::shape2(st, &name)?;
                     let k = kh * 2;
                     let w = st.bytes(st.get(&name)?);
@@ -761,6 +782,15 @@ impl Decoder {
                     g.htod_async(self.arena.at(off), b.as_ptr(), b.len())?;
                     off += b.len();
                     em.mul = 1.0;
+                } else if b.is_empty() {
+                    // export tiles: codes then scales, multiplier from the index
+                    let bits = if fmt == E_CB3 { 3 } else { 2 };
+                    let cbytes = n * k * bits / 8;
+                    g.htod_async(self.arena.at(off), a.as_ptr(), a.len())?;
+                    em.soff = (off + cbytes) as i64;
+                    off += a.len();
+                    let wn = ["w1", "w3", "w2"][mi];
+                    em.mul = st.cb[&format!("layers.{l}.ffn.experts.{e}.{wn}.cb")].1;
                 } else {
                     let bits = if fmt == E_CB3 { 3 } else { 2 };
                     // per-matrix multiplier: the largest group scale fits e4m3 (max 240) with headroom

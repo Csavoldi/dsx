@@ -6,7 +6,7 @@
 
 use crate::hip::{Buf, Gpu};
 use anyhow::{Context, Result, bail};
-use dsx::safetensors::SafeTensors;
+use crate::ck::Ck as SafeTensors;
 use rayon::prelude::*;
 
 pub fn bf16_to_f32(b: &[u8]) -> Vec<f32> {

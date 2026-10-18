@@ -1,6 +1,8 @@
 //! dsx-amd: DeepSeek-V4.1-Flash-1017 on one AMD Instinct MI325X.
 
+mod ck;
 mod decode;
+mod export;
 mod hip;
 mod load;
 mod prefill;
@@ -71,6 +73,15 @@ enum Cmd {
     },
     /// Kernel self-tests on synthetic inputs against CPU implementations.
     Selftest,
+    /// Load a build and write it as one GGUF (split it with `dsx split`); load it later with DSXA_WEIGHTS=<file>.
+    Export {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        rank: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// OpenAI / Anthropic compatible API server (dsx's server, llama.cpp web UI at /).
     Serve {
         #[arg(long)]
@@ -296,6 +307,10 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::EngramJson { gguf, out } => engram_json(&gguf, &out),
         Cmd::Selftest => selftest::run(),
+        Cmd::Export { model, rank, out } => {
+            let dec = Decoder::load(&model, 4096, &read_rank(&rank)?, &[], None)?;
+            dec.export(&model, &out)
+        }
         Cmd::Serve { model, rank, ctx, host, port, max_tokens } => serve::serve(model, read_rank(&rank)?, ctx, host, port, max_tokens),
         Cmd::Dev { model, rank, ctx, cmd } => dev(&model, &read_rank(&rank)?, ctx, &cmd),
         Cmd::Check { model, ids, n, rank, ref_cache } => {
