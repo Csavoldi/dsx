@@ -134,6 +134,9 @@ enum Cmd {
         prefix: String,
         #[arg(long, default_value_t = 4)]
         shards: usize,
+        /// new `general.name`
+        #[arg(long)]
+        name: Option<String>,
     },
     /// GPU0 decode (experts on the CPU) next to the CPU reference, per-token logit comparison.
     #[cfg(feature = "cuda")]
@@ -417,15 +420,15 @@ fn main() -> Result<()> {
             }
             println!("{{\"tokens\": {cnt}, \"nll\": {:.6}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", nll / cnt as f64, (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64);
         }
-        Cmd::Split { input, prefix, shards } => {
-            let paths = dsx::gguf::split(&input, &prefix, shards)?;
+        Cmd::Split { input, prefix, shards, name } => {
+            let paths = dsx::gguf::split(&input, &prefix, shards, name.as_deref())?;
             let (a, b) = (dsx::gguf::Gguf::open(&input)?, dsx::gguf::Gguf::open(&paths[0])?);
             anyhow::ensure!(a.order.len() == b.order.len(), "tensor count {} vs {}", a.order.len(), b.order.len());
             for k in &a.order {
                 let (x, y) = (&a.tensors[k], b.get(k)?);
                 anyhow::ensure!(x.dims == y.dims && x.ty == y.ty && a.bytes(x) == b.bytes(y), "tensor {k} differs");
             }
-            let kv_same = a.kv.iter().all(|(k, v)| b.kv.get(k) == Some(v));
+            let kv_same = a.kv.iter().all(|(k, v)| b.kv.get(k) == Some(v) || (name.is_some() && k == "general.name"));
             anyhow::ensure!(kv_same, "metadata differs");
             println!("{} tensors and {} metadata keys match", a.order.len(), a.kv.len());
         }

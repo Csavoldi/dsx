@@ -282,20 +282,35 @@ impl Gguf {
 
 /// Write `src` as `n` llama.cpp-style split files `<prefix>-0000k-of-0000n.gguf`, tensors in file order, balanced by
 /// bytes. Shard 1 carries all metadata; every shard carries `split.no`, `split.count`, `split.tensors.count`.
-pub fn split(src: &Path, prefix: &str, n: usize) -> Result<Vec<PathBuf>> {
+/// `name` replaces `general.name`.
+pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>) -> Result<Vec<PathBuf>> {
     use std::io::{BufWriter, Write};
     let g = Gguf::open(src)?;
     anyhow::ensure!(g.paths.len() == 1, "{} is already split", src.display());
     let map = &g.maps[0];
     // the metadata section verbatim: after magic, version, tensor count, kv count
     let mut c = Cursor { b: map, p: 24 };
-    let nkv = u64::from_le_bytes(map[16..24].try_into()?) as usize;
+    let mut nkv = u64::from_le_bytes(map[16..24].try_into()?) as usize;
+    let mut kv_raw: Vec<u8> = vec![];
     for _ in 0..nkv {
-        c.string()?;
+        let p0 = c.p;
+        let k = c.string()?;
         let t = c.u32()?;
         c.value(t)?;
+        if !(name.is_some() && k == "general.name") {
+            kv_raw.extend(&map[p0..c.p]);
+        }
     }
-    let kv_raw = &map[24..c.p];
+    if let Some(nm) = name {
+        nkv = nkv - g.kv.contains_key("general.name") as usize + 1;
+        for x in [&b"general.name"[..], nm.as_bytes()].iter().enumerate() {
+            kv_raw.extend((x.1.len() as u64).to_le_bytes());
+            kv_raw.extend(*x.1);
+            if x.0 == 0 {
+                kv_raw.extend(8u32.to_le_bytes());
+            }
+        }
+    }
     let align = g.kv.get("general.alignment").and_then(|v| v.as_u64()).unwrap_or(32);
     let total: u64 = g.order.iter().map(|k| g.tensors[k].bytes).sum();
     // cut points: shard s ends at the first tensor boundary past s/n of the bytes
@@ -320,7 +335,7 @@ pub fn split(src: &Path, prefix: &str, n: usize) -> Result<Vec<PathBuf>> {
         let split_kv = 3u64;
         h.extend((if si == 0 { nkv as u64 + split_kv } else { split_kv + 1 }).to_le_bytes());
         if si == 0 {
-            h.extend(kv_raw);
+            h.extend(&kv_raw);
         } else {
             s64(&mut h, "general.alignment");
             h.extend(4u32.to_le_bytes());
