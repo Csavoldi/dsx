@@ -69,6 +69,19 @@ enum Cmd {
     },
     /// Kernel self-tests on synthetic inputs against CPU implementations.
     Selftest,
+    /// Development loop: load once, then run commands from a file as it appears (one line per command):
+    /// `reload PATH.hsaco`, `bench CTX STEPS`, `prof CTX`, `eval DIR SEQS`, `check REFCACHE`, `quit`.
+    Dev {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        rank: Option<PathBuf>,
+        #[arg(long, default_value_t = 262200)]
+        ctx: usize,
+        /// command file, consumed (renamed to .done) after each command
+        #[arg(long, default_value = "/root/dev.cmd")]
+        cmd: PathBuf,
+    },
     /// Greedy generation from token ids.
     Gen {
         #[arg(long)]
@@ -116,10 +129,123 @@ fn engram_json(gguf: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
+fn bench(dec: &mut Decoder, c: usize, steps: usize, prof: bool) -> Result<()> {
+    dec.fill_random()?;
+    dec.set_pos(c)?;
+    let mut tok = 1000u32;
+    let mut ts = vec![];
+    for s in 0..steps {
+        let us = dec.time_step(tok)?;
+        tok = (tok * 7 + 13) % 100000;
+        if s >= 2 {
+            ts.push(us);
+        }
+    }
+    ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = ts[ts.len() / 2];
+    println!("ctx {c}: decode step {med:.0} us median ({:.1} tok/s), min {:.0} max {:.0}", 1e6 / med, ts[0], ts[ts.len() - 1]);
+    if prof {
+        let p = dec.step_prof(tok)?;
+        let tot: f32 = p.iter().map(|x| x.1).sum();
+        println!("  eager step: {tot:.0} us in {} launches", p.iter().map(|x| x.2).sum::<usize>());
+        for (n, t, k) in p.iter().take(30) {
+            println!("  {n:<28} {t:>8.1} us {k:>5} launches {:>6.2} us each", t / *k as f32);
+        }
+    }
+    Ok(())
+}
+
+fn eval_run(dec: &mut Decoder, eval: &Path, seqs: usize, len: usize) -> Result<String> {
+    let rd = |f: &str| std::fs::read(eval.join(f));
+    let toks: Vec<u32> = rd("heldout.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
+    let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
+    let tlp: Vec<f32> = rd("teacher_lp.f32")?.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+    let topk = 256;
+    let (mut nll, mut kl, mut agree, mut cnt) = (0f64, 0f64, 0usize, 0usize);
+    let t0 = Instant::now();
+    for sq in 0..seqs {
+        dec.reset()?;
+        let seq = &toks[sq * len..(sq + 1) * len];
+        for p in 0..len - 1 {
+            dec.step(seq[p])?;
+            let l = dec.logits()?;
+            let lq = log_softmax(&l);
+            nll -= lq[seq[p + 1] as usize];
+            let row = sq * (len - 1) + p;
+            let (ti, tl) = (&tidx[row * topk..(row + 1) * topk], &tlp[row * topk..(row + 1) * topk]);
+            kl += ti.iter().zip(tl).map(|(&i, &lt)| (lt as f64).exp() * (lt as f64 - lq[i as usize])).sum::<f64>();
+            let am = l.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |a, (i, &v)| if v > a.1 { (i, v) } else { a }).0;
+            agree += (am as i32 == ti[0]) as usize;
+            cnt += 1;
+        }
+        eprintln!("seq {sq}: running ppl {:.3} kl {:.4} top1 {:.4} ({:.0} s)", (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64, t0.elapsed().as_secs_f64());
+    }
+    Ok(format!("{{\"tokens\": {cnt}, \"nll\": {:.6}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", nll / cnt as f64, (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64))
+}
+
+fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<()> {
+    let mut dec = Decoder::load(model, ctx, rank, &[], None)?;
+    eprintln!("dev: ready, waiting for {}", cmd.display());
+    loop {
+        if !cmd.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            continue;
+        }
+        let text = std::fs::read_to_string(cmd)?;
+        std::fs::rename(cmd, cmd.with_extension("done"))?;
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            if w.is_empty() {
+                continue;
+            }
+            println!("== {line}");
+            let r: Result<()> = (|| {
+                match w[0] {
+                    "reload" => {
+                        let img = std::fs::read(w[1])?;
+                        std::fs::write("/root/cur.hsaco", &img)?;
+                        dec.reload_kernels(&img)?;
+                        println!("reloaded {}", w[1]);
+                    }
+                    "bench" => bench(&mut dec, w[1].parse()?, w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(24), false)?,
+                    "prof" => bench(&mut dec, w[1].parse()?, 8, true)?,
+                    "eval" => {
+                        let r = eval_run(&mut dec, Path::new(w[1]), w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(8), 1024)?;
+                        println!("{r}");
+                    }
+                    "waves" => {
+                        decode::TARGET_WAVES.store(w[1].parse()?, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(m) = w.get(2) {
+                            decode::MIN_UNITS.store(m.parse()?, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        dec.reload_kernels(&std::fs::read(w.get(3).copied().unwrap_or("/root/cur.hsaco"))?)?;
+                        println!("waves {} min units {}", w[1], w.get(2).unwrap_or(&"-"));
+                    }
+                    "gtime" => {
+                        // GEMV phase timing: needs a kernel built with -DGEMV_TIMING loaded; prints per-launch phases
+                        dec.gemv_timing(w[1].parse()?)?;
+                    }
+                    "quit" => std::process::exit(0),
+                    c => println!("unknown command {c}"),
+                }
+                Ok(())
+            })();
+            if let Err(e) = r {
+                println!("error: {e:#}");
+            }
+            dec.reset()?;
+        }
+        println!("== idle");
+        use std::io::Write;
+        std::io::stdout().flush()?;
+    }
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::EngramJson { gguf, out } => engram_json(&gguf, &out),
         Cmd::Selftest => selftest::run(),
+        Cmd::Dev { model, rank, ctx, cmd } => dev(&model, &read_rank(&rank)?, ctx, &cmd),
         Cmd::Check { model, ids, n, rank, ref_cache } => {
             // ---- reference: tokens fed, logits per position, routed experts
             let (feed, ref_logits, routes, pos_routes): (Vec<u32>, Vec<Vec<f32>>, Vec<(usize, usize)>, Vec<Vec<Vec<u16>>>) = match ref_cache.as_ref().filter(|p| p.exists()) {

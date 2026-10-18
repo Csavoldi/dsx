@@ -6,6 +6,17 @@
 // rounding points, FP8 activation quantization for FP8/FP4 weights, the training-time FP4 fake quantization of caches.
 #include "gemv.h"
 
+#ifndef X1U
+#define X1U 4
+#endif
+#ifndef F8U
+#define F8U 4
+#endif
+#ifdef ATT_TIMING
+#define TMARK(i) T[i] = wall_clock64();
+#else
+#define TMARK(i)
+#endif
 #define D 5120
 #define HC 4
 #define NH 64
@@ -18,6 +29,10 @@
 #define IH 32
 #define ID 128
 #define ITOPK 512
+
+#ifdef GEMV_TIMING
+__device__ long long g_tdbg[16384 * 6];  // per block of the profiled launch: block start, route, staged, computed, end, job
+#endif
 
 struct State {
     int pos;     // position of the token being decoded
@@ -68,6 +83,75 @@ struct HcArgs {
     float base[24];
 };
 
+#define NPART (D / 64)  // hc_step blocks: per-block partial sums (no atomics on shared addresses)
+
+// one wave: sum the NPART per-block partials [NPART][32] of the mix dots into out[0..25)
+DEV void reduce_mix(const float* part, int lane, float* out) {
+    if (lane < 25) {
+        float s = 0;
+#pragma unroll 8
+        for (int b = 0; b < NPART; b++) s += part[b * 32 + lane];
+        out[lane] = s;
+    }
+    __builtin_amdgcn_wave_barrier();
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup");
+}
+
+// hc_finish on 16 lanes of one wave (lanes 0-15 hold comb[j*4+k] at lane j*4+k; lanes 0-3 also pre/post[lane]).
+// Same arithmetic as hc_finish; results to shared pre/post/comb (any may be null).
+DEV void hc_finish16(const float* mix, const HcArgs& a, float hc_eps, float eps, int iters, int lane, float* pre, float* post, float* comb) {
+    const float r = 1.f / sqrtf(mix[24] / (HC * D) + eps);
+    const int j = (lane >> 2) & 3, k = lane & 3;
+    if (lane < 4) {
+        if (pre) pre[lane] = 1.f / (1.f + expf(-(mix[lane] * r * a.scale[0] + a.base[lane]))) + hc_eps;
+        if (post) post[lane] = 2.f / (1.f + expf(-(mix[lane + HC] * r * a.scale[1] + a.base[lane + HC])));
+    }
+    if (!comb) return;
+    float c = mix[j * HC + k + 2 * HC] * r * a.scale[2] + a.base[j * HC + k + 2 * HC];
+    // row softmax (over k: lanes xor 1, 2)
+    float mx = fmaxf(c, __shfl_xor(c, 1));
+    mx = fmaxf(mx, __shfl_xor(mx, 2));
+    c = expf(c - mx);
+    float s = c + __shfl_xor(c, 1);
+    s += __shfl_xor(s, 2);
+    c = c / s + hc_eps;
+    auto colnorm = [&]() {
+        float t = c + __shfl_xor(c, 4);
+        t += __shfl_xor(t, 8);
+        c = c / (t + hc_eps);
+    };
+    colnorm();
+    for (int it = 0; it < iters - 1; it++) {
+        float t = c + __shfl_xor(c, 1);
+        t += __shfl_xor(t, 2);
+        c = c / (t + hc_eps);
+        colnorm();
+    }
+    if (lane < 16) comb[lane] = c;
+}
+
+// v[i] for i < n (block-wide) -> FP8 codes/scales per 32 and bf16 copy. f(i) gives the value.
+template <class F> DEV void write_act(int n, F&& f, uint8_t* oq, float* os, uint16_t* ob) {
+    for (int i4 = threadIdx.x; i4 < n / 4; i4 += blockDim.x) {
+        float v[4];
+#pragma unroll
+        for (int q = 0; q < 4; q++) v[q] = f(4 * i4 + q);
+        if (ob)
+#pragma unroll
+            for (int q = 0; q < 4; q++) ob[4 * i4 + q] = (uint16_t)bf16_bits(v[q]);
+        if (oq) quant32(v, reinterpret_cast<uint32_t*>(oq) + i4, os + (i4 >> 3));
+    }
+}
+
+// The next GEMVs' activation, written by hc_step's last block: rmsnorm(x_raw, nw) -> bf16 -> FP8 codes/scales + bf16
+struct XOut {
+    unsigned* cnt;  // null: none
+    const float* nw;
+    uint8_t* oq;
+    float* os;
+    uint16_t* ob;
+};
+
 // Residual-stream step between sub-blocks, one block per 64 dims (grid D/64, 256 threads: thread = stream*64 + dim):
 //   post (optional): h = bf16(post[k] * bf16?(y) + sum_j comb[j][k] h[j])   with mixes from `pmix` (previous sub-block)
 //   engram (optional): h[k] = bf16(h[k] + gate[k] * value)                   gate from engram sums
@@ -77,23 +161,35 @@ extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h,
                                                const float* pmix, HcArgs pa, const float* premix, HcArgs prea,
                                                const float* __restrict__ fn, float* nmix, float* x_raw, float* xss,
                                                const float* eng_val, const float* eng_sum, const float* eng_qk,
-                                               float hc_eps, float eps, int iters) {
+                                               float hc_eps, float eps, int iters, XOut xo) {
     __shared__ float hs[HC][64];
     __shared__ float post[4], comb[16], pre[4];
+    __shared__ float m0[32], m1[32];
+    __shared__ float red[4][32];
+    __shared__ float prod[25][257];
     const int k = threadIdx.x >> 6, i = threadIdx.x & 63, d = blockIdx.x * 64 + i;
-    if (threadIdx.x == 0) {
-        float p2[4], c2[16], pr[4];
-        if (pmix) {
-            hc_finish(pmix, pa.scale, pa.base, hc_eps, eps, iters, pr, p2, c2);
-            for (int j = 0; j < 4; j++) post[j] = p2[j];
-            for (int j = 0; j < 16; j++) comb[j] = c2[j];
+    // the next mixes' weights do not depend on h: start their loads first
+    float fw[24];
+    if (nmix) {
+#pragma unroll
+        for (int j = 0; j < 24; j++) fw[j] = fn[(size_t)j * HC * D + k * D + d];
+    }
+    {
+        const int w = threadIdx.x >> 6, ln = threadIdx.x & 63;
+#ifndef HC_NOFIN
+        if (w == 0 && pmix) {
+            reduce_mix(pmix, ln, m0);
+            hc_finish16(m0, pa, hc_eps, eps, iters, ln, nullptr, post, comb);
         }
-        if (premix) {
-            hc_finish(premix, prea.scale, prea.base, hc_eps, eps, iters, pr, p2, c2);
-            for (int j = 0; j < 4; j++) pre[j] = pr[j];
-        } else {
-            for (int j = 0; j < 4; j++) pre[j] = j == 0 ? 1.f : 0.f;
+        if (w == 1) {
+            if (premix) {
+                reduce_mix(premix, ln, m1);
+                hc_finish16(m1, prea, hc_eps, eps, iters, ln, pre, nullptr, nullptr);
+            } else if (ln < 4) pre[ln] = ln == 0 ? 1.f : 0.f;
         }
+#else
+        if (threadIdx.x < 16) { comb[threadIdx.x] = 0.25f; if (threadIdx.x < 4) post[threadIdx.x] = pre[threadIdx.x] = 0.5f; }
+#endif
     }
     float hv = h[k * D + d];
     hs[k][i] = hv;
@@ -121,30 +217,56 @@ extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h,
         float x = 0;
         for (int j = 0; j < HC; j++) x += pre[j] * hs[j][i];
         x = round_bf16(x);
-        x_raw[d] = x;
+        if (xo.cnt) st_dev(x_raw + d, x);
+        else x_raw[d] = x;
         float s = wave_sum(x * x);
-        if (i == 0) atomicAdd(xss, s);
+        if (i == 0) xss[blockIdx.x] = s;
     }
     // next sub-block's mix dots: 24 rows of fn over this block's 4x64 h values + sum h^2
+    // next sub-block's mix dots: 24 rows of fn over this block's 4x64 h values + sum h^2, reduced through LDS
     if (nmix) {
-        float part[25];
-        for (int j = 0; j < 24; j++) part[j] = fn[(size_t)j * HC * D + k * D + d] * hv;
-        part[24] = hv * hv;
-        for (int j = 0; j < 25; j++) part[j] = wave_sum(part[j]);
-        if (i == 0)
-            for (int j = 0; j < 25; j++) atomicAdd(&nmix[j], part[j]);
+        const int t = threadIdx.x;
+#pragma unroll
+        for (int j = 0; j < 24; j++) prod[j][t] = fw[j] * hv;
+        prod[24][t] = hv * hv;
+        __syncthreads();
+        // 25 sums of 256: 8 threads per sum (t < 200), then a 3-step shuffle
+        if (t < 200) {
+            const int j = t >> 3, q = t & 7;
+            float sacc = 0;
+#pragma unroll
+            for (int u = 0; u < 32; u++) sacc += prod[j][q * 32 + u];
+            sacc = group_sum<8>(sacc);
+            if (q == 0) nmix[blockIdx.x * 32 + j] = sacc;
+        }
+    }
+    if (xo.cnt) {
+        __shared__ int last;
+        __shared__ float red2[16];
+        __builtin_amdgcn_s_waitcnt(0);
+        __syncthreads();
+        if (threadIdx.x == 0) last = atomicAdd(xo.cnt, 1u) == gridDim.x - 1;
+        __syncthreads();
+        if (last) {
+            float sq = 0;
+            for (int j = threadIdx.x; j < D; j += 256) { const float v = ld_dev(x_raw + j); sq += v * v; }
+            sq = block_sum(sq, red2);
+            const float r = 1.f / sqrtf(sq / D + eps);
+            write_act(D, [&](int j) -> float { return round_bf16(xo.nw[j] * (ld_dev(x_raw + j) * r)); }, xo.oq, xo.os, xo.ob);
+        }
     }
 }
 
 // The final norm input: x = bf16(sum_k pre[k] h[k]) with pre from the last ffn mixes, into xf (f32, for the head).
 extern "C" __global__ void __launch_bounds__(256) hc_final(const float* __restrict__ h, const float* premix, HcArgs prea,
-                                                const float* norm_w, float* xout, float hc_eps, float eps, int iters) {
+                                                const float* norm_w, float* xout, float hc_eps, float eps, int iters,
+                                                uint8_t* oq, float* os, uint16_t* oh, uint16_t* ol) {
     __shared__ float pre[4];
     __shared__ float red[16];
-    if (threadIdx.x == 0) {
-        float p[4], q[4], c[16];
-        hc_finish(premix, prea.scale, prea.base, hc_eps, eps, iters, p, q, c);
-        for (int j = 0; j < 4; j++) pre[j] = p[j];
+    __shared__ float m0[32];
+    if (threadIdx.x < 64) {
+        reduce_mix(premix, threadIdx.x, m0);
+        hc_finish16(m0, prea, hc_eps, eps, iters, threadIdx.x, pre, nullptr, nullptr);
     }
     __syncthreads();
     float xv[D / 256];
@@ -161,7 +283,17 @@ extern "C" __global__ void __launch_bounds__(256) hc_final(const float* __restri
     const float r = 1.f / sqrtf(ss / D + eps);
     for (int u = 0; u < D / 256; u++) {
         const int d = u * 256 + threadIdx.x;
-        xout[d] = norm_w[d] * (xv[u] * r);
+        const float x = norm_w[d] * (xv[u] * r);
+        xout[d] = x;
+        if (oh) {
+            const uint32_t hb = bf16_bits(x);
+            oh[d] = (uint16_t)hb;
+            ol[d] = (uint16_t)bf16_bits(x - __uint_as_float(hb << 16));
+        }
+    }
+    if (oq) {
+        __syncthreads();
+        write_act(D, [&](int j) -> float { return xout[j]; }, oq, os, nullptr);
     }
 }
 
@@ -239,9 +371,13 @@ DEV void rope_pair(float& a, float& b, float ang) {
 }
 
 // expert routing results shared by the expert kernels: ids[6], wts[6]
+struct ExpertMatFwd;
 struct Route {
     int ids[8];
     float wts[8];
+    long long woff[18], soff[18];  // the picked experts' matrices (slot*3 + mat), from the expert table
+    float mul[18];
+    int fmt[18];
 };
 
 // Router top-6 (model.py Gate, sqrtsoftplus + bias, noaux_tc): by one wave; writes ids/weights into r.
@@ -250,7 +386,9 @@ DEV void route_top6(const float* logits, const float* bias, float route_scale, R
     for (int j = 0; j < 6; j++) {
         const int e = lane + 64 * j;
         const float l = logits[e];
-        const float sp = l > 20.f ? l : log1pf(expf(l));
+        // softplus; log1pf is ~270 ns per call on gfx942: log(1 + e) with the small-e series instead
+        const float ex = __expf(l);
+        const float sp = l > 20.f ? l : (ex < 1e-3f ? ex * (1.f - 0.5f * ex) : __logf(1.f + ex));
         sc[j] = sqrtf(sp);
         key[j] = sc[j] + bias[e];
     }
@@ -261,11 +399,14 @@ DEV void route_top6(const float* logits, const float* bias, float route_scale, R
         int bi = 1 << 30, bj = -1;
         for (int j = 0; j < 6; j++)
             if (key[j] > bk) { bk = key[j]; bi = lane + 64 * j; bj = j; }
-        for (int o = 32; o > 0; o >>= 1) {
-            const float ok = __shfl_xor(bk, o);
-            const int oi = __shfl_xor(bi, o);
-            if (ok > bk || (ok == bk && oi < bi)) { bk = ok; bi = oi; }
-        }
+        // wave argmax (key desc, index asc): DPP inside 16-lane rows, then two shuffles
+        auto step = [&](float ok, int oi) { if (ok > bk || (ok == bk && oi < bi)) { bk = ok; bi = oi; } };
+        step(dpp<DPP_XOR1>(bk), __float_as_int(dpp<DPP_XOR1>(__int_as_float(bi))));
+        step(dpp<DPP_XOR2>(bk), __float_as_int(dpp<DPP_XOR2>(__int_as_float(bi))));
+        step(dpp<DPP_HMIRROR>(bk), __float_as_int(dpp<DPP_HMIRROR>(__int_as_float(bi))));
+        step(dpp<DPP_MIRROR>(bk), __float_as_int(dpp<DPP_MIRROR>(__int_as_float(bi))));
+        step(__shfl_xor(bk, 16), __shfl_xor(bi, 16));
+        step(__shfl_xor(bk, 32), __shfl_xor(bi, 32));
         const float scv = __shfl(bj >= 0 ? sc[bj < 0 ? 0 : bj] : 0.f, bi & 63);
         if (lane == (bi & 63)) key[bi >> 6] = -INFINITY;
         if (lane == 0) r->ids[s] = bi;
@@ -285,6 +426,9 @@ extern "C" __global__ void __launch_bounds__(256) gemv_jobs(Jobs js, const State
     extern __shared__ char smem[];
     __shared__ float red[16];
     __shared__ Route rsh;
+#ifdef GEMV_TIMING
+    long long T0 = wall_clock64(), T1 = 0, T2 = 0, T3 = 0;
+#endif
     int b = blockIdx.x, ji = 0;
     while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;
     const Job& J = js.j[ji];
@@ -305,8 +449,28 @@ extern "C" __global__ void __launch_bounds__(256) gemv_jobs(Jobs js, const State
     float ewt = 1.f, emul = 1.f;
     int efmt = E_FP4;
     if (J.eslot >= 0) {
+        if (route_mode == 3) {
+            const int q = J.eslot * 3 + J.emat;
+            if (tid == 0) {
+                rsh.ids[0] = route->fmt[q];
+                rsh.wts[0] = J.emat == 2 ? route->wts[J.eslot] : route->mul[q];
+                rsh.wts[1] = route->mul[q];
+                ((long long*)rsh.ids)[1] = route->woff[q];
+                ((long long*)rsh.ids)[2] = route->soff[q];
+            }
+            __syncthreads();
+            efmt = rsh.ids[0];
+            ewt = rsh.wts[0];
+            emul = rsh.wts[1];
+            wbase = (const char*)J.w + ((long long*)rsh.ids)[1];
+            sbase = (const char*)J.w + ((long long*)rsh.ids)[2];
+        } else {
         if (route_mode == 1) {
+#ifdef EXP_NOROUTE
+            if (tid < 6) { rsh.ids[tid] = tid * 7; rsh.wts[tid] = 0.1f; }
+#else
             if (wv == 0) route_top6(router_logits, router_bias, route_scale, &rsh, lane);
+#endif
         } else if (tid < 6) {
             rsh.ids[tid] = route->ids[tid];
             rsh.wts[tid] = route->wts[tid];
@@ -325,13 +489,22 @@ extern "C" __global__ void __launch_bounds__(256) gemv_jobs(Jobs js, const State
             sbase += (long long)e * J.sstride;
         }
         if (route_mode == 1 && blockIdx.x == 0 && tid < 6) { route->ids[tid] = rsh.ids[tid]; route->wts[tid] = rsh.wts[tid]; }
+        }
     }
 
+#ifdef GEMV_TIMING
+    T1 = wall_clock64();
+#endif
     // ---- stage the activation slice [k0, k0+kn) for this job's x group
     int gx = 0;  // activation group offset
     if (J.xgroup) gx = (rb * 64 / J.xgroup) * J.k;
     float scale_all = 1.f;
-    if (J.xkind == X_NORM) scale_all = 1.f / sqrtf(J.ss[0] / J.k + js.eps);
+    if (J.xkind == X_NORM) {
+        float ss = 0;
+#pragma unroll 8
+        for (int b = 0; b < NPART; b++) ss += J.ss[b];
+        scale_all = 1.f / sqrtf(ss / J.k + js.eps);
+    }
     if (J.xkind == X_RMS) {
         float s = 0;
         for (int i = tid; i < J.k; i += 256) { const float v = J.x[i]; s += v * v; }
@@ -360,77 +533,108 @@ extern "C" __global__ void __launch_bounds__(256) gemv_jobs(Jobs js, const State
             }
         }
     };
-    if (J.wkind == W_BF16) {
-        uint16_t* xh = (uint16_t*)smem;
-        uint16_t* xl = xh + kn + 8;
-        for (int i = tid; i < kn; i += 256) {
-            const float v = act(k0 + i);
-            const uint32_t hb = bf16_bits(v);
-            xh[i] = (uint16_t)hb;
-            xl[i] = (uint16_t)bf16_bits(v - __uint_as_float(hb << 16));
+    auto stage = [&]() {
+        if (J.wkind == W_BF16) {
+            uint16_t* xh = (uint16_t*)smem;
+            uint16_t* xl = xh + kn + 8;
+            for (int i = tid; i < kn; i += 256) {
+                const float v = act(k0 + i);
+                const uint32_t hb = bf16_bits(v);
+                xh[i] = (uint16_t)hb;
+                xl[i] = (uint16_t)bf16_bits(v - __uint_as_float(hb << 16));
+            }
+        } else if (J.xkind == X_Q) {
+            uint8_t* xq = (uint8_t*)smem;
+            float* xs = (float*)(smem + ((kn + 8 + 15) & ~15));
+            const uint8_t* src = (const uint8_t*)J.x + gx + k0;
+            for (int i = tid; i < kn / 4; i += 256) reinterpret_cast<uint32_t*>(xq)[i] = reinterpret_cast<const uint32_t*>(src)[i];
+            for (int i = tid; i < kn / 32; i += 256) xs[i] = J.x2[(gx + k0) / 32 + i];
+        } else {
+            uint8_t* xq = (uint8_t*)smem;
+            float* xs = (float*)(smem + ((kn + 8 + 15) & ~15));
+            // 4 values per thread, 8 threads per 32-block
+            for (int i4 = tid; i4 < kn / 4; i4 += 256) {
+                float v[4];
+                for (int q = 0; q < 4; q++) v[q] = act(k0 + 4 * i4 + q);
+                quant32(v, reinterpret_cast<uint32_t*>(xq) + i4, xs + (i4 >> 3));
+            }
         }
-    } else if (J.xkind == X_Q) {
-        uint8_t* xq = (uint8_t*)smem;
-        float* xs = (float*)(smem + ((kn + 8 + 15) & ~15));
-        const uint8_t* src = (const uint8_t*)J.x + gx + k0;
-        for (int i = tid; i < kn / 4; i += 256) reinterpret_cast<uint32_t*>(xq)[i] = reinterpret_cast<const uint32_t*>(src)[i];
-        for (int i = tid; i < kn / 32; i += 256) xs[i] = J.x2[(gx + k0) / 32 + i];
-    } else {
-        uint8_t* xq = (uint8_t*)smem;
-        float* xs = (float*)(smem + ((kn + 8 + 15) & ~15));
-        // 4 values per thread, 8 threads per 32-block
-        for (int i4 = tid; i4 < kn / 4; i4 += 256) {
-            float v[4];
-            for (int q = 0; q < 4; q++) v[q] = act(k0 + 4 * i4 + q);
-            quant32(v, reinterpret_cast<uint32_t*>(xq) + i4, xs + (i4 >> 3));
-        }
-    }
-    __syncthreads();
-    if (!rowok) return;
 
-    // ---- the wave's tile
+        __syncthreads();
+#ifdef GEMV_TIMING
+        T2 = wall_clock64();
+#endif
+    };
+    // ---- the wave's tile (waves past the last row tile still stage and sync, with no weights)
     f4 acc;
     const int g16 = lane >> 4;
+    const int Sw = rowok ? S : 0;
+    const int rtc = rowok ? rt : rb * 4;
     float mul = 1.f;
+    bool x1 = false;  // single-token column-rotated result: reduce across the 16 lanes of each row group
     if (J.wkind == W_FP8) {
         const uint8_t* xq = (const uint8_t*)smem;
         const float* xs = (const float*)(smem + ((kn + 8 + 15) & ~15));
         // weight scales for this tile's 32-row block, k-blocks [2*u0, 2*u1)
         float* wsl = (float*)(smem + ((kn + 8 + 15) & ~15) + kn / 32 * 4) + wv * 2 * S;
-        const uint8_t* sp = (const uint8_t*)sbase + (size_t)(rt >> 1) * (J.k / 32) + 2 * u0;
-        for (int i = lane; i < 2 * S; i += 64) wsl[i] = __uint_as_float((uint32_t)sp[i] << 23);
-        __builtin_amdgcn_s_waitcnt(0);
-        __builtin_amdgcn_wave_barrier();
-        const u4v* wp = (const u4v*)wbase + ((size_t)rt * KUs + u0) * 64 + lane;
-        acc = wave_fp8<4>(wp, S, xq + 8 * g16, xs, wsl, true);
+        const uint8_t* sp = (const uint8_t*)sbase + (size_t)(rtc >> 1) * (J.k / 32) + 2 * u0;
+        for (int i = lane; i < 2 * Sw; i += 64) wsl[i] = __uint_as_float((uint32_t)sp[i] << 23);
+        const u4v* wp = (const u4v*)wbase + ((size_t)rtc * KUs + u0) * 64 + lane;
+        acc = wave_fp8<F8U>(wp, Sw, xq + 8 * g16, xs, wsl, true, stage);
         mul = 2.f;
     } else if (J.wkind == W_MXFP4 || (J.wkind == W_EXPERT && efmt == E_FP4)) {
         const uint8_t* xq = (const uint8_t*)smem;
         const float* xs = (const float*)(smem + ((kn + 8 + 15) & ~15));
-        const u4v* wp = (const u4v*)wbase + ((size_t)rt * KUs + u0) * 64 + lane;
-        const u4v* sp = (const u4v*)sbase + ((size_t)rt * KUs + u0) * 4 + g16;
-        acc = wave_mxfp4<2>(wp, sp, S, xq + 8 * g16, xs, true);
+        const u4v* wp = (const u4v*)wbase + ((size_t)rtc * KUs + u0) * 64 + lane;
+        const u4v* sp = (const u4v*)sbase + ((size_t)rtc * KUs + u0) * 4 + g16;
+#ifdef X1_OFF
+        acc = wave_mxfp4<2>(wp, sp, Sw, xq + 8 * g16, xs, true, stage);
+#else
+        acc = wave_x1<0, X1U>((const uint32_t*)wp, sp, Sw, xq + 8 * g16, xs, 0u, 0u, stage);
+        x1 = true;
+#endif
         mul = emul;  // the e2m1 table holds exact values (FP8 weights instead hold OCP/2: x2)
     } else if (J.wkind == W_EXPERT) {
         const uint8_t* xq = (const uint8_t*)smem;
         const float* xs = (const float*)(smem + ((kn + 8 + 15) & ~15));
-        const u4v* sp = (const u4v*)sbase + ((size_t)rt * KUs + u0) * 4 + g16;
+        const u4v* sp = (const u4v*)sbase + ((size_t)rtc * KUs + u0) * 4 + g16;
         if (efmt == E_CB3) {
-            const uint32_t* wp = (const uint32_t*)wbase + ((size_t)rt * KUs + u0) * 64 * 3 + lane * 3;
-            acc = wave_cb<3>(wp, sp, S, xq + 8 * g16, xs, js.cb3[0], js.cb3[1], true);
+            const uint32_t* wp = (const uint32_t*)wbase + ((size_t)rtc * KUs + u0) * 64 * 3 + lane * 3;
+#ifdef X1_OFF
+            acc = wave_cb<3>(wp, sp, Sw, xq + 8 * g16, xs, js.cb3[0], js.cb3[1], true, stage);
+#else
+            acc = wave_x1<3, X1U>(wp, sp, Sw, xq + 8 * g16, xs, js.cb3[0], js.cb3[1], stage);
+            x1 = true;
+#endif
         } else {
-            const uint32_t* wp = (const uint32_t*)wbase + ((size_t)rt * KUs + u0) * 64 * 2 + lane * 2;
-            acc = wave_cb<2>(wp, sp, S, xq + 8 * g16, xs, js.cb2, 0u, true);
+            const uint32_t* wp = (const uint32_t*)wbase + ((size_t)rtc * KUs + u0) * 64 * 2 + lane * 2;
+#ifdef X1_OFF
+            acc = wave_cb<2>(wp, sp, Sw, xq + 8 * g16, xs, js.cb2, 0u, true, stage);
+#else
+            acc = wave_x1<2, X1U>(wp, sp, Sw, xq + 8 * g16, xs, js.cb2, 0u, stage);
+            x1 = true;
+#endif
         }
         mul = emul;
     } else {
         const uint16_t* xh = (const uint16_t*)smem;
         const uint16_t* xl = xh + kn + 8;
-        const u4v* wp = (const u4v*)wbase + ((size_t)rt * KUs + u0) * 64 + lane;
-        acc = wave_bf16<4>(wp, S, xh + 4 * g16, xl + 4 * g16, J.lo != 0, true);
+        const u4v* wp = (const u4v*)wbase + ((size_t)rtc * KUs + u0) * 64 + lane;
+        acc = wave_bf16<4>(wp, Sw, xh + 4 * g16, xl + 4 * g16, J.lo != 0, true, stage);
     }
+    if (x1) {
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[j] = group_sum<16>(acc[j]);
+    }
+#ifdef GEMV_TIMING
+    T3 = wall_clock64();
+    if (tid == 0 && blockIdx.x < 16384) {
+        long long* d = g_tdbg + blockIdx.x * 6;
+        d[0] = T0; d[1] = T1; d[2] = T2; d[3] = T3; d[5] = ji;
+    }
+#endif
     // ---- epilogue: lanes 0, 16, 32, 48 (token 0) hold rows 16*rt + 4*g16 + j
-    if ((lane & 15) != 0) return;
+    if (rowok && (lane & 15) == 0) {
     const int r0 = rt * 16 + 4 * g16;
     float v[4];
     for (int j = 0; j < 4; j++) v[j] = acc[j] * mul;
@@ -452,6 +656,35 @@ extern "C" __global__ void __launch_bounds__(256) gemv_jobs(Jobs js, const State
     } else {
         for (int j = 0; j < 4; j++) J.y[r0 + j] = v[j];
     }
+    }
+    if (J.epi == 3) {
+        // router: the last block to finish picks the experts from the complete logits (device-scope loads, no fence)
+        // and publishes ids, weights and their matrix descriptors for the expert kernels
+        __shared__ int last;
+        __builtin_amdgcn_s_waitcnt(0);
+        __syncthreads();
+        if (tid == 0) last = atomicAdd((unsigned*)J.x2, 1u) == (unsigned)(J.blocks - 1);
+        __syncthreads();
+        if (last && wv == 0) {
+            float* lg = (float*)smem;
+            for (int i = lane; i < NE; i += 64) lg[i] = ld_dev(J.y + i);
+            __builtin_amdgcn_wave_barrier();
+            route_top6(lg, router_bias, route_scale, &rsh, lane);
+            __builtin_amdgcn_wave_barrier();
+            if (lane < 18) {
+                const int sl = lane / 3, m = lane % 3;
+                const ExpertMat em = ((const ExpertMat*)J.sc)[rsh.ids[sl] * 3 + m];
+                route->woff[lane] = em.woff;
+                route->soff[lane] = em.soff;
+                route->mul[lane] = em.mul;
+                route->fmt[lane] = em.fmt;
+            }
+            if (lane < 6) { route->ids[lane] = rsh.ids[lane]; route->wts[lane] = rsh.wts[lane]; }
+        }
+    }
+#ifdef GEMV_TIMING
+    if (blockIdx.x < 16384) atomicMax((unsigned long long*)&g_tdbg[blockIdx.x * 6 + 4], (unsigned long long)wall_clock64());
+#endif
 }
 
 // Engram sums from its projection output kv[25600] = [4 x 5120 key | 5120 value] and h:
@@ -683,13 +916,19 @@ struct TopCtl {
 
 // histogram of the top 12 bits; n = (pos+1)/ratio (ratio>0) or *n_src; -inf entries are skipped
 extern "C" __global__ void __launch_bounds__(256) topk_hist(const State* st, int ratio, const int* n_src, const float* sc, uint32_t* hist, TopCtl* ctl) {
+    __shared__ uint32_t lh[4096];
     const int n = n_src ? *n_src : (st->pos + 1) / ratio;
     if (blockIdx.x == 0 && threadIdx.x == 0) ctl->n = n;
+    for (int i = threadIdx.x; i < 4096; i += 256) lh[i] = 0;
+    __syncthreads();
     for (int i = blockIdx.x * 256 + threadIdx.x; i < n; i += gridDim.x * 256) {
         const float v = sc[i];
         if (v == -INFINITY) continue;
-        atomicAdd(&hist[fkey(v) >> 20], 1u);
+        atomicAdd(&lh[fkey(v) >> 20], 1u);
     }
+    __syncthreads();
+    for (int i = threadIdx.x; i < 4096; i += 256)
+        if (lh[i]) atomicAdd(&hist[i], lh[i]);
 }
 
 // one block: find the bin holding the k-th largest
@@ -753,7 +992,7 @@ extern "C" __global__ void __launch_bounds__(256) topk_collect(const float* sc, 
 // map: optional index -> row map (indexer rows from a candidate list). zero_hist: cleared for the next use.
 extern "C" __global__ void __launch_bounds__(1024) topk_final(TopCtl* ctl, const int* sel, const int* cand, const uint32_t* ckey,
                                                    const int* map, int offset, int* out, int kmax, int* nout,
-                                                   uint32_t* zero_hist) {
+                                                   uint32_t* zero_hist, int sorted) {
     __shared__ uint64_t buf[4096];
     __shared__ int idx[2048];
     __shared__ uint32_t h2[256];
@@ -836,9 +1075,9 @@ extern "C" __global__ void __launch_bounds__(1024) topk_final(TopCtl* ctl, const
     const int base = nsel + taken;
     for (int i = tid; i < need && i < m; i += 1024) idx[base + i] = (int)(~(uint32_t)(buf[i] & 0xFFFFFFFFu));
     __syncthreads();
-    // sort the k selected indices ascending (bitonic over P2 >= k)
+    // sort the k selected indices ascending (bitonic over P2 >= k); attention rows need no order
     int P2 = 1;
-    while (P2 < k) P2 <<= 1;
+    while (P2 < k && sorted) P2 <<= 1;
     for (int i = k + tid; i < P2; i += 1024) idx[i] = 0x7FFFFFFF;
     __syncthreads();
     for (int sz = 2; sz <= P2; sz <<= 1)
@@ -891,78 +1130,107 @@ extern "C" __global__ void expand_blocks(const State* st, int ratio, int bs, con
 // Partial attention over a chunk of rows: block (chunk c, head group g of 8 heads). Rows: window ring slots (oldest
 // first, only those <= pos) then compressed rows listed in cidx (>= 0, minus `woff`). Writes per (chunk, head):
 // m, l and o[512] (unnormalized).
-#define ACH 32
+#define ACH 16  // rows per chunk
+#define AHG 16  // heads per block
+// Block (chunk c of 16 rows, head group g of 16 heads), 256 threads: thread (head h = tid/16, slice q = tid%16) holds
+// q[h][32q .. 32q+32) in registers and scores all 16 rows; slices are summed with DPP inside each 16-lane row.
 extern "C" __global__ void __launch_bounds__(256) attn_part(const State* st, const float* __restrict__ q, const uint16_t* __restrict__ ring,
                                                  const uint16_t* __restrict__ comp, const int* __restrict__ cidx, const int* ncomp,
                                                  int woff, float scale, float* part) {
     __shared__ uint16_t rows[ACH][HD + 8];
-    __shared__ float qs[8][HD];
-    __shared__ float p[8][ACH];
+    __shared__ float p[AHG][ACH];
     __shared__ int rowsrc[ACH];
+    const int c = blockIdx.x, g = blockIdx.y, tid = threadIdx.x;
+#ifdef ATT_TIMING
+    long long T[5];
+    T[0] = wall_clock64();
+#endif
+    const int h = tid >> 4, qs = tid & 15;
+    // lane slice: dims 64u + 4qs + {0..3}, u < 8 (consecutive lanes read consecutive 8-byte LDS words: no bank conflicts)
+    float4 qv[8];
+    {
+        const float* qp = q + (size_t)(g * AHG + h) * HD + 4 * qs;
+#pragma unroll
+        for (int u = 0; u < 8; u++) qv[u] = *reinterpret_cast<const float4*>(qp + 64 * u);
+    }
     const int t = st->pos;
     const int nwin = min(t + 1, WIN);
     const int nc = comp ? *ncomp : 0;
     const int total = nwin + nc;
-    const int c = blockIdx.x, g = blockIdx.y, tid = threadIdx.x;
     const int r0 = c * ACH;
-    float* outp = part + ((size_t)c * NH + g * 8) * (HD + 2);
+    float* outp = part + ((size_t)c * NH + g * AHG) * (HD + 2);
     if (r0 >= total) {
-        // empty chunk: m = -inf
-        if (tid < 8) { outp[tid * (HD + 2)] = -INFINITY; outp[tid * (HD + 2) + 1] = 0.f; }
+        if (tid < AHG) { outp[tid * (HD + 2)] = -INFINITY; outp[tid * (HD + 2) + 1] = 0.f; }
         return;
     }
-    // row sources: window slot ids (ring order oldest first) or compressed rows
     if (tid < ACH) {
-        const int r = r0 + tid;
+        const int rr = r0 + tid;
         int src = -1;
-        if (r < nwin) {
+        if (rr < nwin) {
             const int oldest = (t + 1 > WIN) ? (t + 1) % WIN : 0;
-            src = (oldest + r) % WIN;
-        } else if (r < total) {
-            const int ci = cidx[r - nwin];
+            src = (oldest + rr) % WIN;
+        } else if (rr < total) {
+            const int ci = cidx[rr - nwin];
             src = ci >= 0 ? 0x40000000 | (ci - woff) : -1;
         }
         rowsrc[tid] = src;
     }
-    for (int i = tid; i < 8 * HD; i += 256) qs[i / HD][i % HD] = q[(g * 8 + i / HD) * HD + i % HD];
     __syncthreads();
-    for (int i = tid; i < ACH * HD / 4; i += 256) {
-        const int r = i / (HD / 4), j = (i % (HD / 4)) * 4;
-        const int src = rowsrc[r];
-        uint2 v = {0, 0};
+    TMARK(1)
+    for (int i = tid; i < ACH * HD / 8; i += 256) {
+        const int rw = i / (HD / 8), j = (i % (HD / 8)) * 8;
+        const int src = rowsrc[rw];
+        uint4 v = {0, 0, 0, 0};
         if (src >= 0) {
             const uint16_t* base = (src & 0x40000000) ? comp + (size_t)(src & 0x3FFFFFFF) * HD : ring + (size_t)src * HD;
-            v = *reinterpret_cast<const uint2*>(base + j);
+            v = *reinterpret_cast<const uint4*>(base + j);
         }
-        *reinterpret_cast<uint2*>(&rows[r][j]) = v;
+        *reinterpret_cast<uint4*>(&rows[rw][j]) = v;
     }
     __syncthreads();
-    // scores: 8 heads x 32 rows = 256 dots of 512
-    {
-        const int h = tid >> 5, r = tid & 31;
-        float s = 0;
-        for (int j = 0; j < HD; j++) s += qs[h][j] * bf16_to_f32(rows[r][j]);
-        p[h][r] = (rowsrc[r] >= 0 && r0 + r < total) ? s * scale : -INFINITY;
+    TMARK(2)
+    // scores for the 16 rows; lane (h, qs) ends up holding row qs's score after the slice reduction
+    float myscore = 0;
+#pragma unroll
+    for (int r = 0; r < ACH; r++) {
+        const uint16_t* rp = &rows[r][4 * qs];
+        float sacc = 0;
+#pragma unroll
+        for (int u = 0; u < 8; u++) {
+            const uint2 b = *reinterpret_cast<const uint2*>(rp + 64 * u);
+            sacc += qv[u].x * __uint_as_float(b.x << 16) + qv[u].y * __uint_as_float(b.x & 0xFFFF0000u) +
+                    qv[u].z * __uint_as_float(b.y << 16) + qv[u].w * __uint_as_float(b.y & 0xFFFF0000u);
+        }
+        sacc = group_sum<16>(sacc);
+        if (qs == r) myscore = sacc;
     }
-    __syncthreads();
-    // per head: max and exp
     {
-        const int h = tid >> 5, r = tid & 31;
-        const float v = p[h][r];
-        const float m = group_max<32>(v);
+        const int r = qs;
+        const float v = (rowsrc[r] >= 0 && r0 + r < total) ? myscore * scale : -INFINITY;
+        const float m = group_max<16>(v);
         const float e = v == -INFINITY ? 0.f : expf(v - m);
-        const float l = group_sum<32>(e);
+        const float l = group_sum<16>(e);
         p[h][r] = e;
         if (r == 0) { outp[h * (HD + 2)] = m; outp[h * (HD + 2) + 1] = l; }
     }
     __syncthreads();
-    // o[h][j] = sum_r p[h][r] row[r][j]: 8 x 512 outputs, 16 per thread
-    for (int i = tid; i < 8 * HD; i += 256) {
-        const int h = i / HD, j = i % HD;
-        float s = 0;
-        for (int r = 0; r < ACH; r++) s += p[h][r] * bf16_to_f32(rows[r][j]);
-        outp[h * (HD + 2) + 2 + j] = s;
+    TMARK(3)
+    // o[h][j] = sum_r p[h][r] row[r][j]: 16 x 512 outputs, 32 per thread (thread: head h, dims qs + 16*k)
+#pragma unroll 4
+    for (int kk = 0; kk < 32; kk++) {
+        const int j = qs + 16 * kk;
+        float sacc = 0;
+#pragma unroll
+        for (int r = 0; r < ACH; r++) sacc += p[h][r] * __uint_as_float((uint32_t)rows[r][j] << 16);
+        outp[h * (HD + 2) + 2 + j] = sacc;
     }
+#ifdef ATT_TIMING
+    T[4] = wall_clock64();
+    if (tid == 0) {
+        long long* d = (long long*)(part + (size_t)64 * NH * (HD + 2)) + (blockIdx.y * gridDim.x + blockIdx.x) * 5;
+        for (int i = 0; i < 5; i++) d[i] = T[i];
+    }
+#endif
 }
 
 // Merge chunks per head (+ sink), round to bf16, inverse RoPE on the last 64 dims, fake_fp8 per 32 and write the
@@ -970,16 +1238,17 @@ extern "C" __global__ void __launch_bounds__(256) attn_part(const State* st, con
 extern "C" __global__ void __launch_bounds__(512) attn_merge(const State* st, const float* part, int nchunks, const float* sinks,
                                                   const float* rope_f, uint8_t* oq, float* os) {
     const int h = blockIdx.x, j = threadIdx.x;
+    // max over the chunks first, then independent weighted sums (no loop-carried chain through the loads)
     float M = -INFINITY;
     for (int c = 0; c < nchunks; c++) M = fmaxf(M, part[((size_t)c * NH + h) * (HD + 2)]);
-    float L = expf(sinks[h] - M), O = 0;
+    float L = expf(sinks[h] - M), O = 0.f;
+#pragma unroll 8
     for (int c = 0; c < nchunks; c++) {
         const float* pp = part + ((size_t)c * NH + h) * (HD + 2);
-        const float m = pp[0];
-        if (m == -INFINITY) continue;
-        const float w = expf(m - M);
-        L += pp[1] * w;
-        O += pp[2 + j] * w;
+        const float m = pp[0], l = pp[1], o0 = pp[2 + j];
+        const float w = m == -INFINITY ? 0.f : expf(m - M);
+        L += w * l;
+        O += m == -INFINITY ? 0.f : w * o0;
     }
     float v = round_bf16(O / L);
     const float other = __shfl_xor(v, 1);
@@ -997,13 +1266,13 @@ extern "C" __global__ void __launch_bounds__(512) attn_merge(const State* st, co
     if ((j & 31) == 0) os[(h * HD + j) / 32] = 2.f * s;
 }
 
-// argmax over the logits (one block of 1024): writes the token id into st->token and out[step]
-extern "C" __global__ void __launch_bounds__(1024) argmax(const float* logits, int n, State* st, int* out) {
-    __shared__ float bv[16];
-    __shared__ int bi[16];
+// argmax over the logits: 128 blocks write (value, index) partials, then one wave reduces them.
+extern "C" __global__ void __launch_bounds__(256) argmax_part(const float* logits, int n, float* pv, int* pi) {
+    __shared__ float bv[4];
+    __shared__ int bi[4];
     float best = -INFINITY;
-    int besti = 0;
-    for (int i = threadIdx.x; i < n; i += 1024) {
+    int besti = 0x7FFFFFFF;
+    for (int i = blockIdx.x * 256 + threadIdx.x; i < n; i += gridDim.x * 256) {
         const float v = logits[i];
         if (v > best) { best = v; besti = i; }
     }
@@ -1015,12 +1284,24 @@ extern "C" __global__ void __launch_bounds__(1024) argmax(const float* logits, i
     if ((threadIdx.x & 63) == 0) { bv[threadIdx.x >> 6] = best; bi[threadIdx.x >> 6] = besti; }
     __syncthreads();
     if (threadIdx.x == 0) {
-        for (int w = 1; w < 16; w++)
+        for (int w = 1; w < 4; w++)
             if (bv[w] > best || (bv[w] == best && bi[w] < besti)) { best = bv[w]; besti = bi[w]; }
-        bv[0] = best;
-        bi[0] = besti;
-        out[0] = besti;
+        pv[blockIdx.x] = best;
+        pi[blockIdx.x] = besti;
     }
+}
+extern "C" __global__ void argmax(const float* pv, const int* pi, int nb, int* out) {
+    float best = -INFINITY;
+    int besti = 0x7FFFFFFF;
+    for (int i = threadIdx.x; i < nb; i += 64) {
+        if (pv[i] > best || (pv[i] == best && pi[i] < besti)) { best = pv[i]; besti = pi[i]; }
+    }
+    for (int o = 32; o > 0; o >>= 1) {
+        const float ov = __shfl_xor(best, o);
+        const int oi = __shfl_xor(besti, o);
+        if (ov > best || (ov == best && oi < besti)) { best = ov; besti = oi; }
+    }
+    if (threadIdx.x == 0) out[0] = besti;
 }
 
 // position bookkeeping at the end of a step: pos += 1, token = next
@@ -1141,4 +1422,172 @@ extern "C" __global__ void fill_rand(uint16_t* p, int n, int seed) {
 
 extern "C" __global__ void test_route(const float* logits, const float* bias, float scale, Route* r) {
     route_top6(logits, bias, scale, r, threadIdx.x);
+}
+
+// ------------------------------------------------------------------ gemv2: activations from producers, no staging
+
+// What the last block of a job group does once every block of the group has stored its results (atomic counter,
+// device-scope loads of the results, no fences).
+enum PostKind { P_NONE = 0, P_ROUTER = 1, P_RMSNORM = 2, P_BF16 = 3, P_SWIGLU = 4 };
+struct Post {
+    int kind, n, expect, slot;  // slot: routed-expert slot for P_SWIGLU (weight from the route), -1 = weight 1
+    unsigned* cnt;
+    const float* src;
+    const float* src2;
+    const float* w;  // norm weight (P_RMSNORM); expert table (P_ROUTER)
+    uint8_t* oq;
+    float* os;
+    uint16_t* ob;
+};
+struct Jobs2 {
+    Job j[13];
+    Post post[7];
+    int jpost[13];  // post index per job, -1 none
+    int n;
+    float eps, lim;
+    uint32_t cb3[2], cb2;
+};
+
+DEV void run_post(const Post& P, const float* router_bias, float route_scale, Route* route, float eps, float lim, char* smem) {
+    __shared__ float red[16];
+    __shared__ Route rsh;
+    const int tid = threadIdx.x, lane = tid & 63, wv = tid >> 6;
+    __shared__ float lg[NE];
+    if (P.kind == P_ROUTER) {
+        if (wv == 0) {
+            for (int i = lane; i < NE; i += 64) lg[i] = ld_dev(P.src + i);
+            __builtin_amdgcn_wave_barrier();
+            route_top6(lg, router_bias, route_scale, &rsh, lane);
+            __builtin_amdgcn_wave_barrier();
+            if (lane < 18) {
+                const int sl = lane / 3, m = lane % 3;
+                const ExpertMat em = ((const ExpertMat*)P.w)[rsh.ids[sl] * 3 + m];
+                route->woff[lane] = em.woff;
+                route->soff[lane] = em.soff;
+                route->mul[lane] = em.mul;
+                route->fmt[lane] = em.fmt;
+            }
+            if (lane < 6) { route->ids[lane] = rsh.ids[lane]; route->wts[lane] = rsh.wts[lane]; }
+        }
+        return;
+    }
+    // values straight from global (device-scope loads: other blocks' results)
+    float r = 1.f;
+    if (P.kind == P_RMSNORM) {
+        float sq = 0;
+        for (int i = tid; i < P.n; i += blockDim.x) { const float v = ld_dev(P.src + i); sq += v * v; }
+        sq = block_sum(sq, red);
+        r = 1.f / sqrtf(sq / P.n + eps);
+    }
+    const float wt = (P.kind == P_SWIGLU && P.slot >= 0) ? route->wts[P.slot] : 1.f;
+    write_act(P.n, [&](int i) -> float {
+        const float v = ld_dev(P.src + i);
+        if (P.kind == P_RMSNORM) return round_bf16(P.w[i] * (v * r));
+        if (P.kind == P_BF16) return round_bf16(v);
+        const float g = fminf(v, lim), u = fminf(fmaxf(ld_dev(P.src2 + i), -lim), lim);
+        return round_bf16(g / (1.f + expf(-g)) * u * wt);
+    }, P.oq, P.os, P.ob);
+}
+
+// One block = 4 waves = 4 row tiles over one k-slice; each wave streams its weights with activation fragments from
+// global (job.x = FP8 codes, job.x2 = scales; or job.nw = bf16 hi, job.ss = bf16 lo for bf16 weights).
+extern "C" __global__ void __launch_bounds__(256) gemv2(Jobs2 js, const State* st, const float* rope_f, const float* rope_fc,
+                                                       const float* router_bias, float route_scale, Route* route) {
+    extern __shared__ char smem[];
+    int b = blockIdx.x, ji = 0;
+    while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;
+    const Job& J = js.j[ji];
+    const int tid = threadIdx.x, lane = tid & 63, wv = tid >> 6;
+    const int RB = (J.n + 63) / 64;
+    const int rb = b % RB, sl = b / RB;
+    const int KU = J.wkind == W_FP8 ? 64 : (J.wkind == W_BF16 ? 32 : 128);
+    const int KUs = J.k / KU;
+    const int u0 = KUs * sl / J.split, u1 = KUs * (sl + 1) / J.split;
+    const int S = u1 - u0;
+    const int k0 = u0 * KU;
+    const int rt = rb * 4 + wv;
+    const bool rowok = rt * 16 < J.n;
+    const int g16 = lane >> 4;
+    int gx = J.xgroup ? (rb * 64 / J.xgroup) * J.k : 0;  // activation group offset (wo_a)
+    f4 acc = {0, 0, 0, 0};
+    float mul = 1.f;
+    bool x1 = false;
+    if (rowok) {
+        if (J.wkind == W_FP8) {
+            const u4v* wp = (const u4v*)J.w + ((size_t)rt * KUs + u0) * 64 + lane;
+            const uint8_t* wsc = (const uint8_t*)J.sc + (size_t)(rt >> 1) * (J.k / 32) + 2 * u0;
+            acc = wave_fp8g<4>(wp, S, (const uint8_t*)J.x + gx + k0, J.x2 + (gx + k0) / 32, wsc, lane);
+            mul = 2.f;
+        } else if (J.wkind == W_BF16) {
+            const u4v* wp = (const u4v*)J.w + ((size_t)rt * KUs + u0) * 64 + lane;
+            acc = wave_bf16g<4>(wp, S, (const uint16_t*)J.nw + gx + k0, J.ss ? (const uint16_t*)J.ss + gx + k0 : nullptr, lane);
+        } else {  // routed expert: matrix from the route the router's last block published
+            const int q = J.eslot * 3 + J.emat;
+            const int efmt = route->fmt[q];
+            mul = route->mul[q];
+            const char* wbase = (const char*)J.w + route->woff[q];
+            const u4v* sp = (const u4v*)((const char*)J.w + route->soff[q]) + ((size_t)rt * KUs + u0) * 4 + g16;
+            const uint8_t* xq = (const uint8_t*)J.x + k0;
+            const float* xs = J.x2 + k0 / 32;
+            x1 = true;
+            if (efmt == E_FP4) {
+                acc = wave_x1g<0, X1U>((const uint32_t*)((const u4v*)wbase + ((size_t)rt * KUs + u0) * 64 + lane), sp, S, xq, xs, 0u, 0u, lane);
+            } else if (efmt == E_CB3) {
+                acc = wave_x1g<3, X1U>((const uint32_t*)wbase + ((size_t)rt * KUs + u0) * 64 * 3 + lane * 3, sp, S, xq, xs, js.cb3[0], js.cb3[1], lane);
+            } else {
+                acc = wave_x1g<2, X1U>((const uint32_t*)wbase + ((size_t)rt * KUs + u0) * 64 * 2 + lane * 2, sp, S, xq, xs, js.cb2, 0u, lane);
+            }
+        }
+    }
+    if (x1) {
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[j] = group_sum<16>(acc[j]);
+    }
+    const int pi = js.jpost[ji];
+    if (rowok && (lane & 15) == 0) {
+        const int r0 = rt * 16 + 4 * g16;
+        float v[4];
+        for (int j = 0; j < 4; j++) v[j] = acc[j] * mul;
+        if (J.epi == 1 || J.epi == 2) {
+            const int hd = J.epi == 1 ? HD : ID;
+            const int dim = r0 % hd;
+            if (dim >= hd - RD) {
+                const float* f = J.ropec ? rope_fc : rope_f;
+                const int pos = st->pos;
+                for (int p = 0; p < 2; p++) {
+                    const int pj = (dim - (hd - RD)) / 2 + p;
+                    rope_pair(v[2 * p], v[2 * p + 1], (float)pos * f[pj]);
+                }
+            }
+        }
+        if (J.split > 1) {
+            for (int j = 0; j < 4; j++) atomicAdd(J.y + r0 + j, v[j]);
+        } else if (pi >= 0) {
+            for (int j = 0; j < 4; j++) st_dev(J.y + r0 + j, v[j]);
+        } else {
+            for (int j = 0; j < 4; j++) J.y[r0 + j] = v[j];
+        }
+    }
+    if (pi >= 0) {
+        const Post& P = js.post[pi];
+        __shared__ int last;
+        __builtin_amdgcn_s_waitcnt(0);
+        __syncthreads();
+        if (tid == 0) last = atomicAdd(P.cnt, 1u) == (unsigned)(P.expect - 1);
+        __syncthreads();
+        if (last) run_post(P, router_bias, route_scale, route, js.eps, js.lim, smem);
+    }
+}
+
+// Engram rows (24 x [256 fp8 + 8 e8m0]) -> bf16-rounded values -> FP8 activation [6144]. One block.
+extern "C" __global__ void __launch_bounds__(256) engram_act(const uint8_t* rows, uint8_t* oq, float* os) {
+    write_act(24 * 256, [&](int i) -> float {
+        const int row = i >> 8, j = i & 255;
+        const uint8_t b8 = rows[row * 256 + j];
+        const uint8_t sc = rows[24 * 256 + row * 8 + (j >> 5)];
+        const int s = b8 >> 7, e = (b8 >> 3) & 15, m = b8 & 7;
+        float v = e == 0 ? ldexpf((float)m, -9) : ldexpf(1.f + m / 8.f, e - 7);
+        v = s ? -v : v;
+        return round_bf16(v * __uint_as_float((uint32_t)sc << 23));
+    }, oq, os, nullptr);
 }

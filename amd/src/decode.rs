@@ -18,22 +18,23 @@ pub const WIN: usize = 128;
 pub const IH: usize = 32;
 pub const ID: usize = 128;
 pub const VOCAB: usize = 129280;
-const ACH: usize = 32;
+const ACH: usize = 16;
 const NCHUNK: usize = (WIN + 512).div_ceil(ACH);
 const CAND_CAP: usize = 65536;
 
 // per-layer accumulator offsets (f32), all zeroed at the start of a step
-const A_HMIX_A: usize = 0;
-const A_HMIX_F: usize = 32;
-const A_XSS_A: usize = 64;
-const A_XSS_F: usize = 68;
-const A_ENG_SUM: usize = 72;
-const A_QR: usize = 128;
+const NPART: usize = D / 64;
+const A_HMIX_A: usize = 0; // [NPART][32] per-block partial mix dots
+const A_HMIX_F: usize = NPART * 32;
+const A_XSS_A: usize = 2 * NPART * 32; // [NPART] partial sums of squares
+const A_XSS_F: usize = A_XSS_A + NPART;
+const A_ENG_SUM: usize = A_XSS_F + NPART;
+const A_QR: usize = A_ENG_SUM + 16;
 const A_KV: usize = A_QR + 1280;
 const A_CKV: usize = A_KV + 512;
 const A_CGATE: usize = A_CKV + 512;
 const A_IW: usize = A_CGATE + 512;
-const A_R: usize = 3072;
+const A_R: usize = A_IW + 32;
 const A_A: usize = A_R + 8192;
 const A_LOGITS: usize = A_A + 5120;
 const A_SHG: usize = A_LOGITS + 384;
@@ -42,7 +43,9 @@ const A_G: usize = A_SHU + 2304;
 const A_U: usize = A_G + 6 * 2304;
 const A_Y: usize = A_U + 6 * 2304;
 const A_ENG_KV: usize = A_Y + 5120;
-const ACC: usize = A_ENG_KV + 25600;
+const A_RCNT: usize = A_ENG_KV + 25600; // router blocks-done counter
+const A_CNT: usize = A_RCNT + 32; // last-block counters: 0 hc attn, 1 hc ffn, 2 q_a, 3 router, 4 wo_a, 5 shared, 6.. expert slots
+const ACC: usize = A_CNT + 32;
 
 // ---- kernel argument structs (mirror kernels/dsxa.hip)
 
@@ -80,6 +83,12 @@ pub struct Job {
 }
 
 const MAXJ: usize = 13;
+const ROUTE_BYTES: usize = 1024; // Route struct slot per layer
+
+/// target waves per GEMV launch for the shared k-split choice (dev-tunable)
+pub static TARGET_WAVES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(8192);
+/// minimum weight units (k-pairs / k128 blocks) per wave
+pub static MIN_UNITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -90,6 +99,62 @@ struct Jobs {
     lim: f32,
     cb3: [u32; 2],
     cb2: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Post {
+    kind: i32,
+    n: i32,
+    expect: i32,
+    slot: i32,
+    cnt: u64,
+    src: u64,
+    src2: u64,
+    w: u64,
+    oq: u64,
+    os: u64,
+    ob: u64,
+}
+const P_ROUTER: i32 = 1;
+const P_RMSNORM: i32 = 2;
+const P_BF16: i32 = 3;
+const P_SWIGLU: i32 = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Jobs2 {
+    j: [Job; MAXJ],
+    post: [Post; 7],
+    jpost: [i32; MAXJ],
+    n: i32,
+    eps: f32,
+    lim: f32,
+    cb3: [u32; 2],
+    cb2: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct XOut {
+    cnt: u64,
+    nw: u64,
+    oq: u64,
+    os: u64,
+    ob: u64,
+}
+
+/// an FP8 activation buffer (codes, scales) + optional bf16 hi / lo copies
+pub struct Act {
+    pub q: Buf,
+    pub s: Buf,
+    pub h: Buf,
+    pub l: Buf,
+}
+impl Act {
+    fn new(g: &Gpu, k: usize) -> Result<Act> {
+        Ok(Act { q: g.alloc_zeroed(k)?, s: g.alloc_zeroed(k / 32 * 4)?, h: g.alloc_zeroed(k * 2)?, l: g.alloc_zeroed(k * 2)? })
+    }
 }
 
 #[repr(C)]
@@ -270,6 +335,16 @@ pub struct Decoder {
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
+    act_a: Act,
+    act_f: Act,
+    act_qr: Act,
+    act_r: Act,
+    act_h: Act, // 7 slots of 2304: routed experts 0..5, shared 6
+    act_head: Act,
+    act_eng: Act,
+    v1: bool,
+    gtime: std::cell::RefCell<Option<Vec<(String, [f64; 5])>>>,
+    last_blocks: std::cell::RefCell<usize>,
 }
 
 const ENG_ROW_BYTES: usize = 24 * 256 + 24 * 8;
@@ -342,8 +417,37 @@ pub fn test_job(g: &Gpu, wkind: i32, w: u64, sc: u64, n: usize, k: usize, x: u64
     g.sync()
 }
 
+/// test_job without the sync (timing loops); the route buffer is shared and leaked
+#[allow(clippy::too_many_arguments)]
+pub fn test_job_nosync(g: &Gpu, wkind: i32, w: u64, sc: u64, n: usize, k: usize, x: u64, y: u64, lo: i32, split: usize, table: u64) -> Result<()> {
+    static ROUTE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let route = *ROUTE.get_or_init(|| { let b = g.upload(&[0i32; 16]).unwrap(); let p = b.ptr; std::mem::forget(b); p });
+    let mut j = Job::new(wkind, w, sc, n, k, y, X_PLAIN, x);
+    j.lo = lo;
+    j.split = split as i32;
+    if wkind == W_EXPERT {
+        j.sc = table;
+        j.eslot = 0;
+    }
+    j.blocks = (n.div_ceil(64) * split) as i32;
+    let lds = j.lds();
+    let js = Jobs { j: [j; MAXJ], n: 1, eps: 1e-20, lim: 10.0, cb3: [table_of(&CB3[..4]), table_of(&CB3[4..])], cb2: table_of(&CB2) };
+    g.launch("gemv_jobs", (j.blocks as u32, 1, 1), 256, lds as u32, &[Arg::B(bytes_of(&js)), Arg::P(0), Arg::P(0), Arg::P(0), Arg::I(2), Arg::P(0), Arg::P(0), Arg::F(0.0), Arg::P(route), Arg::P(0)])
+}
+
 pub fn table_of(v: &[f32]) -> u32 {
     table(v)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn test_hc_step_nosync(g: &Gpu, h: u64, y: u64, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64) -> Result<()> {
+    g.launch(
+        "hc_step",
+        ((D / 64) as u32, 1, 1),
+        256,
+        0,
+        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 40])],
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -353,7 +457,7 @@ pub fn test_hc_step(g: &Gpu, h: u64, y: u64, pmix: u64, pa: &HcArgs, premix: u64
         ((D / 64) as u32, 1, 1),
         256,
         0,
-        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20)],
+        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 40])],
     )?;
     g.sync()
 }
@@ -501,7 +605,8 @@ impl Decoder {
         }
         eprintln!("dense layers: {:.1} s, {:.1} GB on device", t0.elapsed().as_secs_f32(), g.allocated.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9);
         let embed = load::up_raw(&g, &st, "embed.weight")?;
-        let head = load::up_bf16(&g, &st, "head.weight")?;
+        let head_fp8 = std::env::var("DSXA_HEAD_FP8").map(|v| v == "1").unwrap_or(false);
+        let head = if head_fp8 { load::up_bf16_as_fp8(&g, &st, "head.weight")? } else { load::up_bf16(&g, &st, "head.weight")? };
         let out_norm = load::up_f32(&g, &st, "norm.weight")?;
         let ropes = |orig: usize, base: f32| -> Vec<f32> {
             dsx::numerics::Rope::new(cfg.rope_dim, orig, base, cfg.rope_factor, cfg.beta_fast, cfg.beta_slow).freqs
@@ -553,7 +658,7 @@ impl Decoder {
             part: f(NCHUNK * NH * (HD + 2))?,
             oq: f(NH * HD / 4)?,
             os: f(NH * HD / 32)?,
-            route: f(16 * 64)?,
+            route: g.alloc_zeroed(64 * ROUTE_BYTES)?,
             xfin: f(D)?,
             logits: f(VOCAB)?,
             next: f(4)?,
@@ -566,6 +671,16 @@ impl Decoder {
             hist_tokens: vec![],
             pos: 0,
             dump: None,
+            act_a: Act::new(&g, D)?,
+            act_f: Act::new(&g, D)?,
+            act_qr: Act::new(&g, QL)?,
+            act_r: Act::new(&g, 8192)?,
+            act_h: Act::new(&g, 7 * INTER)?,
+            act_head: Act::new(&g, D)?,
+            act_eng: Act::new(&g, 6144)?,
+            v1: std::env::var("DSXA_V1").map(|v| v == "1").unwrap_or(false),
+            gtime: Default::default(),
+            last_blocks: Default::default(),
             layers,
             cfg,
             g,
@@ -671,14 +786,41 @@ impl Decoder {
             (_, X_Q, _, _, _) => "gemv wo_a",
             (_, X_BF16R, _, _, _) => "gemv wo_b",
             (_, X_PLAIN, _, _, _) => "gemv head",
-            (_, _, _, 1, _) => "gemv experts gate/up",
-            (_, _, _, 2, _) => "gemv experts down",
+            (_, X_SWIGLU, _, 3, _) => "gemv experts down",
+            (_, _, _, 3, _) => "gemv experts gate/up",
             (W_BF16, _, _, _, 3) => "gemv router+shared g/u",
             _ => "gemv q_a/kv/comp/idxw",
         };
         self.g.set_label(Some(lab));
         let r = self.jobs_inner(jobs, route_mode, router_layer);
         self.g.set_label(None);
+        if self.gtime.borrow().is_some() {
+            r?;
+            self.g.sync()?;
+            let (p, _) = self.g.global("g_tdbg")?;
+            let t: Vec<i64> = self.g.dtoh(p, 16384 * 6)?;
+            let nb = *self.last_blocks.borrow();
+            let t0 = (0..nb.min(16384)).map(|b| t[b * 6]).min().unwrap_or(0);
+            let mut ph = [0f64; 5];
+            let mut last_start = 0i64;
+            let mut last_end = 0i64;
+            for b in 0..nb.min(16384) {
+                let d = &t[b * 6..b * 6 + 6];
+                ph[0] += (d[1] - d[0]) as f64;
+                ph[1] += (d[2] - d[1]) as f64;
+                ph[2] += (d[3] - d[2]) as f64;
+                ph[3] += (d[4] - d[3]) as f64;
+                last_start = last_start.max(d[0] - t0);
+                last_end = last_end.max(d[4] - t0);
+            }
+            let n = nb.min(16384) as f64;
+            let mut a = [ph[0] / n / 100.0, ph[1] / n / 100.0, ph[2] / n / 100.0, ph[3] / n / 100.0, last_start as f64 / 100.0];
+            a[4] = last_end as f64 / 100.0;
+            let z = vec![0i64; 16384 * 6];
+            self.g.htod(p, &z)?;
+            self.gtime.borrow_mut().as_mut().unwrap().push((lab.to_string(), a));
+            return Ok(());
+        }
         r
     }
 
@@ -690,15 +832,17 @@ impl Decoder {
         let mut blocks = 0u32;
         // jobs with split 0 share one k-split chosen so the whole launch has ~2048 waves
         let tiles: usize = jobs.iter().map(|j| (j.n as usize).div_ceil(16)).sum();
+        let target = TARGET_WAVES.load(std::sync::atomic::Ordering::Relaxed);
+        let minu = MIN_UNITS.load(std::sync::atomic::Ordering::Relaxed);
         let mut s = 1;
-        while tiles * s < 2048 && s < 32 {
+        while tiles * s < target && s < 64 {
             s *= 2;
         }
         for j in jobs.iter_mut() {
             if j.split == 0 {
                 let units = j.k as usize / j.ku();
                 let mut sj = s;
-                while sj > 1 && units / sj < 2 {
+                while sj > 1 && units / sj < minu {
                     sj /= 2;
                 }
                 j.split = sj as i32;
@@ -707,13 +851,14 @@ impl Decoder {
             blocks += j.blocks as u32;
             lds = lds.max(j.lds());
         }
+        *self.last_blocks.borrow_mut() = blocks as usize;
         let n = jobs.len();
         let pad = jobs[0];
         let mut arr = [pad; MAXJ];
         arr[..n].copy_from_slice(&jobs);
         let js = Jobs { j: arr, n: n as i32, eps: self.cfg.eps, lim: self.cfg.swiglu_limit, cb3: self.cb3, cb2: self.cb2 };
         let (logits, bias, route) = match router_layer {
-            Some(l) => (self.accp(l, A_LOGITS), self.layers[l].gate_bias.ptr, self.route.at(l * 64)),
+            Some(l) => (self.accp(l, A_LOGITS), self.layers[l].gate_bias.ptr, self.route.at(l * ROUTE_BYTES)),
             None => (0, 0, self.route.ptr),
         };
         self.g.launch(
@@ -738,6 +883,11 @@ impl Decoder {
 
     #[allow(clippy::too_many_arguments)]
     fn hc_step(&self, y: u64, round_y: bool, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64, eng: Option<(u64, u64)>) -> Result<()> {
+        self.hc_step_x(y, round_y, pmix, pa, premix, prea, fnw, nmix, x_raw, xss, eng, XOut::default())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn hc_step_x(&self, y: u64, round_y: bool, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64, eng: Option<(u64, u64)>, xo: XOut) -> Result<()> {
         let c = &self.cfg;
         let (ev, es) = eng.unwrap_or((0, 0));
         self.g.launch(
@@ -763,13 +913,71 @@ impl Decoder {
                 Arg::F(c.hc_eps),
                 Arg::F(c.eps),
                 Arg::I(c.sinkhorn_iters as i32),
+                Arg::B(bytes_of(&xo)),
             ],
         )
+    }
+
+    fn xout(&self, l: usize, which: usize, nw: u64, a: &Act) -> XOut {
+        XOut { cnt: self.accp(l, A_CNT + which), nw, oq: a.q.ptr, os: a.s.ptr, ob: a.h.ptr }
+    }
+
+    /// gemv2 launch: jobs (split 0 = shared choice) with their post groups; expects are filled from block counts.
+    fn jobs2(&self, label: &str, mut jobs: Vec<Job>, mut posts: Vec<(Post, Vec<usize>)>, layer: Option<usize>) -> Result<()> {
+        let tiles: usize = jobs.iter().map(|j| (j.n as usize).div_ceil(16)).sum();
+        let target = TARGET_WAVES.load(std::sync::atomic::Ordering::Relaxed);
+        let minu = MIN_UNITS.load(std::sync::atomic::Ordering::Relaxed);
+        let mut s = 1;
+        while tiles * s < target && s < 64 {
+            s *= 2;
+        }
+        let mut blocks = 0u32;
+        for j in jobs.iter_mut() {
+            if j.split == 0 {
+                let units = j.k as usize / j.ku();
+                let mut sj = s;
+                while sj > 1 && units / sj < minu {
+                    sj /= 2;
+                }
+                j.split = sj as i32;
+            }
+            j.blocks = ((j.n as usize).div_ceil(64) * j.split as usize) as i32;
+            blocks += j.blocks as u32;
+        }
+        let mut jpost = [-1i32; MAXJ];
+        let mut parr = [Post::default(); 7];
+        for (pi, (p, members)) in posts.iter_mut().enumerate() {
+            p.expect = members.iter().map(|&m| jobs[m].blocks).sum();
+            for &m in members.iter() {
+                jpost[m] = pi as i32;
+            }
+            parr[pi] = *p;
+        }
+        let n = jobs.len();
+        let mut arr = [jobs[0]; MAXJ];
+        arr[..n].copy_from_slice(&jobs);
+        let js = Jobs2 { j: arr, post: parr, jpost, n: n as i32, eps: self.cfg.eps, lim: self.cfg.swiglu_limit, cb3: self.cb3, cb2: self.cb2 };
+        let (bias, route) = match layer {
+            Some(l) => (self.layers[l].gate_bias.ptr, self.route.at(l * ROUTE_BYTES)),
+            None => (0, self.route.ptr),
+        };
+        self.g.set_label(Some(label));
+        let r = self.g.launch(
+            "gemv2",
+            (blocks, 1, 1),
+            256,
+            0,
+            &[Arg::B(bytes_of(&js)), Arg::P(self.st.ptr), Arg::P(self.rope_f.ptr), Arg::P(self.rope_fc.ptr), Arg::P(bias), Arg::F(self.cfg.route_scale), Arg::P(route)],
+        );
+        self.g.set_label(None);
+        r
     }
 
     /// radix top-k: n from `n_src` (device int) or (pos+1)/ratio; writes `out` (+offset, -1 padding to kmax), *nout
     #[allow(clippy::too_many_arguments)]
     fn topk(&self, scores: u64, ratio: usize, n_src: u64, k: usize, map: u64, offset: i32, out: u64, kmax: usize, nout: u64) -> Result<()> {
+        // only the candidate-block list needs ascending order (expand_blocks); attention rows do not
+        let sorted = (out == self.kb.ptr) as i32;
         let g = &self.g;
         g.launch("topk_hist", (128, 1, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::I(ratio as i32), Arg::P(n_src), Arg::P(scores), Arg::P(self.hist.ptr), Arg::P(self.ctl.ptr)])?;
         g.launch("topk_scan", (1, 1, 1), 1024, 0, &[Arg::P(self.hist.ptr), Arg::I(k as i32), Arg::P(self.ctl.ptr)])?;
@@ -779,12 +987,227 @@ impl Decoder {
             (1, 1, 1),
             1024,
             0,
-            &[Arg::P(self.ctl.ptr), Arg::P(self.sel.ptr), Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::P(map), Arg::I(offset), Arg::P(out), Arg::I(kmax as i32), Arg::P(nout), Arg::P(self.hist.ptr)],
+            &[Arg::P(self.ctl.ptr), Arg::P(self.sel.ptr), Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::P(map), Arg::I(offset), Arg::P(out), Arg::I(kmax as i32), Arg::P(nout), Arg::P(self.hist.ptr), Arg::I(sorted)],
         )
     }
 
-    /// Enqueue one decode step (T = 1). Used for capture.
     fn record(&self) -> Result<()> {
+        if self.v1 { self.record1() } else { self.record2() }
+    }
+
+    /// Decode step on gemv2: producers write FP8/bf16 activations once, GEMV blocks read them from cache.
+    fn record2(&self) -> Result<()> {
+        let g = &self.g;
+        let c = &self.cfg;
+        let nl = self.layers.len();
+        let j8 = |m: &DMat, y: u64, a: &Act| -> Job {
+            let mut j = Job::dense(m, W_FP8, y, 0, a.q.ptr);
+            j.x2 = a.s.ptr;
+            j.split = 0;
+            j
+        };
+        let j16 = |m: &DMat, y: u64, a: &Act, lo: bool| -> Job {
+            let mut j = Job::dense(m, W_BF16, y, 0, 0);
+            j.nw = a.h.ptr;
+            j.ss = if lo { a.l.ptr } else { 0 };
+            j.split = 0;
+            j
+        };
+        let post = |kind: i32, n: usize, cnt: u64, src: u64, src2: u64, w: u64, a: Option<(&Act, usize)>, slot: i32| -> Post {
+            let (oq, os, ob) = match a {
+                Some((a, off)) => (a.q.at(off), a.s.at(off / 32 * 4), if kind == P_RMSNORM { a.h.at(off * 2) } else { 0 }),
+                None => (0, 0, 0),
+            };
+            Post { kind, n: n as i32, expect: 0, slot, cnt, src, src2, w, oq, os, ob }
+        };
+        g.htod_async(self.st.at(4), unsafe { self.host.add(0) }, 4)?; // token
+        g.htod_async(self.eng_rows.ptr, unsafe { self.host.add(256) }, 2 * ENG_ROW_BYTES)?;
+        g.memset(self.acc.ptr, 0, ACC * nl * 4)?;
+        g.launch("embed", (20, 1, 1), 256, 0, &[Arg::P(self.embed.ptr), Arg::P(self.st.ptr), Arg::P(self.h.ptr)])?;
+        let none = HcArgs::default();
+        for (li, l) in self.layers.iter().enumerate() {
+            let xa = self.xout(li, 0, l.attn_norm.ptr, &self.act_a);
+            if li == 0 {
+                self.hc_step_x(0, false, 0, &none, 0, &none, l.hc_attn_fn.ptr, self.accp(0, A_HMIX_A), self.x_a.ptr, self.accp(0, A_XSS_A), None, xa)?;
+            } else {
+                let p = &self.layers[li - 1];
+                let (pm, py) = (self.accp(li - 1, A_HMIX_F), self.accp(li - 1, A_Y));
+                if let Some((wkv, qk)) = &l.engram {
+                    self.hc_step(py, true, pm, &p.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
+                    let ei = c.engram_layers.iter().position(|&x| x == li).unwrap();
+                    g.launch("engram_act", (1, 1, 1), 256, 0, &[Arg::P(self.eng_rows.at(ei * ENG_ROW_BYTES)), Arg::P(self.act_eng.q.ptr), Arg::P(self.act_eng.s.ptr)])?;
+                    let mut j = j8(wkv, self.accp(li, A_ENG_KV), &self.act_eng);
+                    j.split = 1;
+                    self.jobs2("gemv engram", vec![j], vec![], None)?;
+                    g.launch("engram_sums", (5, 4, 1), 256, 0, &[Arg::P(self.accp(li, A_ENG_KV)), Arg::P(self.h.ptr), Arg::P(qk.ptr), Arg::P(self.accp(li, A_ENG_SUM))])?;
+                    self.hc_step_x(0, false, 0, &none, pm, &p.hc_ffn, l.hc_attn_fn.ptr, self.accp(li, A_HMIX_A), self.x_a.ptr, self.accp(li, A_XSS_A), Some((self.accp(li, A_ENG_KV + 4 * D), self.accp(li, A_ENG_SUM))), xa)?;
+                } else {
+                    self.hc_step_x(py, true, pm, &p.hc_ffn, pm, &p.hc_ffn, l.hc_attn_fn.ptr, self.accp(li, A_HMIX_A), self.x_a.ptr, self.accp(li, A_XSS_A), None, xa)?;
+                }
+            }
+            // ---- attention projections (q_a's last block: qr = rmsnorm -> FP8 for q_b)
+            let mut jobs = vec![j8(&l.wq_a, self.accp(li, A_QR), &self.act_a), j8(&l.wkv, self.accp(li, A_KV), &self.act_a)];
+            if let Some(m) = &l.comp_wkv {
+                jobs.push(j16(m, self.accp(li, A_CKV), &self.act_a, false));
+            }
+            if let Some(m) = &l.comp_wgate {
+                jobs.push(j16(m, self.accp(li, A_CGATE), &self.act_a, false));
+            }
+            if let Some(m) = &l.idx_proj {
+                jobs.push(j16(m, self.accp(li, A_IW), &self.act_a, false));
+            }
+            let pq = post(P_RMSNORM, QL, self.accp(li, A_CNT + 2), self.accp(li, A_QR), 0, l.q_norm.ptr, Some((&self.act_qr, 0)), -1);
+            self.jobs2("gemv q_a/kv/comp/idxw", jobs, vec![(pq, vec![0])], None)?;
+            let mut qj = j8(&l.wq_b, self.q.ptr, &self.act_qr);
+            qj.epi = 1;
+            qj.ropec = (l.ratio > 0) as i32;
+            let mut jobs = vec![qj];
+            if let Some(m) = &l.idx_wq_b {
+                let mut j = j8(m, self.iq.ptr, &self.act_qr);
+                j.epi = 2;
+                j.ropec = 1;
+                jobs.push(j);
+            }
+            self.jobs2("gemv q_b(+idx)", jobs, vec![], None)?;
+            self.attention_tail(li)?;
+            let mut oa = j8(&l.wo_a, self.accp(li, A_R), &self.act_a);
+            oa.x = self.oq.ptr;
+            oa.x2 = self.os.ptr;
+            oa.xgroup = 1024;
+            let pr = post(P_BF16, 8192, self.accp(li, A_CNT + 4), self.accp(li, A_R), 0, 0, Some((&self.act_r, 0)), -1);
+            self.jobs2("gemv wo_a", vec![oa], vec![(pr, vec![0])], None)?;
+            self.jobs2("gemv wo_b", vec![j8(&l.wo_b, self.accp(li, A_A), &self.act_r)], vec![], None)?;
+            // ---- residual step into the ffn half
+            let am = self.accp(li, A_HMIX_A);
+            let xf = self.xout(li, 1, l.ffn_norm.ptr, &self.act_f);
+            self.hc_step_x(self.accp(li, A_A), false, am, &l.hc_attn, am, &l.hc_attn, l.hc_ffn_fn.ptr, self.accp(li, A_HMIX_F), self.x_f.ptr, self.accp(li, A_XSS_F), None, xf)?;
+            // router (last block routes) + shared expert gate/up (last block: shared swiglu -> slot 6)
+            let pr = post(P_ROUTER, NE, self.accp(li, A_CNT + 3), self.accp(li, A_LOGITS), 0, l.experts.ptr, None, -1);
+            let ps = post(P_SWIGLU, INTER, self.accp(li, A_CNT + 5), self.accp(li, A_SHG), self.accp(li, A_SHU), 0, Some((&self.act_h, 6 * INTER)), -1);
+            self.jobs2(
+                "gemv router+shared g/u",
+                vec![j16(&l.gate, self.accp(li, A_LOGITS), &self.act_f, false), j8(&l.sh_w1, self.accp(li, A_SHG), &self.act_f), j8(&l.sh_w3, self.accp(li, A_SHU), &self.act_f)],
+                vec![(pr, vec![0]), (ps, vec![1, 2])],
+                Some(li),
+            )?;
+            // routed experts gate/up; per-slot last block: swiglu x route weight -> FP8 for the down projection
+            let mut jobs = vec![];
+            let mut posts = vec![];
+            for sl in 0..6 {
+                for (mi, base) in [(0, A_G), (1, A_U)] {
+                    let mut j = Job::new(W_EXPERT, self.arena.ptr, 0, INTER, D, self.accp(li, base + sl * INTER), 0, self.act_f.q.ptr);
+                    j.x2 = self.act_f.s.ptr;
+                    j.eslot = sl as i32;
+                    j.emat = mi;
+                    j.split = 0;
+                    jobs.push(j);
+                }
+                posts.push((post(P_SWIGLU, INTER, self.accp(li, A_CNT + 6 + sl), self.accp(li, A_G + sl * INTER), self.accp(li, A_U + sl * INTER), 0, Some((&self.act_h, sl * INTER)), sl as i32), vec![2 * sl, 2 * sl + 1]));
+            }
+            // 7 posts max: slot 5 shares... (6 posts here)
+            self.jobs2("gemv experts gate/up", jobs, posts, Some(li))?;
+            // down projections (+ shared) into y
+            let mut jobs = vec![];
+            for sl in 0..6 {
+                let mut j = Job::new(W_EXPERT, self.arena.ptr, 0, D, INTER, self.accp(li, A_Y), 0, self.act_h.q.at(sl * INTER));
+                j.x2 = self.act_h.s.at(sl * INTER / 32 * 4);
+                j.eslot = sl as i32;
+                j.emat = 2;
+                j.split = 2;
+                jobs.push(j);
+            }
+            let mut sj = Job::dense(&l.sh_w2, W_FP8, self.accp(li, A_Y), 0, self.act_h.q.at(6 * INTER));
+            sj.x2 = self.act_h.s.at(6 * INTER / 32 * 4);
+            sj.split = 2;
+            jobs.push(sj);
+            self.jobs2("gemv experts down", jobs, vec![], Some(li))?;
+            if let Some(d) = &self.dump {
+                let tmp: Vec<f32> = g.dtoh(self.h.ptr, HC * D)?;
+                self.hc_step(self.accp(li, A_Y), true, self.accp(li, A_HMIX_F), &l.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
+                d.borrow_mut().push(g.dtoh(self.h.ptr, HC * D)?);
+                g.htod(self.h.ptr, &tmp)?;
+            }
+        }
+        // ---- final residual step, norm, head, argmax
+        let last = &self.layers[nl - 1];
+        let (pm, py) = (self.accp(nl - 1, A_HMIX_F), self.accp(nl - 1, A_Y));
+        self.hc_step(py, true, pm, &last.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
+        g.launch(
+            "hc_final",
+            (1, 1, 1),
+            256,
+            0,
+            &[Arg::P(self.h.ptr), Arg::P(pm), Arg::B(bytes_of(&last.hc_ffn)), Arg::P(self.out_norm.ptr), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(self.act_head.q.ptr), Arg::P(self.act_head.s.ptr), Arg::P(self.act_head.h.ptr), Arg::P(self.act_head.l.ptr)],
+        )?;
+        let hj = if self.head.sc.is_some() { let mut j = j8(&self.head, self.logits.ptr, &self.act_head); j.split = 1; j } else { let mut j = j16(&self.head, self.logits.ptr, &self.act_head, true); j.split = 1; j };
+        self.jobs2("gemv head", vec![hj], vec![], None)?;
+        g.launch("argmax_part", (128, 1, 1), 256, 0, &[Arg::P(self.logits.ptr), Arg::I(VOCAB as i32), Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr)])?;
+        g.launch("argmax", (1, 1, 1), 64, 0, &[Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::I(128), Arg::P(self.next.ptr)])?;
+        g.launch("advance", (1, 1, 1), 1, 0, &[Arg::P(self.st.ptr), Arg::P(self.next.ptr)])?;
+        Ok(())
+    }
+
+    /// attn_kv, indexer + top-k, sparse attention + merge (writes oq/os) for layer li
+    fn attention_tail(&self, li: usize) -> Result<()> {
+        let g = &self.g;
+        let c = &self.cfg;
+        let l = &self.layers[li];
+        let wscale = (c.idx_dim as f32).powf(-0.5) * (c.idx_heads as f32).powf(-0.5);
+        // window kv, compressor, indexer keys
+        let opt = |b: &Option<Buf>| b.as_ref().map(|x| x.ptr).unwrap_or(0);
+        g.launch(
+            "attn_kv",
+            (1, 1, 1),
+            512,
+            0,
+            &[
+                Arg::P(self.st.ptr),
+                Arg::P(self.accp(li, A_KV)),
+                Arg::P(l.kv_norm.ptr),
+                Arg::P(l.ring.ptr),
+                Arg::P(self.rope_f.ptr),
+                Arg::I(l.ratio as i32),
+                Arg::P(if l.kv_src { self.accp(li, A_CKV) } else { 0 }),
+                Arg::P(self.accp(li, A_CGATE)),
+                Arg::P(opt(&l.cstate)),
+                Arg::P(opt(&l.comp_norm)),
+                Arg::P(opt(&l.idx_wk)),
+                Arg::P(opt(&l.idx_knorm)),
+                Arg::P(opt(&l.comp_cache)),
+                Arg::P(opt(&l.idx_cache)),
+                Arg::P(self.rope_fc.ptr),
+                Arg::F(c.eps),
+            ],
+        )?;
+        // indexer + top-k
+        if l.idx_src {
+            let kc = self.layers[l.idxk_src].idx_cache.as_ref().context("idx cache")?.ptr;
+            let after_cand = li > c.cand_layer;
+            let (rows, nrows, sc) = if after_cand { (self.keep.ptr, self.nkeep.ptr, self.cscore.ptr) } else { (0, 0, self.score.ptr) };
+            g.launch("idx_score", (256, 1, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::I(l.ratio as i32), Arg::P(self.iq.ptr), Arg::P(self.accp(li, A_IW)), Arg::F(wscale), Arg::P(kc), Arg::P(rows), Arg::P(nrows), Arg::P(sc)])?;
+            if li == c.cand_layer {
+                g.launch("block_max8", (64, 1, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::I(l.ratio as i32), Arg::I(c.cand_block as i32), Arg::P(self.score.ptr), Arg::P(self.bscore.ptr), Arg::P(self.nb.ptr)])?;
+                self.topk(self.bscore.ptr, 0, self.nb.ptr, c.cand_blocks, 0, 0, self.kb.ptr, c.cand_blocks, self.nkb.ptr)?;
+                g.launch("expand_blocks", (64, 1, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::I(l.ratio as i32), Arg::I(c.cand_block as i32), Arg::P(self.kb.ptr), Arg::P(self.nkb.ptr), Arg::P(self.keep.ptr), Arg::P(self.nkeep.ptr)])?;
+                g.launch("gather_f", (64, 1, 1), 256, 0, &[Arg::P(self.score.ptr), Arg::P(self.keep.ptr), Arg::P(self.nkeep.ptr), Arg::P(self.cscore.ptr)])?;
+                self.topk(self.cscore.ptr, 0, self.nkeep.ptr, c.idx_topk, self.keep.ptr, WIN as i32, self.comp_idx.ptr, c.idx_topk, self.ncomp.ptr)?;
+            } else if after_cand {
+                self.topk(self.cscore.ptr, 0, self.nkeep.ptr, c.idx_topk, self.keep.ptr, WIN as i32, self.comp_idx.ptr, c.idx_topk, self.ncomp.ptr)?;
+            } else {
+                self.topk(self.score.ptr, l.ratio, 0, c.idx_topk, 0, WIN as i32, self.comp_idx.ptr, c.idx_topk, self.ncomp.ptr)?;
+            }
+        }
+        // sparse attention
+        let comp = if l.ratio > 0 { self.layers[l.comp_src].comp_cache.as_ref().context("comp cache")?.ptr } else { 0 };
+        let scale = 1.0 / (HD as f32).sqrt();
+        g.launch("attn_part", (NCHUNK as u32, 4, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::P(self.q.ptr), Arg::P(l.ring.ptr), Arg::P(comp), Arg::P(self.comp_idx.ptr), Arg::P(self.ncomp.ptr), Arg::I(WIN as i32), Arg::F(scale), Arg::P(self.part.ptr)])?;
+        let rf = if l.ratio > 0 { self.rope_fc.ptr } else { self.rope_f.ptr };
+        g.launch("attn_merge", (NH as u32, 1, 1), 512, 0, &[Arg::P(self.st.ptr), Arg::P(self.part.ptr), Arg::I(NCHUNK as i32), Arg::P(l.sinks.ptr), Arg::P(rf), Arg::P(self.oq.ptr), Arg::P(self.os.ptr)])?;
+        Ok(())
+    }
+
+    /// Enqueue one decode step (T = 1), first version (staged activations). Used for capture.
+    fn record1(&self) -> Result<()> {
         let g = &self.g;
         let c = &self.cfg;
         let nl = self.layers.len();
@@ -792,7 +1215,7 @@ impl Decoder {
         g.htod_async(self.eng_rows.ptr, unsafe { self.host.add(256) }, 2 * ENG_ROW_BYTES)?;
         g.memset(self.acc.ptr, 0, ACC * nl * 4)?;
         g.launch("embed", (20, 1, 1), 256, 0, &[Arg::P(self.embed.ptr), Arg::P(self.st.ptr), Arg::P(self.h.ptr)])?;
-        let wscale = (c.idx_dim as f32).powf(-0.5) * (c.idx_heads as f32).powf(-0.5);
+        let _wscale = (c.idx_dim as f32).powf(-0.5) * (c.idx_heads as f32).powf(-0.5);
         for (li, l) in self.layers.iter().enumerate() {
             // ---- residual step into the attention half
             let none = HcArgs::default();
@@ -841,56 +1264,7 @@ impl Decoder {
                 jobs.push(j);
             }
             self.jobs(jobs, 0, None)?;
-            // window kv, compressor, indexer keys
-            let opt = |b: &Option<Buf>| b.as_ref().map(|x| x.ptr).unwrap_or(0);
-            g.launch(
-                "attn_kv",
-                (1, 1, 1),
-                512,
-                0,
-                &[
-                    Arg::P(self.st.ptr),
-                    Arg::P(self.accp(li, A_KV)),
-                    Arg::P(l.kv_norm.ptr),
-                    Arg::P(l.ring.ptr),
-                    Arg::P(self.rope_f.ptr),
-                    Arg::I(l.ratio as i32),
-                    Arg::P(if l.kv_src { self.accp(li, A_CKV) } else { 0 }),
-                    Arg::P(self.accp(li, A_CGATE)),
-                    Arg::P(opt(&l.cstate)),
-                    Arg::P(opt(&l.comp_norm)),
-                    Arg::P(opt(&l.idx_wk)),
-                    Arg::P(opt(&l.idx_knorm)),
-                    Arg::P(opt(&l.comp_cache)),
-                    Arg::P(opt(&l.idx_cache)),
-                    Arg::P(self.rope_fc.ptr),
-                    Arg::F(c.eps),
-                ],
-            )?;
-            // indexer + top-k
-            if l.idx_src {
-                let kc = self.layers[l.idxk_src].idx_cache.as_ref().context("idx cache")?.ptr;
-                let after_cand = li > c.cand_layer;
-                let (rows, nrows, sc) = if after_cand { (self.keep.ptr, self.nkeep.ptr, self.cscore.ptr) } else { (0, 0, self.score.ptr) };
-                g.launch("idx_score", (256, 1, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::I(l.ratio as i32), Arg::P(self.iq.ptr), Arg::P(self.accp(li, A_IW)), Arg::F(wscale), Arg::P(kc), Arg::P(rows), Arg::P(nrows), Arg::P(sc)])?;
-                if li == c.cand_layer {
-                    g.launch("block_max8", (64, 1, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::I(l.ratio as i32), Arg::I(c.cand_block as i32), Arg::P(self.score.ptr), Arg::P(self.bscore.ptr), Arg::P(self.nb.ptr)])?;
-                    self.topk(self.bscore.ptr, 0, self.nb.ptr, c.cand_blocks, 0, 0, self.kb.ptr, c.cand_blocks, self.nkb.ptr)?;
-                    g.launch("expand_blocks", (64, 1, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::I(l.ratio as i32), Arg::I(c.cand_block as i32), Arg::P(self.kb.ptr), Arg::P(self.nkb.ptr), Arg::P(self.keep.ptr), Arg::P(self.nkeep.ptr)])?;
-                    g.launch("gather_f", (64, 1, 1), 256, 0, &[Arg::P(self.score.ptr), Arg::P(self.keep.ptr), Arg::P(self.nkeep.ptr), Arg::P(self.cscore.ptr)])?;
-                    self.topk(self.cscore.ptr, 0, self.nkeep.ptr, c.idx_topk, self.keep.ptr, WIN as i32, self.comp_idx.ptr, c.idx_topk, self.ncomp.ptr)?;
-                } else if after_cand {
-                    self.topk(self.cscore.ptr, 0, self.nkeep.ptr, c.idx_topk, self.keep.ptr, WIN as i32, self.comp_idx.ptr, c.idx_topk, self.ncomp.ptr)?;
-                } else {
-                    self.topk(self.score.ptr, l.ratio, 0, c.idx_topk, 0, WIN as i32, self.comp_idx.ptr, c.idx_topk, self.ncomp.ptr)?;
-                }
-            }
-            // sparse attention
-            let comp = if l.ratio > 0 { self.layers[l.comp_src].comp_cache.as_ref().context("comp cache")?.ptr } else { 0 };
-            let scale = 1.0 / (HD as f32).sqrt();
-            g.launch("attn_part", (NCHUNK as u32, 8, 1), 256, 0, &[Arg::P(self.st.ptr), Arg::P(self.q.ptr), Arg::P(l.ring.ptr), Arg::P(comp), Arg::P(self.comp_idx.ptr), Arg::P(self.ncomp.ptr), Arg::I(WIN as i32), Arg::F(scale), Arg::P(self.part.ptr)])?;
-            let rf = if l.ratio > 0 { self.rope_fc.ptr } else { self.rope_f.ptr };
-            g.launch("attn_merge", (NH as u32, 1, 1), 512, 0, &[Arg::P(self.st.ptr), Arg::P(self.part.ptr), Arg::I(NCHUNK as i32), Arg::P(l.sinks.ptr), Arg::P(rf), Arg::P(self.oq.ptr), Arg::P(self.os.ptr)])?;
+            self.attention_tail(li)?;
             let mut oa = Job::dense(&l.wo_a, W_FP8, self.accp(li, A_R), X_Q, self.oq.ptr).split(0);
             oa.x2 = self.os.ptr;
             oa.k = (NH * HD / 8) as i32;
@@ -901,14 +1275,18 @@ impl Decoder {
             let am = self.accp(li, A_HMIX_A);
             self.hc_step(self.accp(li, A_A), false, am, &l.hc_attn, am, &l.hc_attn, l.hc_ffn_fn.ptr, self.accp(li, A_HMIX_F), self.x_f.ptr, self.accp(li, A_XSS_F), None)?;
             let xs = self.accp(li, A_XSS_F);
+            let mut gj = Job::dense(&l.gate, W_BF16, self.accp(li, A_LOGITS), X_NORM, self.x_f.ptr).norm(l.ffn_norm.ptr, xs).split(0);
+            gj.epi = 3;
+            gj.x2 = self.accp(li, A_RCNT);
+            gj.sc = l.experts.ptr; // the last router block reads the expert table for the picks
             self.jobs(
                 vec![
-                    Job::dense(&l.gate, W_BF16, self.accp(li, A_LOGITS), X_NORM, self.x_f.ptr).norm(l.ffn_norm.ptr, xs).split(0),
+                    gj,
                     Job::dense(&l.sh_w1, W_FP8, self.accp(li, A_SHG), X_NORM, self.x_f.ptr).norm(l.ffn_norm.ptr, xs).split(0),
                     Job::dense(&l.sh_w3, W_FP8, self.accp(li, A_SHU), X_NORM, self.x_f.ptr).norm(l.ffn_norm.ptr, xs).split(0),
                 ],
                 0,
-                None,
+                Some(li),
             )?;
             // routed experts: gate/up for the 6 picks
             let mut jobs = vec![];
@@ -921,7 +1299,7 @@ impl Decoder {
                     jobs.push(j);
                 }
             }
-            self.jobs(jobs, 1, Some(li))?;
+            self.jobs(jobs, 3, Some(li))?;
             // down projections (+ shared expert) into y
             let mut jobs = vec![];
             for s in 0..6 {
@@ -939,7 +1317,7 @@ impl Decoder {
             for j in jobs.iter_mut() {
                 j.split = 2;
             }
-            self.jobs(jobs, 2, Some(li))?;
+            self.jobs(jobs, 3, Some(li))?;
             if let Some(d) = &self.dump {
                 // h after layer li = the next residual step's post; run it on a copy via a post-only hc_step
                 let tmp: Vec<f32> = g.dtoh(self.h.ptr, HC * D)?;
@@ -954,12 +1332,14 @@ impl Decoder {
         let last = &self.layers[nl - 1];
         let (pm, py) = (self.accp(nl - 1, A_HMIX_F), self.accp(nl - 1, A_Y));
         self.hc_step(py, true, pm, &last.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
-        g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(pm), Arg::B(bytes_of(&last.hc_ffn)), Arg::P(self.out_norm.ptr), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32)])?;
-        let mut hj = Job::dense(&self.head, W_BF16, self.logits.ptr, X_PLAIN, self.xfin.ptr);
+        g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(pm), Arg::B(bytes_of(&last.hc_ffn)), Arg::P(self.out_norm.ptr), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(0), Arg::P(0)])?;
+        let fp8 = self.head.sc.is_some();
+        let mut hj = Job::dense(&self.head, if fp8 { W_FP8 } else { W_BF16 }, self.logits.ptr, X_PLAIN, self.xfin.ptr);
         hj.lo = 1;
         hj.split = 1;
         self.jobs(vec![hj], 0, None)?;
-        g.launch("argmax", (1, 1, 1), 1024, 0, &[Arg::P(self.logits.ptr), Arg::I(VOCAB as i32), Arg::P(self.st.ptr), Arg::P(self.next.ptr)])?;
+        g.launch("argmax_part", (128, 1, 1), 256, 0, &[Arg::P(self.logits.ptr), Arg::I(VOCAB as i32), Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr)])?;
+        g.launch("argmax", (1, 1, 1), 64, 0, &[Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::I(128), Arg::P(self.next.ptr)])?;
         g.launch("advance", (1, 1, 1), 1, 0, &[Arg::P(self.st.ptr), Arg::P(self.next.ptr)])?;
         Ok(())
     }
@@ -985,6 +1365,11 @@ impl Decoder {
             lds as u32,
             &[Arg::B(bytes_of(&js)), Arg::P(self.st.ptr), Arg::P(self.rope_f.ptr), Arg::P(self.rope_fc.ptr), Arg::I(0), Arg::P(0), Arg::P(0), Arg::F(0.0), Arg::P(self.route.ptr), Arg::P(rows)],
         )
+    }
+
+    pub fn reload_kernels(&mut self, image: &[u8]) -> Result<()> {
+        self.graph = None;
+        self.g.reload(image)
     }
 
     pub fn capture(&mut self) -> Result<()> {
@@ -1049,6 +1434,33 @@ impl Decoder {
         Ok((next[0] as u32, d))
     }
 
+    /// Eager step; after each GEMV launch, read the per-block phase stamps (GEMV_TIMING kernels) and print averages.
+    pub fn gemv_timing(&mut self, ctx: usize) -> Result<()> {
+        self.fill_random()?;
+        self.set_pos(ctx)?;
+        unsafe { *(self.host as *mut i32) = 1000 };
+        self.engram_rows(1000)?;
+        self.g.sync()?;
+        *self.gtime.borrow_mut() = Some(vec![]);
+        let r = self.record();
+        let v = self.gtime.borrow_mut().take().unwrap();
+        r?;
+        let mut agg: std::collections::BTreeMap<String, [f64; 6]> = Default::default();
+        for (lab, ph) in v {
+            let e = agg.entry(lab).or_default();
+            for i in 0..5 {
+                e[i] += ph[i];
+            }
+            e[5] += 1.0;
+        }
+        for (lab, e) in agg {
+            let n = e[5];
+            println!("  {lab:<26} n {n:>3}: per block route {:.2} stage {:.2} stream {:.2} store {:.2} us; whole launch {:.2} us", e[0] / n, e[1] / n, e[2] / n, e[3] / n, e[4] / n);
+        }
+        self.pos += 1;
+        Ok(())
+    }
+
     /// One eager step with per-kernel timings.
     pub fn step_prof(&mut self, token: u32) -> Result<Vec<(String, f32, usize)>> {
         unsafe { *(self.host as *mut i32) = token as i32 };
@@ -1068,8 +1480,8 @@ impl Decoder {
 
     /// routed experts of the last step, per layer
     pub fn routes(&self) -> Result<Vec<Vec<i32>>> {
-        let v: Vec<i32> = self.g.dtoh(self.route.ptr, self.layers.len() * 16)?;
-        Ok(v.chunks(16).map(|c| c[..6].to_vec()).collect())
+        let v: Vec<i32> = self.g.dtoh(self.route.ptr, self.layers.len() * ROUTE_BYTES / 4)?;
+        Ok(v.chunks(ROUTE_BYTES / 4).map(|c| c[..6].to_vec()).collect())
     }
 
     /// Reset to an empty context.

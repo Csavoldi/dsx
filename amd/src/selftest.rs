@@ -31,7 +31,8 @@ fn report(name: &str, got: &[f32], want: &[f32]) {
 
 pub fn run() -> Result<()> {
     let image: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/dsxa.hsaco"));
-    let g = Gpu::new(image)?;
+    let alt = std::env::var("DSXA_HSACO").ok().map(std::fs::read).transpose()?;
+    let g = Gpu::new(alt.as_deref().unwrap_or(image))?;
     let mut r = Rng(0x9E3779B97F4A7C15);
     let (hd, rd) = (512usize, 64usize);
     let rope = Rope::new(rd, 0, 10000.0, 16.0, 32.0, 1.0);
@@ -76,13 +77,43 @@ pub fn run() -> Result<()> {
         let cidx: Vec<i32> = (0..512).map(|i| if i < nc { (i * 3 % 600) as i32 + 128 } else { -1 }).collect();
         let sinks: Vec<f32> = (0..nh).map(|_| r.f() * 2.0).collect();
         let (dq, dring, dcomp, dcidx, dnc, dsink) = (g.upload(&q)?, g.upload(&ringb)?, g.upload(&compb)?, g.upload(&cidx)?, g.upload(&[nc as i32])?, g.upload(&sinks)?);
-        let nchunk = (128 + 512usize).div_ceil(32);
+        let nchunk = (128 + 512usize).div_ceil(16);
         let part = g.alloc(nchunk * nh * (hd + 2) * 4)?;
         let oq = g.alloc(nh * hd)?;
         let os = g.alloc(nh * hd / 32 * 4)?;
         let scale = 1.0 / (hd as f32).sqrt();
-        g.launch("attn_part", (nchunk as u32, 8, 1), 256, 0, &[Arg::P(st2.ptr), Arg::P(dq.ptr), Arg::P(dring.ptr), Arg::P(dcomp.ptr), Arg::P(dcidx.ptr), Arg::P(dnc.ptr), Arg::I(128), Arg::F(scale), Arg::P(part.ptr)])?;
+        g.launch("attn_part", (nchunk as u32, 4, 1), 256, 0, &[Arg::P(st2.ptr), Arg::P(dq.ptr), Arg::P(dring.ptr), Arg::P(dcomp.ptr), Arg::P(dcidx.ptr), Arg::P(dnc.ptr), Arg::I(128), Arg::F(scale), Arg::P(part.ptr)])?;
         g.launch("attn_merge", (nh as u32, 1, 1), 512, 0, &[Arg::P(st2.ptr), Arg::P(part.ptr), Arg::I(nchunk as i32), Arg::P(dsink.ptr), Arg::P(rf.ptr), Arg::P(oq.ptr), Arg::P(os.ptr)])?;
+        if nw == 128 {
+            let us = g.time(|| {
+                for _ in 0..50 {
+                    g.launch("attn_part", (nchunk as u32, 4, 1), 256, 0, &[Arg::P(st2.ptr), Arg::P(dq.ptr), Arg::P(dring.ptr), Arg::P(dcomp.ptr), Arg::P(dcidx.ptr), Arg::P(dnc.ptr), Arg::I(128), Arg::F(scale), Arg::P(part.ptr)])?;
+                }
+                Ok(())
+            })?;
+            let us2 = g.time(|| {
+                for _ in 0..50 {
+                    g.launch("attn_merge", (nh as u32, 1, 1), 512, 0, &[Arg::P(st2.ptr), Arg::P(part.ptr), Arg::I(nchunk as i32), Arg::P(dsink.ptr), Arg::P(rf.ptr), Arg::P(oq.ptr), Arg::P(os.ptr)])?;
+                }
+                Ok(())
+            })?;
+            println!("attn_part {:.1} us, attn_merge {:.1} us (stream, isolated)", us / 50.0, us2 / 50.0);
+            if std::env::var_os("ATT_TIMING").is_some() {
+                let tb = g.alloc(64 * 64 * 514 * 4 + 4096 * 40)?;
+                g.launch("attn_part", (nchunk as u32, 4, 1), 256, 0, &[Arg::P(st2.ptr), Arg::P(dq.ptr), Arg::P(dring.ptr), Arg::P(dcomp.ptr), Arg::P(dcidx.ptr), Arg::P(dnc.ptr), Arg::I(128), Arg::F(scale), Arg::P(tb.ptr)])?;
+                let t: Vec<i64> = g.dtoh(tb.ptr + (64 * 64 * 514 * 4) as u64, nchunk * 4 * 5)?;
+                let t0 = t.chunks(5).map(|c| c[0]).min().unwrap();
+                let mut ph = [0f64; 4];
+                let mut start_spread = 0i64;
+                let mut end = 0i64;
+                for c in t.chunks(5) {
+                    for i in 0..4 { ph[i] += (c[i + 1] - c[i]) as f64 * 10.0 / (t.len() / 5) as f64; }
+                    start_spread = start_spread.max(c[0] - t0);
+                    end = end.max(c[4] - t0);
+                }
+                println!("attn_part phases (ns, mean over blocks): rowsrc {:.0} rows {:.0} scores {:.0} out {:.0}; last block starts at {} ns, ends at {} ns", ph[0], ph[1], ph[2], ph[3], start_spread * 10, end * 10);
+            }
+        }
         let codes: Vec<u8> = g.dtoh(oq.ptr, nh * hd)?;
         let scales: Vec<f32> = g.dtoh(os.ptr, nh * hd / 32)?;
         let got: Vec<f32> = codes.iter().enumerate().map(|(i, &c)| fnuz(c) * scales[i / 32]).collect();
@@ -169,6 +200,39 @@ pub fn run() -> Result<()> {
             })
             .collect();
         report("mxfp4 expert gemv vs cpu", &got, &cpu);
+        // timing on a full-size expert matrix (2304 x 5120), replicated across 1.5 GB so it streams from HBM
+        let (n, k) = (2304usize, 5120usize);
+        let w: Vec<u8> = (0..n * k / 2).map(|_| ((r.f() + 1.0) * 127.9) as u8).collect();
+        let sc: Vec<u8> = (0..n * k / 32).map(|_| 118 + ((r.f() + 1.0) * 3.0) as u8).collect();
+        let (codes, scales) = crate::load::tile_fp4(&w, &sc, n, k);
+        let per = codes.len() + scales.len();
+        let copies = 240;
+        let arena = g.alloc(per * copies)?;
+        for c in 0..copies {
+            g.htod(arena.at(c * per), &codes)?;
+            g.htod(arena.at(c * per + codes.len()), &scales)?;
+        }
+        let tabs: Vec<crate::hip::Buf> = (0..copies)
+            .map(|c| {
+                let mut em = crate::decode::ExpertMat::default();
+                em.woff = (c * per) as i64;
+                em.soff = (c * per + codes.len()) as i64;
+                em.mul = 1.0;
+                g.upload(&[em, em, em]).unwrap()
+            })
+            .collect();
+        let x: Vec<f32> = (0..k).map(|_| r.f()).collect();
+        let dx = g.upload(&x)?;
+        let y = g.alloc_zeroed(n * 4)?;
+        for split in [1usize, 2, 4, 8] {
+            let us = g.time(|| {
+                for c in 0..copies {
+                    crate::decode::test_job_nosync(&g, crate::decode::W_EXPERT, arena.ptr, 0, n, k, dx.ptr, y.ptr, 0, split, tabs[c].ptr)?;
+                }
+                Ok(())
+            })? / copies as f32;
+            println!("mxfp4 expert 2304x5120 split {split}: {us:.1} us, {:.0} GB/s", per as f32 / us / 1e3);
+        }
     }
     // ---- BF16 GEMV with the hi/lo activation split vs CPU f32
     {
@@ -200,23 +264,31 @@ pub fn run() -> Result<()> {
         for i in 0..3 { pa.scale[i] = 0.5 + r.f().abs(); na.scale[i] = 0.5 + r.f().abs(); }
         for i in 0..24 { pa.base[i] = r.f(); na.base[i] = r.f(); }
         // raw mixes of the previous sub-block on h: dots + sum of squares
-        let mut pm = vec![0f32; 32];
+        let mut pm = vec![0f32; 80 * 32]; // per-block partials: put the totals in block 0
         for j in 0..24 { pm[j] = (0..hc * d).map(|i| fn_prev[j * hc * d + i] * h[i]).sum(); }
         pm[24] = h.iter().map(|v| v * v).sum();
         let (dh, dy, dpm, dfn) = (g.upload(&h)?, g.upload(&y)?, g.upload(&pm)?, g.upload(&fn_next)?);
-        let nmix = g.alloc_zeroed(32 * 4)?;
+        let nmix = g.alloc_zeroed(80 * 32 * 4)?;
         let xr = g.alloc_zeroed(d * 4)?;
-        let xss = g.alloc_zeroed(16)?;
+        let xss = g.alloc_zeroed(80 * 4)?;
         crate::decode::test_hc_step(&g, dh.ptr, dy.ptr, dpm.ptr, &pa, dpm.ptr, &pa, dfn.ptr, nmix.ptr, xr.ptr, xss.ptr)?;
         let gh: Vec<f32> = g.dtoh(dh.ptr, hc * d)?;
         let gx: Vec<f32> = g.dtoh(xr.ptr, d)?;
-        let gm: Vec<f32> = g.dtoh(nmix.ptr, 25)?;
+        let gp: Vec<f32> = g.dtoh(nmix.ptr, 80 * 32)?;
+        let gm: Vec<f32> = (0..25).map(|j| (0..80).map(|b| gp[b * 32 + j]).sum()).collect();
         // CPU: model.rs hc_mixes(h, fn_prev) -> (pre, post, comb); h' = hc_post(bf16(y), h, post, comb); x = hc_pre(h', pre)
         let c = dsx::model::Config { hc, dim: d, eps: 1e-20, hc_eps: cfg_hc_eps, sinkhorn_iters: 20, ..fake_cfg() };
         let (pre, post, comb) = dsx::model::hc_mixes_pub(&c, &h, &fn_prev, &pa.scale, &pa.base);
         let yb: Vec<f32> = y.iter().map(|&v| round_bf16(v)).collect();
         let h2 = dsx::model::hc_post_pub(&c, &yb, &h, &post, &comb);
         let x = dsx::model::hc_pre_pub(&c, &h2, &pre);
+        let us = g.time(|| {
+            for _ in 0..100 {
+                crate::decode::test_hc_step_nosync(&g, dh.ptr, dy.ptr, dpm.ptr, &pa, dpm.ptr, &pa, dfn.ptr, nmix.ptr, xr.ptr, xss.ptr)?;
+            }
+            Ok(())
+        })?;
+        println!("hc_step: {:.2} us per launch (stream)", us / 100.0);
         report("hc_step h (post)", &gh, &h2);
         report("hc_step x (pre)", &gx, &x);
         let mut nm = vec![0f32; 25];

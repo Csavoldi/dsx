@@ -40,27 +40,35 @@ DEV float fp8_to_f32(uint32_t v, int byte) {
     }
 }
 
-DEV float wave_sum(float v) {
-#pragma unroll
-    for (int o = 32; o > 0; o >>= 1) v += __shfl_xor(v, o);
-    return v;
+// Cross-lane reductions: DPP for steps inside a 16-lane row (VALU-rate), shuffles only for the 16/32 strides.
+// Mirrors stand in for xor 4 / xor 8: for a full reduction any pairing that combines all lanes works.
+template <int CTRL> DEV float dpp(float v) {
+    return __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(v), CTRL, 0xF, 0xF, false));
 }
-DEV float wave_max(float v) {
-#pragma unroll
-    for (int o = 32; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor(v, o));
-    return v;
-}
-// sum over the 32 lanes of each half-wave group of `w` lanes (w power of two <= 64)
-template <int W> DEV float group_max(float v) {
-#pragma unroll
-    for (int o = W / 2; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor(v, o));
-    return v;
-}
+#define DPP_XOR1 0xB1      // quad_perm(1,0,3,2)
+#define DPP_XOR2 0x4E      // quad_perm(2,3,0,1)
+#define DPP_HMIRROR 0x141  // row_half_mirror
+#define DPP_MIRROR 0x140   // row_mirror
 template <int W> DEV float group_sum(float v) {
-#pragma unroll
-    for (int o = W / 2; o > 0; o >>= 1) v += __shfl_xor(v, o);
+    if (W >= 2) v += dpp<DPP_XOR1>(v);
+    if (W >= 4) v += dpp<DPP_XOR2>(v);
+    if (W >= 8) v += dpp<DPP_HMIRROR>(v);
+    if (W >= 16) v += dpp<DPP_MIRROR>(v);
+    if (W >= 32) v += __shfl_xor(v, 16);
+    if (W >= 64) v += __shfl_xor(v, 32);
     return v;
 }
+template <int W> DEV float group_max(float v) {
+    if (W >= 2) v = fmaxf(v, dpp<DPP_XOR1>(v));
+    if (W >= 4) v = fmaxf(v, dpp<DPP_XOR2>(v));
+    if (W >= 8) v = fmaxf(v, dpp<DPP_HMIRROR>(v));
+    if (W >= 16) v = fmaxf(v, dpp<DPP_MIRROR>(v));
+    if (W >= 32) v = fmaxf(v, __shfl_xor(v, 16));
+    if (W >= 64) v = fmaxf(v, __shfl_xor(v, 32));
+    return v;
+}
+DEV float wave_sum(float v) { return group_sum<64>(v); }
+DEV float wave_max(float v) { return group_max<64>(v); }
 
 // block-wide sum; `red` is __shared__ float[16]; all threads get the result
 DEV float block_sum(float v, float* red) {

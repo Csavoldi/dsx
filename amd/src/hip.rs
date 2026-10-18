@@ -34,6 +34,7 @@ unsafe extern "C" {
         f: hipFunction_t, gx: c_uint, gy: c_uint, gz: c_uint, bx: c_uint, by: c_uint, bz: c_uint, shmem: c_uint,
         s: hipStream_t, params: *mut *mut c_void, extra: *mut *mut c_void,
     ) -> hipError_t;
+    fn hipModuleGetGlobal(p: *mut u64, bytes: *mut usize, m: hipModule_t, name: *const c_char) -> hipError_t;
     fn hipFuncSetAttribute(f: *const c_void, attr: c_int, v: c_int) -> hipError_t;
     fn hipEventCreate(e: *mut hipEvent_t) -> hipError_t;
     fn hipEventRecord(e: hipEvent_t, s: hipStream_t) -> hipError_t;
@@ -71,7 +72,7 @@ pub enum Arg {
 
 pub struct Gpu {
     pub stream: hipStream_t,
-    module: hipModule_t,
+    module: std::sync::Mutex<hipModule_t>,
     funcs: std::sync::Mutex<std::collections::HashMap<String, hipFunction_t>>,
     pub allocated: std::sync::atomic::AtomicUsize,
     /// eager profiling: (kernel label, start, end) events per launch
@@ -126,8 +127,26 @@ impl Gpu {
             ck(hipStreamCreateWithFlags(&mut s, 1), "hipStreamCreate")?;
             let mut m = std::ptr::null_mut();
             ck(hipModuleLoadData(&mut m, image.as_ptr() as *const c_void), "hipModuleLoadData")?;
-            Ok(Gpu { stream: s, module: m, funcs: Default::default(), allocated: Default::default(), prof: Default::default(), label: Default::default() })
+            Ok(Gpu { stream: s, module: std::sync::Mutex::new(m), funcs: Default::default(), allocated: Default::default(), prof: Default::default(), label: Default::default() })
         }
+    }
+
+    /// Device address of a __device__ global in the kernel module.
+    pub fn global(&self, name: &str) -> Result<(u64, usize)> {
+        let (mut p, mut n) = (0u64, 0usize);
+        let c = CString::new(name)?;
+        ck(unsafe { hipModuleGetGlobal(&mut p, &mut n, *self.module.lock().unwrap(), c.as_ptr()) }, name)?;
+        Ok((p, n))
+    }
+
+    /// Replace the kernels with a new code object (development: no model reload).
+    pub fn reload(&self, image: &[u8]) -> Result<()> {
+        self.sync()?;
+        let mut m = std::ptr::null_mut();
+        ck(unsafe { hipModuleLoadData(&mut m, image.as_ptr() as *const c_void) }, "hipModuleLoadData")?;
+        *self.module.lock().unwrap() = m;
+        self.funcs.lock().unwrap().clear();
+        Ok(())
     }
 
     pub fn func(&self, name: &str) -> Result<hipFunction_t> {
@@ -137,7 +156,7 @@ impl Gpu {
         }
         let mut f = std::ptr::null_mut();
         let c = CString::new(name)?;
-        ck(unsafe { hipModuleGetFunction(&mut f, self.module, c.as_ptr()) }, name)?;
+        ck(unsafe { hipModuleGetFunction(&mut f, *self.module.lock().unwrap(), c.as_ptr()) }, name)?;
         map.insert(name.to_string(), f);
         Ok(f)
     }
