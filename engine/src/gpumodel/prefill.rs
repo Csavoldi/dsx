@@ -12,6 +12,9 @@ use crate::gguf::GType;
 use crate::model::{e8m0_to_f32, fp8_e4m3_to_f32};
 use crate::numerics::round_bf16;
 
+/// staging buffers for streamed experts (copies run ahead of compute by up to NSTAGE - 1 experts)
+const NSTAGE: usize = 4;
+
 pub struct PrefillBufs {
     pub tmax: usize,
     h: Buf,
@@ -48,9 +51,9 @@ pub struct PrefillBufs {
     go: Buf,
     rows: Buf,
     wrow: Buf,
-    estage: [Buf; 2],
-    ev_ready: [crate::gpu::Event; 2],
-    ev_free: [crate::gpu::Event; 2],
+    estage: [Buf; NSTAGE],
+    ev_ready: [crate::gpu::Event; NSTAGE],
+    ev_free: [crate::gpu::Event; NSTAGE],
     /// x shipped to GPU1 (prefill_moe_gpu1)
     ev_x: crate::gpu::Event,
     out: Buf,
@@ -148,9 +151,9 @@ impl PrefillBufs {
             go: f(tmax * c.dim)?,
             rows: g.alloc(tmax * 8 * 4)?,
             wrow: f(tmax * 8)?,
-            estage: [g.alloc(3 * c.inter * c.dim / 32 * 34 + 4096)?, g.alloc(3 * c.inter * c.dim / 32 * 34 + 4096)?],
-            ev_ready: [g.event()?, g.event()?],
-            ev_free: [g.event()?, g.event()?],
+            estage: (0..NSTAGE).map(|_| g.alloc(3 * c.inter * c.dim / 32 * 34 + 4096)).collect::<Result<Vec<_>>>()?.try_into().map_err(|_| anyhow::anyhow!("estage"))?,
+            ev_ready: (0..NSTAGE).map(|_| g.event()).collect::<Result<Vec<_>>>()?.try_into().map_err(|_| anyhow::anyhow!("ev_ready"))?,
+            ev_free: (0..NSTAGE).map(|_| g.event()).collect::<Result<Vec<_>>>()?.try_into().map_err(|_| anyhow::anyhow!("ev_free"))?,
             ev_x: g.event()?,
             out: f(tmax * c.dim)?,
             logits: f(c.vocab)?,
@@ -717,8 +720,9 @@ impl GpuModel<'_> {
         self.prof_mark("prefill moe . router+shared+gpu1 ship", tp0)?;
         let mut nstaged = 0usize;
         // the side stream must not start copying before the main stream reaches this layer's experts
-        self.g.record(pb.ev_free[0], false)?;
-        self.g.record(pb.ev_free[1], false)?;
+        for e in pb.ev_free.iter() {
+            self.g.record(*e, false)?;
+        }
         for &(e, off, nt) in &spans {
             let rows_p = pb.rows.ptr + (off * 4) as u64;
             let w_p = pb.wrow.ptr + (off * 4) as u64;
@@ -734,7 +738,7 @@ impl GpuModel<'_> {
                         Some([g, u, dn]) => (g, u, dn),
                         None => (ex.gate.bytes(), ex.up.bytes(), ex.down.bytes()),
                     };
-                    let b = nstaged % 2;
+                    let b = nstaged % NSTAGE;
                     nstaged += 1;
                     let base = pb.estage[b].ptr;
                     self.g.wait(pb.ev_free[b], true)?; // the main stream is done with this buffer's previous expert
