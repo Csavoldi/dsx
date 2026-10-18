@@ -1,0 +1,2 @@
+{"case": "S01", "completion_tokens": 6624, "wall_s": 70.2, "boxed": "\\frac{480}{49}", "waits": 13, "finish": "stop", "reasoning_chars": 17640}
+{"case": "S02", "completion_tokens": 13482, "wall_s": 138.8, "boxed": "500", "waits": 16, "finish": "stop", "reasoning_chars": 32570}
