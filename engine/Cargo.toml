@@ -23,6 +23,7 @@ tokio-stream = { version = "0.1", features = ["time"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "cublas", "cuda-13000", "dynamic-loading"] }
 
 [dev-dependencies]

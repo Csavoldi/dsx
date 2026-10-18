@@ -7,6 +7,7 @@ pub mod mock;
 #[cfg(feature = "cuda")]
 pub mod real;
 pub mod sample;
+pub mod webui;
 
 use std::pin::{Pin, pin};
 use std::sync::{Arc, Mutex};
@@ -89,6 +90,12 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/v1/responses", post(responses))
         .route("/v1/models", get(models))
         .route("/health", get(health))
+        .route("/v1/health", get(health))
+        .route("/props", get(webui::props))
+        .route("/slots", get(webui::slots))
+        .route("/tools", get(webui::no_tools).post(webui::no_tools))
+        .route("/v1/streams/lookup", post(webui::no_streams))
+        .fallback(get(webui::asset))
         .with_state(st)
 }
 
@@ -124,11 +131,23 @@ fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, ConversionError> {
     serde_json::from_slice(body).map_err(|e| ConversionError::bad_request(format!("invalid JSON request: {e}")))
 }
 
+/// parse, filling in this server's model name when the request has none (llama.cpp's web UI omits it in
+/// single-model mode; there is only one model here anyway)
+fn parse_with_model<T: DeserializeOwned>(st: &AppState, body: &[u8]) -> Result<T, ConversionError> {
+    let mut v: serde_json::Value = parse(body)?;
+    if let Some(o) = v.as_object_mut() {
+        if !o.get("model").is_some_and(|m| m.as_str().is_some_and(|s| !s.is_empty())) {
+            o.insert("model".into(), json!(st.cfg.model_name));
+        }
+    }
+    serde_json::from_value(v).map_err(|e| ConversionError::bad_request(format!("invalid JSON request: {e}")))
+}
+
 // ---- routes
 
 async fn chat_completions(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let e = |err| ApiError(Proto::OpenAi, err);
-    let req: ChatCompletionRequest = parse(&body).map_err(e)?;
+    let req: ChatCompletionRequest = parse_with_model(&st, &body).map_err(e)?;
     let (seed, include_usage) = (req.seed, req.include_usage());
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
     let streaming = conv.stream;
@@ -139,14 +158,14 @@ async fn chat_completions(State(st): State<Arc<AppState>>, body: Bytes) -> Resul
 
 async fn messages(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let e = |err| ApiError(Proto::Anthropic, err);
-    let req: MessagesRequest = parse(&body).map_err(e)?;
+    let req: MessagesRequest = parse_with_model(&st, &body).map_err(e)?;
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
     run::<MessagesRequest>(st, conv, "msg_", None, |g| g).await.map_err(e)
 }
 
 async fn responses(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let e = |err| ApiError(Proto::OpenAi, err);
-    let req: ResponsesRequest = parse(&body).map_err(e)?;
+    let req: ResponsesRequest = parse_with_model(&st, &body).map_err(e)?;
     let custom = req.custom_tool_names();
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
     run::<ResponsesRequest>(st, conv, "resp_", None, move |g| g.with_custom_tool_names(custom)).await.map_err(e)
@@ -155,7 +174,7 @@ async fn responses(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Respo
 /// Anthropic token counting: the exact prompt length this server would prefill.
 async fn count_tokens(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let e = |err| ApiError(Proto::Anthropic, err);
-    let req: MessagesRequest = parse(&body).map_err(e)?;
+    let req: MessagesRequest = parse_with_model(&st, &body).map_err(e)?;
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
     let ids = encode(&st, &conv).map_err(e)?;
     Ok(axum::Json(json!({"input_tokens": ids.len()})).into_response())
@@ -236,7 +255,8 @@ where
     let n_prompt = prompt.len();
     let rx = st.engine.submit(id.clone(), prompt, params).map_err(|e| ConversionError::internal(e.to_string()))?;
     let failed = Arc::new(Mutex::new(None::<String>));
-    let inference = inference_stream(rx, n_prompt, failed.clone());
+    let timing = Arc::new(Mutex::new(Timing::new()));
+    let inference = inference_stream(rx, n_prompt, failed.clone(), timing.clone());
 
     if !conv.stream {
         let mut resp = T::Response::new(id, model, now(), n_prompt, 0);
@@ -258,8 +278,17 @@ where
             None => format!("data: {data}\n\n"),
         })
     });
+    // llama.cpp extension for chat completions: a last chunk with `timings` (its web UI shows tok/s from it)
+    let llama_timings = id_prefix == "chatcmpl-";
+    let (tid, tmodel) = (id.clone(), model.clone());
+    let timings = tokio_stream::iter([()]).filter_map(move |_| {
+        llama_timings.then(|| {
+            let t = timing.lock().unwrap().json(n_prompt);
+            Ok(format!("data: {}\n\n", json!({"id": tid, "object": "chat.completion.chunk", "model": tmodel, "choices": [], "timings": t})))
+        })
+    });
     let done = <T::Response as ProtocolResponse>::done_message().map(|m| Ok(format!("data: {m}\n\n")));
-    let events = events.chain(tokio_stream::iter(done));
+    let events = events.chain(timings).chain(tokio_stream::iter(done));
     // SSE comments keep idle connections (long prefill, slow decode) alive; parsers ignore them
     let events = events.timeout(cfg.keepalive).map(|r| r.unwrap_or_else(|_| Ok(": keep-alive\n\n".to_string())));
     let mut res = Response::new(Body::from_stream(events));
@@ -274,13 +303,17 @@ fn inference_stream(
     rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
     n_prompt: usize,
     failed: Arc<Mutex<Option<String>>>,
+    timing: Arc<Mutex<Timing>>,
 ) -> Pin<Box<dyn Stream<Item = InferenceChunk> + Send>> {
     let ready = InferenceChunk::Ready {
         system_fingerprint: Some("ds41".into()),
         prompt_usage: PromptUsage { prompt_tokens: n_prompt, prompt_cache_hit_tokens: 0 },
     };
     let rest = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map_while(move |ev| match ev {
-        Event::Token(t) => Some(InferenceChunk::Token { token_id: t }),
+        Event::Token(t) => {
+            timing.lock().unwrap().token();
+            Some(InferenceChunk::Token { token_id: t })
+        }
         Event::Done { finish: Finish::Stop } => Some(InferenceChunk::Finish { finish_reason: InferenceFinishReason::Stop }),
         Event::Done { finish: Finish::Length } => Some(InferenceChunk::Finish { finish_reason: InferenceFinishReason::Length }),
         Event::Done { finish: Finish::Cancelled } => None,
@@ -290,6 +323,40 @@ fn inference_stream(
         }
     });
     Box::pin(tokio_stream::iter([ready]).chain(rest))
+}
+
+/// Request timing as seen by the HTTP layer: prompt = submit -> first token, predicted = first -> last token.
+struct Timing {
+    start: std::time::Instant,
+    first: Option<std::time::Instant>,
+    last: Option<std::time::Instant>,
+    n: usize,
+}
+
+impl Timing {
+    fn new() -> Self {
+        Self { start: std::time::Instant::now(), first: None, last: None, n: 0 }
+    }
+    fn token(&mut self) {
+        let t = std::time::Instant::now();
+        self.first.get_or_insert(t);
+        self.last = Some(t);
+        self.n += 1;
+    }
+    /// llama.cpp's `timings` object
+    fn json(&self, n_prompt: usize) -> serde_json::Value {
+        let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1e3;
+        let prompt_ms = self.first.map_or(0.0, |f| ms(self.start, f));
+        // the first token comes with the prefill; decode speed is over the tokens after it
+        let predicted_ms = match (self.first, self.last) { (Some(f), Some(l)) => ms(f, l), _ => 0.0 };
+        let dn = self.n.saturating_sub(1);
+        json!({
+            "prompt_n": n_prompt, "prompt_ms": prompt_ms,
+            "prompt_per_second": if prompt_ms > 0.0 { n_prompt as f64 * 1e3 / prompt_ms } else { 0.0 },
+            "predicted_n": self.n, "predicted_ms": predicted_ms,
+            "predicted_per_second": if predicted_ms > 0.0 { dn as f64 * 1e3 / predicted_ms } else { 0.0 },
+        })
+    }
 }
 
 fn now() -> u64 {
