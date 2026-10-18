@@ -4,11 +4,11 @@
 # Usage: ./ds41-serve.sh [model.gguf] [port]
 set -e
 cd ~/ai/ds41
-MODEL=${1:-gguf/1017-GSQ.gguf}
+MODEL=${1:-gguf/1017-v2-joint.gguf}
 PORT=${2:-8090}
 sudo -n nvidia-smi -i 0 -pl 210 >/dev/null 2>&1 || true   # GPU0 is cooling-limited (see watchdog notes)
 tmux has-session -t watchdog 2>/dev/null || tmux new-session -d -s watchdog ~/ai/ds41/watchdog.sh
 exec ~/ai/ds41/guard.sh serve 118 ./engine/target/release/ds41-server \
   --tokenizer fp8-1017/tokenizer.json --model "$MODEL" --engram fp8-1017 \
   --host 0.0.0.0 --port "$PORT" --ctx 131072 --chunk 4096 \
-  --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb ${ARENA_GB:-104} --rank calib/rank.json
+  --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb ${ARENA_GB:-110} --rank calib/rank.json
