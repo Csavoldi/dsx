@@ -100,6 +100,41 @@ enum Cmd {
         #[arg(long)]
         decode: bool,
     },
+    /// Teacher-force a conversation through decode: per-position log-prob, rank and entropy of each continuation
+    /// token, and the probability of ending the reasoning (`</think>`). TSV to stdout.
+    #[cfg(feature = "cuda")]
+    Score {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        engram: Option<PathBuf>,
+        #[arg(long)]
+        tokenizer: PathBuf,
+        /// OpenAI chat-completions request (JSON); rendered with the server's V4.1 template
+        #[arg(long)]
+        request: PathBuf,
+        /// text that follows the rendered prompt (reasoning, `</think>`, answer)
+        #[arg(long)]
+        continuation: PathBuf,
+        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        gpu0_gb: f64,
+        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        gpu1_gb: f64,
+        #[arg(long, default_value_t = 0.0)]
+        arena_gb: f64,
+        #[arg(long)]
+        rank: Option<PathBuf>,
+        /// also score the first N tokens in one prefill pass (column lp_prefill)
+        #[arg(long, default_value_t = 0)]
+        prefill_check: usize,
+    },
+    /// Write a GGUF as llama.cpp-style split files (`<prefix>-0000k-of-0000N.gguf`) and check every tensor's bytes.
+    Split {
+        input: PathBuf,
+        prefix: String,
+        #[arg(long, default_value_t = 4)]
+        shards: usize,
+    },
     /// GPU0 decode (experts on the CPU) next to the CPU reference, per-token logit comparison.
     #[cfg(feature = "cuda")]
     Cmp {
@@ -381,6 +416,69 @@ fn main() -> Result<()> {
                 eprintln!("seq {sq}: running ppl {:.3} kl {:.4} top1 {:.4} ({:.0} s)", (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64, t0.elapsed().as_secs_f64());
             }
             println!("{{\"tokens\": {cnt}, \"nll\": {:.6}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", nll / cnt as f64, (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64);
+        }
+        Cmd::Split { input, prefix, shards } => {
+            let paths = dsx::gguf::split(&input, &prefix, shards)?;
+            let (a, b) = (dsx::gguf::Gguf::open(&input)?, dsx::gguf::Gguf::open(&paths[0])?);
+            anyhow::ensure!(a.order.len() == b.order.len(), "tensor count {} vs {}", a.order.len(), b.order.len());
+            for k in &a.order {
+                let (x, y) = (&a.tensors[k], b.get(k)?);
+                anyhow::ensure!(x.dims == y.dims && x.ty == y.ty && a.bytes(x) == b.bytes(y), "tensor {k} differs");
+            }
+            let kv_same = a.kv.iter().all(|(k, v)| b.kv.get(k) == Some(v));
+            anyhow::ensure!(kv_same, "metadata differs");
+            println!("{} tensors and {} metadata keys match", a.order.len(), a.kv.len());
+        }
+        #[cfg(feature = "cuda")]
+        Cmd::Score { model, engram, tokenizer, request, continuation, gpu0_gb, gpu1_gb, arena_gb, rank, prefill_check } => {
+            use deepseek_recipe::request::{ConversionOptions, ProtocolRequest};
+            use deepseek_recipe_encoding::PromptEncoding;
+            let tok = tokenizers::Tokenizer::from_file(&tokenizer).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let req: deepseek_recipe::openai::ChatCompletionRequest = serde_json::from_slice(&std::fs::read(&request)?)?;
+            let conv = req.convert(ConversionOptions::default()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let prompt = deepseek_recipe_encoding::v4::dsv41::DeepseekV41Encoding::new().render_conversation(&conv.conversation).prompt;
+            eprintln!("thinking={} effort={:?}; prompt tail: {:?}", conv.conversation.thinking_mode, conv.conversation.reasoning_effort, &prompt[prompt.len().saturating_sub(300)..]);
+            let enc = |t: &str| tok.encode(t, false).map(|e| e.get_ids().to_vec()).map_err(|e| anyhow::anyhow!("{e}"));
+            let mut ids = enc(&prompt)?;
+            let np = ids.len();
+            ids.extend(enc(&std::fs::read_to_string(&continuation)?)?);
+            let end_think = tok.token_to_id("</think>").unwrap_or(u32::MAX) as usize;
+            eprintln!("{np} prompt + {} continuation tokens; </think> = {end_think}", ids.len() - np);
+            let m = load(&model, engram.as_deref())?;
+            let chunk = prefill_check.max(4096);
+            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, 0, ids.len() + 64, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: chunk, rank })?;
+            let lsm = |l: &[f32]| {
+                let mx = l.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
+                let lse = mx + l.iter().map(|&v| (v as f64 - mx).exp()).sum::<f64>().ln();
+                lse
+            };
+            let mut pre: Vec<f64> = vec![];
+            if prefill_check > 0 {
+                let n = prefill_check.min(ids.len());
+                let lg = gm.eval_logits(&ids[..n])?;
+                pre = (0..n - 1).map(|p| lg[p][ids[p + 1] as usize] as f64 - lsm(&lg[p])).collect();
+                gm.reset();
+            }
+            println!("pos\ttarget\tlp\trank\ttop1\tlp_top1\tentropy\tlp_endthink\tlp_prefill");
+            let t0 = Instant::now();
+            for p in 0..ids.len() - 1 {
+                let l = gm.step(ids[p])?;
+                if p + 1 < np {
+                    continue;
+                }
+                let lse = lsm(&l);
+                let tgt = ids[p + 1] as usize;
+                let lt = l[tgt];
+                let rank = l.iter().filter(|&&v| v > lt).count();
+                let (am, av) = l.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |a, (i, &v)| if v > a.1 { (i, v) } else { a });
+                let ent: f64 = l.iter().map(|&v| { let lp = v as f64 - lse; if lp > -30.0 { -lp.exp() * lp } else { 0.0 } }).sum();
+                let le = if end_think < l.len() { l[end_think] as f64 - lse } else { f64::NAN };
+                let lpp = pre.get(p).copied().unwrap_or(f64::NAN);
+                println!("{}\t{tgt}\t{:.4}\t{rank}\t{am}\t{:.4}\t{ent:.4}\t{le:.3}\t{lpp:.4}", p + 1 - np, lt as f64 - lse, av as f64 - lse);
+                if (p + 1 - np) % 1000 == 0 {
+                    eprintln!("{} / {} ({:.0} s)", p + 1 - np, ids.len() - np, t0.elapsed().as_secs_f64());
+                }
+            }
         }
         #[cfg(feature = "cuda")]
         Cmd::Cmp { model, engram, ids, ctx, no_ref, n, gpu0_gb, gpu1_gb, arena_gb } => {
