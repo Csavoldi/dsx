@@ -818,3 +818,177 @@ extern "C" __global__ void __launch_bounds__(256) mm2(const MmJob* __restrict__ 
         }
     }
 }
+
+// ------------------------------------------------------------------ attn_m: MFMA sparse attention for the prompt path
+// One block per query (1024 threads = 16 waves), all 64 heads; rows in chunks of 32 through LDS.
+// Scores S[64][32] = Q . R^T on bf16 MFMA with Q split into hi + lo bf16 (f32-accurate); waves: head tile w%4,
+// row tile (w/4)%2, k half w/8 (summed through LDS). Online softmax per head; O[64][512] += P . R with P split
+// hi + lo; waves: head tile w%4, dim tiles (w/4)*8 .. +8. Writes O / L (after the sink) over the query's q row.
+extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restrict__ q, const uint16_t* __restrict__ lin,
+                                                          const uint16_t* __restrict__ comp, const int* __restrict__ cidx,
+                                                          const int* ncomp, int ldc, int woff, float scale, const float* sinks) {
+    __shared__ uint16_t rows[32][HD + 8];
+    __shared__ float sp[2][64][33];
+    __shared__ uint16_t ph[64][32 + 8], pl[64][32 + 8];
+    __shared__ float hm[64], hl[64], ha[64];
+    __shared__ int rowsrc[32];
+    const int t = blockIdx.x, tid = threadIdx.x, lane = tid & 63, w = tid >> 6;
+    const int pos = p0 + t;
+    const int col = lane & 15, g4 = 4 * (lane >> 4);
+    // ---- Q fragments for the score role: head tile ht, k half kh (16 k-steps of 16)
+    const int ht = w & 3, rtile = (w >> 2) & 1, kh = w >> 3;
+    s4v qhi[16], qlo[16];
+    {
+        const float* qp = q + ((size_t)t * NH + 16 * ht + col) * HD + 256 * kh + g4;
+#pragma unroll
+        for (int ks = 0; ks < 16; ks++) {
+            const float4 v = *reinterpret_cast<const float4*>(qp + 16 * ks);
+            const float vv[4] = {v.x, v.y, v.z, v.w};
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+                const uint32_t hb = bf16_bits(vv[j]);
+                qhi[ks][j] = (short)hb;
+                qlo[ks][j] = (short)bf16_bits(vv[j] - __uint_as_float(hb << 16));
+            }
+        }
+    }
+    // ---- output tiles for the PV role
+    const int oht = w & 3, odt0 = (w >> 2) * 8;
+    f4 o[8];
+#pragma unroll
+    for (int i = 0; i < 8; i++) o[i] = f4{0, 0, 0, 0};
+    if (tid < 64) { hm[tid] = -INFINITY; hl[tid] = 0.f; }
+    const int lo = max(0, pos - (WIN - 1));
+    const int nwin = pos - lo + 1;
+    const int nc = comp ? ncomp[t] : 0;
+    const int total = nwin + nc;
+    for (int r0 = 0; r0 < total; r0 += 32) {
+        __syncthreads();
+        if (tid < 32) {
+            const int rr = r0 + tid;
+            int src = -1;
+            if (rr < nwin) src = (lo + rr) - (p0 - WIN);
+            else if (rr < total) {
+                const int ci = cidx[(size_t)t * ldc + rr - nwin];
+                src = ci >= 0 ? 0x40000000 | (ci - woff) : -1;
+            }
+            rowsrc[tid] = src;
+        }
+        __syncthreads();
+        {
+            // 32 rows x 512 bf16 = 32 KB: 32 B per thread
+            const int rw = tid >> 5, j = (tid & 31) * 16;
+            const int src = rowsrc[rw];
+            u4v v0 = {0, 0, 0, 0}, v1 = {0, 0, 0, 0};
+            if (src >= 0) {
+                const uint16_t* bp = (src & 0x40000000) ? comp + (size_t)(src & 0x3FFFFFFF) * HD : lin + (size_t)src * HD;
+                v0 = *reinterpret_cast<const u4v*>(bp + j);
+                v1 = *reinterpret_cast<const u4v*>(bp + j + 8);
+            }
+            *reinterpret_cast<u4v*>(&rows[rw][j]) = v0;
+            *reinterpret_cast<u4v*>(&rows[rw][j + 8]) = v1;
+        }
+        __syncthreads();
+        // ---- partial scores: head tile ht x row tile rtile over k half kh
+        {
+            f4 s = {0, 0, 0, 0};
+#pragma unroll
+            for (int ks = 0; ks < 16; ks++) {
+                const s4v b = *reinterpret_cast<const s4v*>(&rows[16 * rtile + col][256 * kh + 16 * ks + g4]);
+                s = mfma_bf16(qhi[ks], b, s);
+                s = mfma_bf16(qlo[ks], b, s);
+            }
+            // lane: heads 16ht + g4 + j, row 16rtile + col
+#pragma unroll
+            for (int j = 0; j < 4; j++) sp[kh][16 * ht + g4 + j][16 * rtile + col] = s[j];
+        }
+        __syncthreads();
+        // ---- online softmax per head: 2 values per thread (head h = tid / 16, rows (tid % 16) and +16)
+        {
+            const int h = tid >> 4, rr = tid & 15;
+            float v[2];
+#pragma unroll
+            for (int u = 0; u < 2; u++) {
+                const int ri = rr + 16 * u;
+                const bool ok = r0 + ri < total && rowsrc[ri] >= 0;
+                v[u] = ok ? (sp[0][h][ri] + sp[1][h][ri]) * scale : -INFINITY;
+            }
+            const float mc = group_max<16>(fmaxf(v[0], v[1]));
+            const float Mo = hm[h];
+            const float Mn = fmaxf(Mo, mc);
+            float e[2], es = 0;
+#pragma unroll
+            for (int u = 0; u < 2; u++) {
+                e[u] = v[u] == -INFINITY ? 0.f : expf(v[u] - Mn);
+                es += e[u];
+                const uint32_t hb = bf16_bits(e[u]);
+                ph[h][rr + 16 * u] = (uint16_t)hb;
+                pl[h][rr + 16 * u] = (uint16_t)bf16_bits(e[u] - __uint_as_float(hb << 16));
+            }
+            es = group_sum<16>(es);
+            __syncthreads();
+            if (rr == 0) {
+                const float a = Mo == -INFINITY ? 0.f : expf(Mo - Mn);
+                ha[h] = a;
+                hl[h] = hl[h] * a + es;
+                hm[h] = Mn;
+            }
+        }
+        __syncthreads();
+        // ---- PV: o[head tile oht][dim tiles] = o * alpha + P . R
+        {
+            float al[4];
+#pragma unroll
+            for (int j = 0; j < 4; j++) al[j] = ha[16 * oht + g4 + j];
+#pragma unroll
+            for (int i = 0; i < 8; i++)
+#pragma unroll
+                for (int j = 0; j < 4; j++) o[i][j] *= al[j];
+#pragma unroll
+            for (int ks = 0; ks < 2; ks++) {
+                const s4v ah = *reinterpret_cast<const s4v*>(&ph[16 * oht + col][16 * ks + g4]);
+                const s4v alo = *reinterpret_cast<const s4v*>(&pl[16 * oht + col][16 * ks + g4]);
+#pragma unroll
+                for (int i = 0; i < 8; i++) {
+                    const int d = 16 * (odt0 + i) + col;
+                    s4v b;
+#pragma unroll
+                    for (int j = 0; j < 4; j++) b[j] = (short)rows[16 * ks + g4 + j][d];
+                    o[i] = mfma_bf16(ah, b, o[i]);
+                    o[i] = mfma_bf16(alo, b, o[i]);
+                }
+            }
+        }
+    }
+    __syncthreads();
+    // ---- normalize with the sink, write over the query's q row (heads 16*oht + g4 + j, dims 16*(odt0+i) + col)
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+        const int h = 16 * oht + g4 + j;
+        const float L = hl[h] + (hm[h] == -INFINITY ? 1.f : expf(sinks[h] - hm[h]));
+#pragma unroll
+        for (int i = 0; i < 8; i++) q[((size_t)t * NH + h) * HD + 16 * (odt0 + i) + col] = round_bf16(o[i][j] / L);
+    }
+}
+
+// after attn_m: inverse RoPE on the last 64 dims of each head, then FP8 per 32 (+ bf16 copy) for wo_a. Block per query.
+extern "C" __global__ void __launch_bounds__(256) attn_m_out(int p0, float* __restrict__ o, const float* rf, uint8_t* oq, float* os, uint16_t* obq) {
+    const int t = blockIdx.x, pos = p0 + t;
+    float* ot = o + (size_t)t * NH * HD;
+    __shared__ float cs[32], sn[32];
+    if (threadIdx.x < 32) {
+        const float ang = (float)pos * rf[threadIdx.x];
+        cs[threadIdx.x] = cosf(ang);
+        sn[threadIdx.x] = -sinf(ang);
+    }
+    __syncthreads();
+    for (int i = threadIdx.x; i < NH * 32; i += 256) {
+        const int h = i / 32, pi = i % 32;
+        float* v = ot + h * HD + HD - RD + 2 * pi;
+        const float a = v[0], b = v[1];
+        v[0] = a * cs[pi] - b * sn[pi];
+        v[1] = a * sn[pi] + b * cs[pi];
+    }
+    __syncthreads();
+    write_act(NH * HD, [&](int i) -> float { return ot[i]; }, oq + (size_t)t * NH * HD, os + (size_t)t * NH * HD / 32, nullptr, obq + (size_t)t * NH * HD);
+}

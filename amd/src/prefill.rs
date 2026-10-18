@@ -399,6 +399,7 @@ impl Decoder {
             }
             // sparse attention per query
             let comp = if l.ratio > 0 { self.layers[l.comp_src].comp_cache.as_ref().unwrap().ptr } else { 0 };
+            if std::env::var_os("DSXA_ATTN_T").is_some() {
             g.launch(
                 "attn_t",
                 (t as u32, 4, 1),
@@ -406,6 +407,16 @@ impl Decoder {
                 0,
                 &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)],
             )?;
+            } else {
+                g.launch(
+                    "attn_m",
+                    (t as u32, 1, 1),
+                    1024,
+                    0,
+                    &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr)],
+                )?;
+                g.launch("attn_m_out", (t as u32, 1, 1), 256, 0, &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])?;
+            }
             if let (true, Ok(dir)) = (li == 0, std::env::var("DSXA_DUMPQ")) {
                 let w = |n: &str, v: Vec<u8>| std::fs::write(format!("{dir}/pf_{n}_p{p0}.bin"), v);
                 let f = |b: &Buf, n: usize| -> Result<Vec<u8>> { let v: Vec<f32> = g.dtoh(b.ptr, n)?; Ok(v.iter().flat_map(|x| x.to_le_bytes()).collect()) };
