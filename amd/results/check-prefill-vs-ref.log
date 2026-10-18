@@ -1,0 +1,91 @@
+reference: 16 positions, 1634 distinct routed experts
+dense layers: 2.5 s, 7.2 GB on device
+experts: 8992 MXFP4, 6368 3-bit, 0 2-bit: 260.6 GB (free 263.9 GB)
+experts: layer 3 done, 26.4 GB, 12 s
+experts: layer 7 done, 52.5 GB, 27 s
+experts: layer 11 done, 78.6 GB, 40 s
+experts: layer 15 done, 104.7 GB, 53 s
+experts: layer 19 done, 130.7 GB, 65 s
+experts: layer 23 done, 156.7 GB, 89 s
+experts: layer 27 done, 182.5 GB, 107 s
+experts: layer 31 done, 208.5 GB, 124 s
+experts: layer 35 done, 234.5 GB, 145 s
+experts: layer 39 done, 260.6 GB, 165 s
+loaded in 167.6 s; 270.8 GB on device
+prefill 13 tokens (0.21 s): next 17575 top [(17575, 24.988565), (88519, 20.563087), (1613, 18.857548)] | ref top [(17575, 23.44386), (88519, 18.567715), (201, 17.494452)] | KL 7.90e-3
+pos 13 tok 17575: gpu next 16 top [(16, 26.29139), (603, 23.389956), (339, 23.258587)] | ref top [(16, 27.34433), (603, 25.005947), (339, 24.247046)] | max|dlogit| 7.1381 KL 1.11e-2
+  route differs at layer 2: gpu [15, 59, 240, 291, 303, 343] ref [15, 36, 59, 291, 303, 343]
+  route differs at layer 3: gpu [103, 114, 181, 196, 241, 273] ref [103, 114, 137, 181, 241, 273]
+  route differs at layer 6: gpu [64, 142, 209, 271, 286, 300] ref [142, 209, 271, 274, 286, 300]
+  route differs at layer 8: gpu [87, 160, 194, 201, 252, 336] ref [160, 194, 201, 252, 336, 350]
+  route differs at layer 10: gpu [0, 180, 191, 247, 352, 369] ref [0, 100, 180, 191, 352, 369]
+  route differs at layer 11: gpu [27, 54, 100, 156, 252, 291] ref [27, 54, 100, 156, 252, 301]
+  route differs at layer 14: gpu [13, 19, 110, 157, 231, 278] ref [13, 110, 157, 231, 278, 311]
+  route differs at layer 15: gpu [51, 97, 271, 294, 301, 376] ref [51, 97, 243, 271, 294, 301]
+  route differs at layer 16: gpu [99, 151, 152, 212, 357, 368] ref [99, 151, 152, 212, 245, 357]
+  route differs at layer 18: gpu [147, 167, 297, 355, 369, 375] ref [147, 167, 267, 297, 369, 375]
+  route differs at layer 19: gpu [29, 129, 147, 201, 245, 261] ref [29, 129, 147, 201, 253, 261]
+  route differs at layer 20: gpu [13, 33, 56, 249, 278, 379] ref [13, 32, 33, 56, 278, 379]
+  route differs at layer 21: gpu [6, 29, 90, 227, 251, 363] ref [6, 29, 90, 195, 251, 323]
+  route differs at layer 22: gpu [121, 127, 284, 317, 320, 325] ref [30, 121, 127, 259, 317, 325]
+  route differs at layer 24: gpu [143, 197, 291, 322, 327, 351] ref [54, 143, 197, 291, 322, 351]
+  route differs at layer 25: gpu [0, 58, 130, 136, 290, 348] ref [0, 106, 130, 136, 313, 348]
+  route differs at layer 26: gpu [59, 82, 159, 186, 285, 357] ref [59, 82, 128, 144, 159, 186]
+  route differs at layer 27: gpu [3, 23, 101, 271, 371, 374] ref [3, 23, 140, 254, 321, 374]
+  route differs at layer 28: gpu [80, 200, 259, 288, 289, 291] ref [80, 200, 270, 288, 291, 315]
+  route differs at layer 29: gpu [148, 210, 267, 304, 308, 379] ref [85, 148, 210, 267, 304, 379]
+  route differs at layer 30: gpu [90, 94, 151, 278, 310, 312] ref [90, 151, 176, 236, 278, 312]
+  route differs at layer 31: gpu [49, 66, 83, 285, 317, 344] ref [49, 66, 208, 285, 317, 344]
+  route differs at layer 32: gpu [64, 101, 134, 192, 232, 376] ref [101, 129, 134, 192, 232, 376]
+  route differs at layer 33: gpu [5, 34, 104, 148, 297, 320] ref [5, 34, 148, 282, 297, 320]
+  route differs at layer 34: gpu [15, 131, 143, 148, 209, 278] ref [61, 124, 131, 148, 209, 278]
+  route differs at layer 35: gpu [31, 199, 281, 304, 309, 333] ref [31, 127, 281, 304, 309, 333]
+  route differs at layer 36: gpu [9, 58, 151, 196, 260, 332] ref [9, 69, 196, 260, 302, 332]
+  route differs at layer 38: gpu [79, 182, 186, 234, 316, 365] ref [182, 186, 234, 300, 316, 365]
+  route differs at layer 39: gpu [42, 83, 121, 178, 215, 362] ref [7, 11, 61, 178, 215, 313]
+pos 14 tok 16: gpu next 455 top [(455, 21.546484), (1999, 17.752922), (223, 16.99192)] | ref top [(455, 21.623026), (1999, 17.850523), (11152, 16.926706)] | max|dlogit| 2.0834 KL 6.95e-3
+  route differs at layer 5: gpu [16, 44, 57, 128, 149, 181] ref [16, 44, 57, 128, 149, 323]
+  route differs at layer 6: gpu [188, 190, 209, 260, 300, 370] ref [188, 190, 209, 251, 260, 370]
+  route differs at layer 7: gpu [62, 104, 196, 331, 354, 357] ref [104, 196, 331, 354, 357, 373]
+  route differs at layer 8: gpu [15, 112, 129, 194, 302, 350] ref [15, 112, 194, 232, 302, 350]
+  route differs at layer 9: gpu [41, 219, 234, 312, 371, 375] ref [41, 99, 133, 219, 234, 375]
+  route differs at layer 10: gpu [0, 127, 161, 214, 266, 369] ref [0, 127, 161, 266, 328, 369]
+  route differs at layer 11: gpu [27, 31, 130, 161, 344, 370] ref [31, 100, 130, 291, 344, 370]
+  route differs at layer 12: gpu [71, 171, 242, 331, 376, 382] ref [71, 148, 162, 171, 376, 382]
+  route differs at layer 13: gpu [14, 150, 221, 236, 258, 317] ref [140, 150, 191, 221, 236, 258]
+  route differs at layer 14: gpu [12, 13, 231, 234, 249, 278] ref [13, 62, 106, 231, 249, 278]
+  route differs at layer 16: gpu [52, 212, 245, 319, 325, 361] ref [175, 212, 245, 319, 325, 361]
+  route differs at layer 17: gpu [76, 78, 82, 117, 230, 340] ref [78, 82, 117, 230, 334, 340]
+  route differs at layer 19: gpu [98, 124, 129, 147, 173, 362] ref [98, 124, 129, 173, 330, 362]
+  route differs at layer 23: gpu [150, 160, 167, 314, 316, 362] ref [85, 150, 167, 314, 316, 362]
+  route differs at layer 24: gpu [84, 143, 197, 327, 339, 351] ref [84, 143, 163, 197, 327, 351]
+  route differs at layer 25: gpu [0, 136, 239, 290, 313, 348] ref [0, 136, 239, 290, 309, 313]
+  route differs at layer 26: gpu [39, 82, 159, 269, 279, 355] ref [82, 144, 159, 269, 279, 355]
+  route differs at layer 27: gpu [3, 49, 64, 216, 272, 371] ref [3, 49, 64, 216, 321, 371]
+  route differs at layer 28: gpu [41, 168, 208, 270, 288, 335] ref [41, 208, 270, 288, 289, 335]
+  route differs at layer 30: gpu [94, 132, 237, 278, 312, 317] ref [90, 132, 237, 278, 312, 327]
+  route differs at layer 32: gpu [101, 134, 154, 228, 237, 341] ref [89, 101, 134, 154, 228, 341]
+  route differs at layer 33: gpu [37, 89, 225, 282, 297, 351] ref [37, 89, 148, 225, 282, 297]
+  route differs at layer 34: gpu [61, 119, 133, 209, 324, 334] ref [61, 119, 131, 209, 324, 334]
+  route differs at layer 37: gpu [6, 87, 139, 312, 319, 355] ref [6, 87, 125, 139, 319, 355]
+  route differs at layer 38: gpu [182, 220, 237, 244, 283, 316] ref [182, 220, 237, 244, 255, 316]
+  route differs at layer 39: gpu [118, 121, 149, 164, 167, 268] ref [79, 118, 121, 149, 167, 268]
+pos 15 tok 455: gpu next 6102 top [(6102, 26.255116), (16886, 20.634237), (5185, 19.931519)] | ref top [(6102, 26.459654), (16886, 20.834448), (5185, 20.06215)] | max|dlogit| 1.7013 KL 1.37e-3
+  route differs at layer 1: gpu [114, 124, 137, 225, 245, 270] ref [68, 114, 124, 137, 225, 270]
+  route differs at layer 6: gpu [140, 190, 209, 225, 243, 251] ref [104, 190, 209, 225, 243, 251]
+  route differs at layer 11: gpu [31, 130, 175, 314, 344, 370] ref [13, 31, 175, 311, 314, 370]
+  route differs at layer 12: gpu [106, 122, 143, 225, 242, 376] ref [106, 122, 162, 171, 225, 376]
+  route differs at layer 13: gpu [10, 219, 236, 237, 258, 271] ref [10, 14, 236, 237, 258, 271]
+  route differs at layer 16: gpu [97, 136, 212, 245, 265, 325] ref [3, 136, 212, 245, 265, 325]
+  route differs at layer 17: gpu [55, 78, 82, 272, 274, 340] ref [18, 78, 82, 274, 340, 344]
+  route differs at layer 18: gpu [62, 147, 167, 267, 339, 355] ref [62, 147, 167, 267, 292, 355]
+  route differs at layer 23: gpu [78, 80, 85, 125, 188, 355] ref [78, 80, 85, 188, 335, 355]
+  route differs at layer 26: gpu [19, 128, 139, 181, 258, 355] ref [19, 139, 181, 258, 279, 355]
+  route differs at layer 27: gpu [173, 216, 235, 261, 321, 371] ref [112, 173, 235, 261, 321, 371]
+  route differs at layer 29: gpu [45, 53, 220, 250, 267, 304] ref [53, 187, 220, 250, 267, 304]
+  route differs at layer 31: gpu [18, 42, 49, 63, 147, 149] ref [42, 49, 94, 129, 147, 302]
+  route differs at layer 32: gpu [41, 65, 69, 87, 89, 154] ref [41, 69, 87, 89, 134, 154]
+  route differs at layer 33: gpu [89, 148, 278, 297, 329, 381] ref [37, 89, 148, 278, 297, 381]
+  route differs at layer 35: gpu [72, 108, 149, 230, 247, 302] ref [72, 108, 149, 228, 230, 247]
+  route differs at layer 36: gpu [180, 204, 219, 232, 310, 368] ref [180, 204, 232, 260, 310, 368]
+  route differs at layer 37: gpu [125, 198, 276, 302, 312, 355] ref [125, 198, 276, 312, 319, 355]
