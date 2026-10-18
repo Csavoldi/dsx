@@ -1,0 +1,20 @@
+[package]
+name = "dsx-amd"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "DeepSeek-V4.1-Flash-1017 inference on one AMD Instinct MI325X"
+publish = false
+
+[dependencies]
+dsx = { path = "../engine" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+half = "2"
+memmap2 = "0.9"
+rayon = "1"
+serde_json = "1"
+
+[profile.release]
+debug = 1
+codegen-units = 8

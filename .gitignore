@@ -1,3 +1,4 @@
 engine/target/
 libqkern.so
 __pycache__/
+amd/target
