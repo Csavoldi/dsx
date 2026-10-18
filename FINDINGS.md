@@ -266,3 +266,27 @@ Routing bias buys little (measured before the attention fix: 20.3 tok/s exact, 2
 KL; leave it off. The quality gap to Lucebox's 2.5 bpw is large: 2.03 bpw is what fits in
 RAM + VRAM without NVMe, so the next quality step is better bit allocation or spilling the coldest experts to NVMe
 to afford ~2.3-2.5 bpw.
+
+## 15. colibri (JustVugg/colibri), reference research, 2026-10-18
+
+Pure-C MoE engines (Apache-2.0, ~43K stars) that keep the dense part in RAM and stream routed experts from disk,
+with a GPU tier for hot experts. It has a DeepSeek V4.1 Flash engine (docs/deepseek-v41.md): 0.21-0.56 tok/s on
+CPU servers, reading the official FP4 experts from NVMe (4.5 GB of experts per token at FP4). Different niche from
+ds41 (low-RAM machines, unquantized weights); useful for us:
+
+- **Index-key slot.** In the original V4.1 `model.py` a ratio-2 KV-source layer republished its index keys only
+  when it completed a group, so on every other decode step layers 2/8/14 scored against layer 20's keys; colibri
+  reproduces that by default. **The 1017 `model.py` republishes unconditionally** (`if self.owns_k:
+  shared_attn.index_k = self.k_cache`), which is what ds41's reference and GPU paths do. Checked: no change needed.
+- **DSpark measured on CPU:** a draft round costs ~1/5 of a main token (window-only attention, 128 experts, top-3);
+  +17% with an acceptance guard (stop drafting below 60% acceptance); without the guard the gain mostly vanishes.
+  Exact speculative decoding needs rollback of three modulo-addressed states a draft can clobber: the window ring,
+  the compressor's half-filled group slots, and the published index-key slot. ds41's verify pass has no rollback yet;
+  this is the list to implement.
+- **Disk tier (for v2's NVMe spill):** resolve a step's experts to cache slots first (hits stamped, victims
+  reserved), then read the misses together at queue depth ~8 (6.8 GB/s on two striped PM9A1; deeper steals cores);
+  one `pread` per expert for all three matrices; router lookahead prefetch one layer ahead (71.6% predictable on
+  GLM-5.2); O_DIRECT measured per drive; a mirror on a second NVMe gave +37.5%.
+- **Learned placement:** a per-user hot set updated every turn (`.coli_usage`) on top of per-layer LRU; ds41's
+  ranking is static from calibration. Worth doing with the RAM arena once part of the pool lives on NVMe.
+- **Engram:** ~13 KB per token, at most 48 rows of 264 bytes per table; streaming it is the right call (as ds41 does).
