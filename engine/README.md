@@ -1,13 +1,13 @@
 # ds41
 
-DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200 (`192.168.0.102`).
+DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200.
 Rust + CUDA (cudarc driver API, one nvcc fatbin for sm_86 and sm_120). Plan and numbers: ../DESIGN.md, ../FINDINGS.md,
 ../bench/RESULTS.md.
 
 ## Build
 
 ```bash
-cargo build --release --features cuda          # CUDA_ARCHS=86 on .102 (default 86,120)
+cargo build --release --features cuda          # CUDA_ARCHS=86 for RTX 30xx (default 86,120)
 cargo test --release                            # CPU tests (formats, numerics, CPU expert kernels)
 cargo test --release --features cuda            # + GPU kernel tests (gemv vs CPU decoders, top-k, handshake)
 ```

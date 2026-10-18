@@ -1,4 +1,4 @@
-=== 5090 freed desktop, static placement: arena 80 GB, cap 98 GB, 10:01 AM
+=== RTX 5090, 128 GB DDR5, static placement (DS41_ADAPT=0): arena 80 GB, cap 98 GB
 1367 MiB, 32607 MiB
 Mem:             125          24          73           9          37         101
 --- decode, prompt60
@@ -14,4 +14,4 @@ decode 400 tokens in 26.39 s (15.16 tok/s); CPU experts busy 54.7 ms/token, 55.0
 --- prefill 8K
 prefill 8000 tokens in 46.46 s (172 tok/s); next top5 [(1718, 20.703197), (30, 17.28681), (361, 16.193745), (528, 15.502981), (1778, 14.778046)]
 decode 32 tokens in 3.11 s (10.27 tok/s); CPU experts busy 84.8 ms/token, 50.4% of picks on the CPU; GPU0 expert swaps 0 (0.00 ms/token host)
-=== 5090 freed desktop, static placement done 10:12 AM
+=== RTX 5090, 128 GB DDR5, static placement (DS41_ADAPT=0) done

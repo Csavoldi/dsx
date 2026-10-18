@@ -351,7 +351,7 @@ The cross-layer allocation is the win (-15% KL, +2.6 points top-1); the allocato
 held-out error overstates how forgiving the decoder layers are. Speed on .102 (v2): prose 37.2 tok/s (v1 29.9), agent
 30.0 (31.2), prefill 3K 334, 8K 508 (with the prefill reorder + four staging buffers: 478 -> 505 on the same model).
 
-RTX 5090 + 128 GB DDR5 (the workstation, heavy apps closed, ~90 GB free): RAM-bound. Static placement, 80 GB arena:
+RTX 5090 + 128 GB DDR5 (~90 GB free): RAM-bound. Static placement, 80 GB arena:
 prose 12.0, agent 15.2 tok/s, prefill 93 (3K) / 172 (8K). Adaptive placement is worse there (7.6-7.8 tok/s): it keeps
 RAM copies of GPU0's experts, and ~5,000 experts (~40 GB) already come from the disk through page faults. A 5090 box
 needs ~160 GB of RAM for this quant, or a real SSD tier (batched O_DIRECT reads, lookahead prefetch: section 15).

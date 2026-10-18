@@ -1,8 +1,0 @@
-09:30:30 [1343/1343] blk.39.ffn_exps_down_type I32 0.000 GiB 0.0s
-09:30:30 wrote ../gguf/1017-v2-joint.gguf
-=== eval v2-joint
-{"tokens": 8184, "nll": 2.391150, "ppl": 10.9260, "kl_top256": 0.395122, "top1_agree": 0.740836}
-=== eval v2-t100
-{"tokens": 8184, "nll": 2.479231, "ppl": 11.9321, "kl_top256": 0.463094, "top1_agree": 0.718475}
-=== v1 (for reference): kl 0.462284 top1 0.715054 ppl 11.6631
-FINISH_V2_DONE
