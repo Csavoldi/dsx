@@ -1,0 +1,184 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["playwright"]
+# ///
+"""Draws the model card's charts: speed.png, quality.png, size.png, size-vs-quality.png.
+
+Run:  uv run hf/assets/make_charts.py      (uv installs playwright; any Chromium works)
+Each chart is an SVG drawn here, rendered by headless Chromium at 2x (1200 px wide) on a white card.
+Chromium: PW_CHROMIUM=/path/to/chrome, else the first one found in ~/.cache/ms-playwright, else
+`uv run --with playwright playwright install chromium` once. Fonts: Pathway Extreme from Google Fonts,
+Iosevka for numbers (CHART_NUM_FONT=/path/to/font.woff2 to use a specific file); both fall back to system fonts.
+All numbers are the ones below; edit them here and rerun.
+"""
+import glob, os, pathlib
+from playwright.sync_api import sync_playwright
+
+OUT = pathlib.Path(__file__).resolve().parent
+W = 600  # CSS px; PNGs are 2x
+
+# ---------------------------------------------------------------- data
+SPEED = {  # tok/s, exact routing, greedy
+    "2x RTX 3090 + 128 GB DDR4": {"prose": 37.2, "agent": 30.0, "p3k": 334, "p8k": 508},
+    "RTX 5090 + 128 GB DDR5": {"prose": 12.0, "agent": 15.2, "p3k": 93, "p8k": 172},
+}
+QUALITY = [  # Lucebox 1017 eval set: 8 x 1024 tokens vs FP8 top-256 log-probs
+    # name, KL, top-1 %, perplexity, highlight
+    ("FP8 original", 0.0, 100.0, 8.56, False),
+    ("Lucebox ROCMFP, 2.5 bpw", 0.253, 78.7, 9.78, False),
+    ("ds41 2-bit v2, 2.03 bpw", 0.395, 74.1, 10.93, True),
+    ("ds41 v1, 2.03 bpw", 0.462, 71.5, 11.66, False),
+]
+SIZE = [  # GB to download, without the 203 GB Engram tables unless marked
+    ("FP8 original", 510, "includes Engram", False),
+    ("Q2_K GGUF (mrfakename)", 265, "", False),
+    ("EXL3 3.5 bpw", 258, "", False),
+    ("EXL3 2.9 bpw", 211, "", False),
+    ("ds41 2-bit", 148, "", True),
+    ("VQ (Baekpica)", 115, "approx.", False),
+]
+SIZE_QUALITY = [  # sizes all include the Engram tables; perplexity on the Lucebox eval
+    # name, GB, GB range or None, perplexity, highlight
+    ("FP8 original", 510, None, 8.56, False),
+    ("Lucebox ROCMFP 2.5 bpw", 395, (383, 405), 9.78, False),
+    ("ds41 2-bit v2", 351, None, 10.93, True),
+    ("ds41 v1", 351, None, 11.66, False),
+]
+
+# ---------------------------------------------------------------- style
+BLUE, BLUE2, GREY, GREY2, INK, MUTED, GRID = "#4d6bfe", "#a9b7ff", "#9aa3ad", "#5e6872", "#14181f", "#5d6670", "#e4e8ec"
+FONT = os.environ.get("CHART_NUM_FONT") if os.path.exists(os.environ.get("CHART_NUM_FONT", "")) else None
+CSS = f"""
+@import url('https://fonts.googleapis.com/css2?family=Pathway+Extreme:opsz,wdth,wght@8..12,75..100,400..600&display=swap');
+{f"@font-face{{font-family:Num;src:url(file://{FONT})}}" if FONT else ""}
+html,body{{margin:0;background:transparent}}
+.card{{width:{W}px;box-sizing:border-box;background:#fff;border:1px solid #dfe3e8;border-radius:12px;padding:20px 22px 16px}}
+h1{{margin:0;font:600 21px/1.15 'Pathway Extreme',system-ui,sans-serif;font-variation-settings:'wdth' 85;color:{INK}}}
+.sub{{margin-top:4px;font:400 12.5px/1.35 system-ui,-apple-system,'Segoe UI',sans-serif;color:{MUTED}}}
+svg{{display:block;margin-top:10px;overflow:visible}}
+svg text{{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;fill:{INK};font-size:12px}}
+svg .n{{font-family:Num,Iosevka,'Iosevka Term',ui-monospace,Menlo,monospace}}
+svg .m{{fill:{MUTED}}}
+svg .v{{paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}}
+.key{{display:flex;gap:18px;margin-top:10px;font:400 12.5px system-ui,sans-serif;color:{INK}}}
+.key i{{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:-1px}}
+.note{{margin-top:8px;font:400 11.5px/1.35 system-ui,sans-serif;color:{MUTED}}}
+"""
+
+def page(title, sub, svg, key="", note=""):
+    return f"<!doctype html><meta charset=utf-8><style>{CSS}</style><div class=card><h1>{title}</h1><div class=sub>{sub}</div>{key}{svg}{f'<div class=note>{note}</div>' if note else ''}</div>"
+
+def t(x, y, s, cls="", anchor="start", extra=""):
+    return f'<text x="{x:.1f}" y="{y:.1f}" class="{cls}" text-anchor="{anchor}" {extra}>{s}</text>'
+
+def key(items):
+    return "<div class=key>" + "".join(f"<span><i style='background:{c}'></i>{n}</span>" for n, c in items) + "</div>"
+
+# ---------------------------------------------------------------- charts
+def speed():
+    machines = list(SPEED)
+    cols = [BLUE, GREY]
+    panels = [("Decode", [("prose", "prose"), ("agent", "agent, 3K prompt")], 45, 10),
+              ("Prefill", [("p3k", "3K prompt"), ("p8k", "8K prompt")], 650, 100)]
+    pw, h, top, bot = 262, 230, 26, 196
+    s = []
+    for pi, (name, groups, mx, step) in enumerate(panels):
+        ox = pi * (pw + 32) + 34
+        s.append(t(ox - 30, 12, name + " (tok/s)", extra='font-weight="600"'))
+        y = lambda v: bot - v / mx * (bot - top)
+        for v in range(0, mx + 1 - step // 2, step):
+            s.append(f'<line x1="{ox}" x2="{ox+pw-34}" y1="{y(v):.1f}" y2="{y(v):.1f}" stroke="{GRID if v else "#b8c0c8"}"/>')
+            s.append(t(ox - 6, y(v) + 4, v, "n m", "end", 'font-size="10.5"'))
+        gw = (pw - 34) / len(groups)
+        for gi, (k, label) in enumerate(groups):
+            gx = ox + gi * gw + (gw - 2 * 40 - 6) / 2
+            for mi, mname in enumerate(machines):
+                v = SPEED[mname][k]; x = gx + mi * 46
+                s.append(f'<rect x="{x:.1f}" y="{y(v):.1f}" width="40" height="{bot-y(v):.1f}" rx="2" fill="{cols[mi]}"/>')
+                s.append(t(x + 20, y(v) - 5, f"{v:.1f}" if mx < 100 else f"{v:g}", "n v", "middle", 'font-size="11.5"'))
+            s.append(t(ox + gi * gw + gw / 2, bot + 17, label, "", "middle"))
+    svg = f'<svg width="{W-44}" height="{h}">{"".join(s)}</svg>'
+    return page("ds41 speed: DeepSeek-V4.1-Flash-1017 2-bit", "Tokens per second, exact routing, greedy decoding.", svg, key(list(zip(machines, cols))))
+
+def quality():
+    lw, pw, gap, rh, top = 168, 112, 16, 30, 24
+    panels = [("Perplexity ↓", 3, 12, "{:.2f}"), ("Top-1 match ↑", 2, 100, "{:.1f}%"), ("KL divergence ↓", 1, 0.5, "{:.3f}")]
+    s = []
+    for pi, (name, idx, mx, fmt) in enumerate(panels):
+        ox = lw + pi * (pw + gap)
+        s.append(t(ox, 12, name, extra='font-weight="600"'))
+        for ri, row in enumerate(QUALITY):
+            v, hl = row[idx], row[4]
+            y = top + ri * rh
+            c = BLUE if hl else (GREY2 if ri == 0 else GREY)
+            bw = v / mx * (pw - 44)
+            if bw > 0: s.append(f'<rect x="{ox}" y="{y+4}" width="{bw:.1f}" height="18" rx="2" fill="{c}"/>')
+            s.append(t(ox + bw + 5, y + 17, fmt.format(v), "n v", extra=f'font-size="11.5" {"font-weight=\"700\"" if hl else ""}'))
+    for ri, row in enumerate(QUALITY):
+        s.append(t(0, top + ri * rh + 17, row[0], "", extra=f'{"font-weight=\"700\"" if row[4] else ""}'))
+    svg = f'<svg width="{W-44}" height="{top + rh*len(QUALITY)}">{"".join(s)}</svg>'
+    return page("Quality against the FP8 original", "Lucebox 1017 eval set: 8 × 1,024 tokens, compared with FP8's top-256 log-probs.", svg)
+
+def size():
+    lw, rh, top, mx = 168, 28, 4, 550
+    bx = lambda v: lw + v / mx * (W - 44 - lw - 165)
+    s = []
+    for g in range(0, mx + 1, 100):
+        s.append(f'<line x1="{bx(g):.1f}" x2="{bx(g):.1f}" y1="{top}" y2="{top + rh*len(SIZE)}" stroke="{GRID}"/>')
+        s.append(t(bx(g), top + rh * len(SIZE) + 14, g, "n m", "middle", 'font-size="10.5"'))
+    for ri, (name, gb, tag, hl) in enumerate(SIZE):
+        y = top + ri * rh
+        c = BLUE if hl else GREY
+        pat = ' fill="url(#hatch)"' if tag == "includes Engram" else f' fill="{c}"'
+        s.append(t(0, y + 16, name, "", extra='font-weight="700"' if hl else ""))
+        s.append(f'<rect x="{lw}" y="{y+4}" width="{bx(gb)-lw:.1f}" height="17" rx="2"{pat}/>')
+        s.append(t(bx(gb) + 6, y + 16, ("~" if tag == "approx." else "") + f"{gb} GB" + (" · includes Engram" if tag == "includes Engram" else ""), "n", extra=f'font-size="11.5" {"font-weight=\"700\"" if hl else ""}'))
+    defs = f'<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="{GREY}"/><line x1="0" y1="0" x2="0" y2="6" stroke="#ffffff" stroke-width="2.5"/></pattern></defs>'
+    svg = f'<svg width="{W-44}" height="{top + rh*len(SIZE) + 20}">{defs}{"".join(s)}</svg>'
+    return page("Download size of DeepSeek-V4.1-Flash-1017 builds", "Gigabytes, without the 203 GB Engram tables unless marked.", svg)
+
+def size_quality():
+    X0, X1, Y0, Y1 = 46, W - 44 - 20, 226, 14
+    xl, xh, yl, yh = 300, 550, 8, 12
+    x = lambda v: X0 + (v - xl) / (xh - xl) * (X1 - X0)
+    y = lambda v: Y0 - (v - yl) / (yh - yl) * (Y0 - Y1)
+    s = []
+    for g in range(xl, xh + 1, 50):
+        s.append(f'<line x1="{x(g):.1f}" x2="{x(g):.1f}" y1="{Y1}" y2="{Y0}" stroke="{GRID}"/>')
+        s.append(t(x(g), Y0 + 15, g, "n m", "middle", 'font-size="10.5"'))
+    for g in range(yl, yh + 1):
+        s.append(f'<line x1="{X0}" x2="{X1}" y1="{y(g):.1f}" y2="{y(g):.1f}" stroke="{GRID}"/>')
+        s.append(t(X0 - 7, y(g) + 4, g, "n m", "end", 'font-size="10.5"'))
+    s.append(t((X0 + X1) / 2, Y0 + 34, "Size with Engram tables (GB)", "m", "middle"))
+    s.append(t(X0 - 34, (Y0 + Y1) / 2, "Perplexity ↓", "m", "middle", f'transform="rotate(-90 {X0-34} {(Y0+Y1)/2})"'))
+    place = {"FP8 original": (-10, 4, "end"), "Lucebox ROCMFP 2.5 bpw": (0, -14, "middle"), "ds41 2-bit v2": (12, 4, "start"), "ds41 v1": (12, 4, "start")}
+    for name, gb, rng, ppl, hl in SIZE_QUALITY:
+        c = BLUE if hl else (BLUE2 if name.startswith("ds41") else GREY2)
+        if rng: s.append(f'<line x1="{x(rng[0]):.1f}" x2="{x(rng[1]):.1f}" y1="{y(ppl):.1f}" y2="{y(ppl):.1f}" stroke="{GREY2}" stroke-width="2"/>')
+        s.append(f'<circle cx="{x(gb):.1f}" cy="{y(ppl):.1f}" r="{7 if hl else 6}" fill="{c}"/>')
+        dx, dy, a = place[name]
+        size_txt = f"~{gb} ({rng[0]}–{rng[1]})" if rng else f"{gb}"
+        s.append(t(x(gb) + dx, y(ppl) + dy, f'{name} <tspan class="n m">{size_txt} GB, {ppl:.2f}</tspan>', "", a, 'font-weight="700"' if hl else ""))
+    svg = f'<svg width="{W-44}" height="{Y0 + 42}">{"".join(s)}</svg>'
+    return page("Size against perplexity", "Lucebox 1017 eval set. Sizes include the 203 GB Engram tables.", svg)
+
+# ---------------------------------------------------------------- render
+def chromium():
+    if os.environ.get("PW_CHROMIUM"): return os.environ["PW_CHROMIUM"]
+    found = sorted(glob.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome")))
+    return found[-1] if found else None
+
+if __name__ == "__main__":
+    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality()}
+    with sync_playwright() as p:
+        b = p.chromium.launch(executable_path=chromium(), args=["--allow-file-access-from-files"])
+        pg = b.new_page(viewport={"width": W + 20, "height": 800}, device_scale_factor=2)
+        for name, html in charts.items():
+            tmp = OUT / f".{name}.html"
+            tmp.write_text(html)
+            pg.goto(tmp.as_uri(), wait_until="networkidle")
+            pg.evaluate("document.fonts.ready")
+            pg.locator(".card").screenshot(path=str(OUT / name), omit_background=True)
+            tmp.unlink()
+            print("wrote", OUT / name)
+        b.close()

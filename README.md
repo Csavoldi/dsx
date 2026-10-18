@@ -9,6 +9,10 @@ an NVMe drive. A Rust + CUDA engine built for this one model, with its own 2-bit
 - OpenAI and Anthropic compatible server with tool calls, streaming and a built-in web UI
 - Quality vs the FP8 model: KL 0.395, top-1 74.1%
 
+![ds41 speed on 2x RTX 3090 and RTX 5090](hf/assets/speed.png)
+
+![Quality against the FP8 original](hf/assets/quality.png)
+
 | | 2x RTX 3090, 128 GB DDR4 | RTX 5090, 128 GB DDR5 |
 |---|---:|---:|
 | Decode, prose | 37.2 tok/s | 12.0 tok/s |

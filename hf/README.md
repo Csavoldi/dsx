@@ -31,6 +31,8 @@ exact routing. Runs on [**ds41**](https://github.com/lxe/ds41), a Rust + CUDA en
 
 ## Quality
 
+![Quality against the FP8 original](assets/quality.png)
+
 Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF):
 8 × 1024 tokens against the FP8 model's top-256 log-probs.
 
@@ -42,6 +44,8 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 
 ## Speed
 
+![ds41 speed on 2x RTX 3090 and RTX 5090](assets/speed.png)
+
 Greedy, exact routing, 400 generated tokens.
 
 | | 2x RTX 3090, 128 GB DDR4 | RTX 5090, 128 GB DDR5 |
@@ -52,6 +56,12 @@ Greedy, exact routing, 400 generated tokens.
 
 Decode speed comes down to how many experts fit in VRAM + RAM. Two 24 GB GPUs + 128 GB hold all of them; one 32 GB GPU
 + 128 GB leaves ~40 GB of experts to be read from disk.
+
+## Size
+
+![Download size of DeepSeek-V4.1-Flash-1017 builds](assets/size.png)
+
+![Size against perplexity](assets/size-vs-quality.png)
 
 ## Run
 
@@ -117,6 +127,7 @@ Pipeline: [github.com/lxe/ds41/tree/main/quant](https://github.com/lxe/ds41/tree
 | `SHA256SUMS` | checksums of the parts and the joined file |
 | `expert-rank.json` | expert hotness, used to place experts in VRAM |
 | `results/` | raw quality and speed logs |
+| `assets/` | charts and the script that draws them |
 
 The earlier 2.0-bpw-per-layer build (KL 0.462) is at revision [`v1`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit/tree/v1).
 
