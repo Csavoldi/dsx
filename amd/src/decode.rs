@@ -334,6 +334,8 @@ pub struct Decoder {
     pub cb2: u32,
     pub engram_st: Option<SafeTensors>,
     pub hist_tokens: Vec<i64>,
+    /// DSpark draft layers (DSXA_DSPARK)
+    pub(crate) dspark: Option<crate::dspark::Dspark>,
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
@@ -355,8 +357,9 @@ pub struct Decoder {
 pub(crate) const ENG_ROW_BYTES: usize = 24 * 256 + 24 * 8;
 pub(crate) const HOST_BYTES: usize = 256 + 2 * ENG_ROW_BYTES;
 
-fn hc_args(st: &Ck, l: usize, which: &str) -> Result<(Vec<f32>, HcArgs)> {
-    let p = |s: &str| format!("layers.{l}.hc_{which}_{s}");
+/// hyper-connection weights of the layer whose tensors start with `pre` ("layers.3", "mtp.0")
+pub(crate) fn hc_args(st: &Ck, pre: &str, which: &str) -> Result<(Vec<f32>, HcArgs)> {
+    let p = |s: &str| format!("{pre}.hc_{which}_{s}");
     let fnw = load::f32_of(st, &p("fn"))?;
     let scale = load::f32_of(st, &p("scale"))?;
     let base = load::f32_of(st, &p("base"))?;
@@ -570,8 +573,8 @@ impl Decoder {
             let idx_src = cfg.index_sources.contains(&l);
             let comp_src = cfg.kv_sources.iter().filter(|&&s| s <= l).max().copied().unwrap_or(0);
             let idxk_src = comp_src;
-            let (fa, ha) = hc_args(&st, l, "attn")?;
-            let (ff, hf) = hc_args(&st, l, "ffn")?;
+            let (fa, ha) = hc_args(&st, &format!("layers.{l}"), "attn")?;
+            let (ff, hf) = hc_args(&st, &format!("layers.{l}"), "ffn")?;
             let rows = |r: usize| if ratio > 0 { max_ctx / r + 1 } else { 0 };
             let engram = if has("engram.wkv.weight") {
                 let q = load::f32_of(&st, &p("engram.q_weight"))?;
@@ -638,15 +641,32 @@ impl Decoder {
 
         // ---- experts
         let (free, _) = g.mem_info()?;
-        let reserve = 3usize << 30;
+        // DSXA_DSPARK=3 (or 2): room for the draft layers, their experts in a 3-bit (2-bit) codebook
+        let draft = crate::dspark::bits_from_env().map(crate::dspark::bytes).unwrap_or(0);
+        let reserve = (3usize << 30) + draft;
         let budget = free.saturating_sub(reserve + (64 << 20));
         let pl = if st.is_export() {
-            // an export fixes the formats: re-quantized experts carry `.cb` tiles
+            // an export fixes the formats (re-quantized experts carry `.cb` tiles); if the budget is smaller (draft
+            // layers), the coldest MXFP4 experts are re-quantized to 3-bit at load
             let mut fmt = vec![E_FP4; nl * NE];
             for l in 0..nl {
                 for e in 0..NE {
                     if let Some(&(f, _)) = st.cb.get(&format!("layers.{l}.ffn.experts.{e}.w1.cb")) {
                         fmt[l * NE + e] = f;
+                    }
+                }
+            }
+            let mut tot: usize = fmt.iter().map(|&f| expert_bytes(f)).sum();
+            if tot > budget {
+                anyhow::ensure!(!rank.is_empty(), "export does not fit next to the draft layers: pass --rank to choose experts to re-quantize");
+                for &(l, e) in rank.iter().rev() {
+                    if tot <= budget {
+                        break;
+                    }
+                    let i = l * NE + e;
+                    if l < nl && fmt[i] == E_FP4 {
+                        fmt[i] = E_CB3;
+                        tot = tot - FP4_BYTES + CB3_BYTES;
                     }
                 }
             }
@@ -701,6 +721,7 @@ impl Decoder {
             cb2: table(&CB2),
             engram_st: None,
             hist_tokens: vec![],
+            dspark: None,
             pos: 0,
             dump: None,
             etab: vec![],
@@ -730,10 +751,36 @@ impl Decoder {
     }
 
     fn load_experts(&mut self, st: &Ck, pl: &Placement) -> Result<()> {
+        let n_layers = self.layers.len();
+        let tabs: Vec<u64> = self.layers.iter().map(|l| l.experts.ptr).collect();
+        let name = |l: usize, e: usize, wn: &str| format!("layers.{l}.ffn.experts.{e}.{wn}.weight");
+        let fmt = |l: usize, e: usize| pl.fmt[l * NE + e];
+        let (etab, off) = self.upload_experts(st, &self.arena, n_layers, NE, &name, &fmt, &tabs)?;
+        self.etab = etab;
+        if off != pl.bytes() {
+            bail!("expert arena: wrote {off}, planned {}", pl.bytes());
+        }
+        Ok(())
+    }
+
+    /// Routed experts (`n_layers` x `ne`, matrices w1/w3/w2) into `arena`, offsets relative to it: MXFP4 tiles, an
+    /// export's codebook tiles, or re-quantized to a codebook on the GPU. Writes each layer's device table to
+    /// `tables[l]`; returns the host tables and the bytes written.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn upload_experts(
+        &self,
+        st: &Ck,
+        arena: &Buf,
+        n_layers: usize,
+        ne: usize,
+        name: &(dyn Fn(usize, usize, &str) -> String + Sync),
+        fmt_of: &(dyn Fn(usize, usize) -> i32 + Sync),
+        tables: &[u64],
+    ) -> Result<(Vec<Vec<ExpertMat>>, usize)> {
         use rayon::prelude::*;
         let t0 = std::time::Instant::now();
         let g = &self.g;
-        let n_layers = self.layers.len();
+        let mut etab = vec![];
         // GPU staging for re-quantization: SLOTS matrices in flight (raw fp4 + scales, codes, scale bytes)
         const SLOTS: usize = 16;
         let mx = INTER * D;
@@ -745,13 +792,13 @@ impl Decoder {
         let mut nslot = 0usize;
         for l in 0..n_layers {
             // host side, all of the layer's matrices in parallel: FP4 tiles, or the raw bytes for GPU re-quantization
-            let items: Vec<(usize, usize, i32)> = (0..NE).flat_map(|e| (0..3).map(move |m| (e, m, 0))).map(|(e, m, _)| (e, m, pl.fmt[l * NE + e])).collect();
+            let items: Vec<(usize, usize, i32)> = (0..ne).flat_map(|e| (0..3).map(move |m| (e, m, 0))).map(|(e, m, _)| (e, m, fmt_of(l, e))).collect();
             let prepared: Vec<Result<(usize, usize, Vec<u8>, Vec<u8>)>> = items
                 .par_iter()
                 .map(|&(e, mi, fmt)| {
                     let wn = ["w1", "w3", "w2"][mi];
-                    let name = format!("layers.{l}.ffn.experts.{e}.{wn}.weight");
-                    if fmt != E_FP4 && st.is_export() {
+                    let name = name(l, e, wn);
+                    if fmt != E_FP4 && st.is_export() && st.get(&name.replace(".weight", ".cb")).is_ok() {
                         // device tiles straight from the export (codes then scales); shapes from the matrix role
                         let (n, k) = if mi == 2 { (D, INTER) } else { (INTER, D) };
                         let cb = st.bytes(st.get(&name.replace(".weight", ".cb"))?).to_vec();
@@ -769,7 +816,7 @@ impl Decoder {
                     }
                 })
                 .collect();
-            let mut table = vec![ExpertMat::default(); NE * 3];
+            let mut table = vec![ExpertMat::default(); ne * 3];
             for (it, pr) in items.iter().zip(prepared) {
                 let (e, mi, fmt) = *it;
                 let (n, k, a, b) = pr?;
@@ -777,21 +824,21 @@ impl Decoder {
                 em.fmt = fmt;
                 em.woff = off as i64;
                 if fmt == E_FP4 {
-                    g.htod_async(self.arena.at(off), a.as_ptr(), a.len())?;
+                    g.htod_async(arena.at(off), a.as_ptr(), a.len())?;
                     off += a.len();
                     em.soff = off as i64;
-                    g.htod_async(self.arena.at(off), b.as_ptr(), b.len())?;
+                    g.htod_async(arena.at(off), b.as_ptr(), b.len())?;
                     off += b.len();
                     em.mul = 1.0;
                 } else if b.is_empty() {
                     // export tiles: codes then scales, multiplier from the index
                     let bits = if fmt == E_CB3 { 3 } else { 2 };
                     let cbytes = n * k * bits / 8;
-                    g.htod_async(self.arena.at(off), a.as_ptr(), a.len())?;
+                    g.htod_async(arena.at(off), a.as_ptr(), a.len())?;
                     em.soff = (off + cbytes) as i64;
                     off += a.len();
                     let wn = ["w1", "w3", "w2"][mi];
-                    em.mul = st.cb[&format!("layers.{l}.ffn.experts.{e}.{wn}.cb")].1;
+                    em.mul = st.cb[&name(l, e, wn).replace(".weight", ".cb")].1;
                 } else {
                     let bits = if fmt == E_CB3 { 3 } else { 2 };
                     // per-matrix multiplier: the largest group scale fits e4m3 (max 240) with headroom
@@ -807,23 +854,20 @@ impl Decoder {
                     g.launch("cb_quant", ((groups as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(sw), Arg::P(ss), Arg::I(n as i32), Arg::I(k as i32), Arg::P(cb), Arg::I(nlv), Arg::F(mul), Arg::P(sc), Arg::P(sbb)])?;
                     let cbytes = n * k * bits / 8;
                     let threads = (n / 16) * (k / 128) * 64;
-                    g.launch("cb_pack", ((threads as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(sc), Arg::P(sbb), Arg::I(n as i32), Arg::I(k as i32), Arg::I(bits as i32), Arg::P(self.arena.at(off)), Arg::P(self.arena.at(off + cbytes))])?;
+                    g.launch("cb_pack", ((threads as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(sc), Arg::P(sbb), Arg::I(n as i32), Arg::I(k as i32), Arg::I(bits as i32), Arg::P(arena.at(off)), Arg::P(arena.at(off + cbytes))])?;
                     em.soff = (off + cbytes) as i64;
                     off += cbytes + n * k / 32;
                     em.mul = mul;
                 }
             }
-            g.htod(self.layers[l].experts.ptr, &table)?;
-            self.etab.push(table.clone());
+            g.htod(tables[l], &table)?;
+            etab.push(table.clone());
             g.sync()?;
             if l % 4 == 3 || l + 1 == n_layers {
                 eprintln!("experts: layer {l} done, {:.1} GB, {:.0} s", off as f64 / 1e9, t0.elapsed().as_secs_f32());
             }
         }
-        if off != pl.bytes() {
-            bail!("expert arena: wrote {off}, planned {}", pl.bytes());
-        }
-        Ok(())
+        Ok((etab, off))
     }
 
     pub(crate) fn accp(&self, l: usize, off: usize) -> u64 {

@@ -101,6 +101,8 @@ pub struct PfBufs {
     vhh: Buf,
     vhl: Buf,
     vlog: Buf,
+    /// DSpark main_hidden rows [t][3][D] (f32, bf16 values)
+    pub(crate) mh: Buf,
     dyn_: Buf,
     jobs: Buf,
     blk: Buf,
@@ -111,6 +113,13 @@ pub struct PfBufs {
 }
 
 const RING: usize = 192 << 20;
+
+impl PfBufs {
+    /// (main_hidden, FP8 codes, scales, f32 rows, kv rows, window rows) for the DSpark observe step
+    pub(crate) fn dspark_bufs(&self) -> (u64, u64, u64, u64, u64, u64) {
+        (self.mh.ptr, self.aq.ptr, self.as_.ptr, self.y.ptr, self.kvraw.ptr, self.lin.ptr)
+    }
+}
 
 const ER: usize = 24 * 256 + 24 * 8;
 
@@ -185,6 +194,7 @@ impl PfBufs {
             vhh: b(16 * D * 2)?,
             vhl: b(16 * D * 2)?,
             vlog: f(16 * VOCAB)?,
+            mh: f(t * 3 * D)?,
             dyn_: f(3 * 48 * 40)?,
             jobs: g.alloc(RING)?,
             blk: f(1)?,
@@ -289,7 +299,7 @@ impl Decoder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn prep(&self, mode: i32, src: u64, src2: u64, lds: usize, nw: u64, part: u64, wt: u64, n: usize, rows: usize, oq: u64, os: u64, ob: u64, obq: u64) -> Result<()> {
+    pub(crate) fn prep(&self, mode: i32, src: u64, src2: u64, lds: usize, nw: u64, part: u64, wt: u64, n: usize, rows: usize, oq: u64, os: u64, ob: u64, obq: u64) -> Result<()> {
         self.g.launch(
             "prep_t",
             (rows as u32, n.div_ceil(1024) as u32, 1),
@@ -306,7 +316,13 @@ impl Decoder {
         }
         let mut next = 0;
         for chunk in tokens.chunks(TMAX) {
+            let p0 = self.pos;
             next = self.run_chunk(chunk, false)?[0];
+            if self.dspark.is_some() {
+                // the draft layers' windows: the newest 128 positions
+                let n = chunk.len().min(WIN);
+                self.observe(p0 + chunk.len() - n, n, chunk.len() - n)?;
+            }
         }
         Ok(next)
     }
@@ -329,6 +345,12 @@ impl Decoder {
     /// state of the window rings and the position stay as they were (see `commit`); returns the greedy next token
     /// after each position.
     pub(crate) fn run_chunk(&mut self, tk: &[u32], verify: bool) -> Result<Vec<u32>> {
+        self.run_chunk_mode(tk, verify, false)
+    }
+
+    /// `draft`: run `tk` (a DSpark block at the current position) through the draft layers instead, bidirectional
+    /// inside the block, nothing committed; returns the drafted tokens.
+    pub(crate) fn run_chunk_mode(&mut self, tk: &[u32], verify: bool, draft: bool) -> Result<Vec<u32>> {
         let t = tk.len();
         let p0 = self.pos;
         // DSXA_VPLAIN=a,b: verify the GEMMs whose label contains a or b ("mm" = all) with the prompt-path kernels
@@ -342,7 +364,9 @@ impl Decoder {
         }
         // Engram rows for every token (host), into the device rows buffer [t][2][ER]
         let mut rows = vec![0u8; t * 2 * ER];
-        self.engram_rows_batch(tk, &mut rows)?;
+        if !draft {
+            self.engram_rows_batch(tk, &mut rows)?;
+        }
         let g = &self.g;
         let c = self.cfg.clone();
         let pf = self.pf.as_ref().unwrap();
@@ -352,7 +376,11 @@ impl Decoder {
         g.launch("embed_t", (20, t as u32, 1), 256, 0, &[Arg::P(self.embed.ptr), Arg::P(pf.toks.ptr), Arg::P(pf.h.ptr)])?;
         let none = HcArgs::default();
         let wscale = (c.idx_dim as f32).powf(-0.5) * (c.idx_heads as f32).powf(-0.5);
-        let nl = self.layers.len();
+        let dsx = self.dspark.as_ref();
+        let layers: &[Layer] = if draft { &dsx.unwrap().layers } else { &self.layers };
+        // DSpark main_hidden capture (prompt and verify passes): layer -> slot
+        let mh_slot = |li: usize| if draft { None } else { dsx.and_then(|d| d.targets.iter().position(|&x| x == li)) };
+        let nl = layers.len();
         let hc = |y: u64, round: bool, pm: u64, pa: &HcArgs, pre: u64, prea: &HcArgs, fnw: u64, nmix: u64, xr: u64, xss: u64, eng: Option<(u64, u64)>| -> Result<()> {
             let (ev, es) = eng.unwrap_or((0, 0));
             // finish the mixes once per token
@@ -368,12 +396,12 @@ impl Decoder {
             )
         };
         for li in 0..nl {
-            let l = &self.layers[li];
+            let l = &layers[li];
             // ---- residual step into attention
             if li == 0 {
                 hc(0, false, 0, &none, 0, &none, l.hc_attn_fn.ptr, pf.mix_a.ptr, pf.xr_a.ptr, pf.xss_a.ptr, None)?;
             } else {
-                let p = &self.layers[li - 1];
+                let p = &layers[li - 1];
                 if let Some((wkv, qk)) = &l.engram {
                     hc(pf.y.ptr, true, pf.mix_f.ptr, &p.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
                     let ei = c.engram_layers.iter().position(|&x| x == li).unwrap();
@@ -387,6 +415,9 @@ impl Decoder {
                 } else {
                     hc(pf.y.ptr, true, pf.mix_f.ptr, &p.hc_ffn, pf.mix_f.ptr, &p.hc_ffn, l.hc_attn_fn.ptr, pf.mix_a.ptr, pf.xr_a.ptr, pf.xss_a.ptr, None)?;
                 }
+            }
+            if let Some(slot) = mh_slot(li) {
+                g.launch("mh_t", (20, t as u32, 1), 256, 0, &[Arg::P(pf.h.ptr), Arg::P(pf.mh.ptr), Arg::I((3 * D) as i32), Arg::I((slot * D) as i32)])?;
             }
             // ---- attention projections
             self.prep(0, pf.xr_a.ptr, 0, D, l.attn_norm.ptr, pf.xss_a.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr, pf.aqb.ptr)?;
@@ -474,7 +505,7 @@ impl Decoder {
                     (t as u32, 1, 1),
                     1024,
                     0,
-                    &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr)],
+                    &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::I(if draft { t as i32 } else { 0 })],
                 )?;
                 g.launch("attn_m_out", (t as u32, 1, 1), 256, 0, &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])?;
             }
@@ -491,7 +522,9 @@ impl Decoder {
                 let lin: Vec<u8> = g.dtoh(pf.lin.at(WIN * HD * 2), HD * 2)?;
                 w("lin", lin)?;
             }
-            if verify {
+            if draft {
+                // the draft block is never committed
+            } else if verify {
                 g.dtod(pf.vlin.at(li * 16 * HD * 2), pf.lin.at(WIN * HD * 2), t * HD * 2)?;
             } else {
                 g.launch("lin_to_ring", (t.min(WIN) as u32, 1, 1), 256, 0, &[Arg::P(pf.lin.ptr), Arg::I(p0 as i32), Arg::I(t as i32), Arg::P(l.ring.ptr)])?;
@@ -517,7 +550,8 @@ impl Decoder {
             // ---- ffn
             hc(pf.a.ptr, false, pf.mix_a.ptr, &l.hc_attn, pf.mix_a.ptr, &l.hc_attn, l.hc_ffn_fn.ptr, pf.mix_f.ptr, pf.xr_f.ptr, pf.xss_f.ptr, None)?;
             self.prep(0, pf.xr_f.ptr, 0, D, l.ffn_norm.ptr, pf.xss_f.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr, pf.aqb.ptr)?;
-            let mut gj = MmJob::dense(&l.gate, 4, 0, 0, D, pf.logits.ptr, NE);
+            let ne_l = if draft { dsx.unwrap().ne } else { NE };
+            let mut gj = MmJob::dense(&l.gate, 4, 0, 0, D, pf.logits.ptr, ne_l);
             gj.xb = pf.ab.ptr;
             let mut jobs = vec![gj, MmJob::dense(&l.sh_w1, 0, pf.aq.ptr, pf.as_.ptr, D, pf.sg.ptr, INTER), MmJob::dense(&l.sh_w3, 0, pf.aq.ptr, pf.as_.ptr, D, pf.su.ptr, INTER)];
             for j in jobs.iter_mut() {
@@ -525,15 +559,20 @@ impl Decoder {
             }
             self.gm(vk, &plain, "mm router+shared", &jobs)?;
             g.memset(pf.counts.ptr, 0, NE * 4)?;
-            g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
-            if vk && !plain("mm experts") {
+            let (kk, ebase) = if draft { (dsx.unwrap().top_k, dsx.unwrap().arena.ptr) } else { (6, self.arena.ptr) };
+            if draft {
+                g.launch("route_k_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::I(ne_l as i32), Arg::I(kk as i32), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr)])?;
+            } else {
+                g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
+            }
+            if draft || (vk && !plain("mm experts")) {
                 // device grouping: one job per distinct expert and matrix, tokens as MFMA columns
-                g.launch("vgroup", (1, 1, 1), 256, 0, &[Arg::I(t as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(pf.dyn_.ptr), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr)])?;
+                g.launch("vgroup", (1, 1, 1), 256, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(pf.dyn_.ptr), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr)])?;
                 let ej = |m: usize, n: usize, k: usize, xq: u64, xs: u64, ldx: usize, y: u64, ldy: usize, atomic: i32| crate::verify::VJob {
-                    w: self.arena.ptr, n: n as i32, k: k as i32, xq, xs, ldx: ldx as i32, y, ldy: ldy as i32, atomic, ndyn: 48, dyn_: pf.dyn_.at(m * 48 * 40 * 4), fmt: 1, ..Default::default()
+                    w: ebase, n: n as i32, k: k as i32, xq, xs, ldx: ldx as i32, y, ldy: ldy as i32, atomic, ndyn: 48, dyn_: pf.dyn_.at(m * 48 * 40 * 4), fmt: 1, ..Default::default()
                 };
                 self.vlaunch("verify experts gu", vec![ej(0, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.gg.ptr, INTER, 0), ej(1, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.uu.ptr, INTER, 0)], self.st.ptr)?;
-                let rtot = t * 6;
+                let rtot = t * kk;
                 self.prep(3, pf.gg.ptr, pf.uu.ptr, INTER, 0, 0, pf.wrow.ptr, INTER, rtot, pf.hq.ptr, pf.hs.ptr, 0, pf.hqb.ptr)?;
                 self.prep(3, pf.sg.ptr, pf.su.ptr, INTER, 0, 0, 0, INTER, t, pf.shq.ptr, pf.shs.ptr, 0, pf.shqb.ptr)?;
                 g.memset(pf.y.ptr, 0, t * D * 4)?;
@@ -621,7 +660,8 @@ impl Decoder {
             }
         }
         // ---- last token: final residual step, norm, head, argmax (decode kernels on the decode buffers)
-        let last = &self.layers[nl - 1];
+        let last = &layers[nl - 1];
+        let onorm = if draft { dsx.unwrap().norm.ptr } else { self.out_norm.ptr };
         hc(pf.y.ptr, true, pf.mix_f.ptr, &last.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
         if verify {
             let mut out = vec![];
@@ -631,11 +671,27 @@ impl Decoder {
                 g.dtod(self.h.ptr, pf.h.at(lt * HC * D * 4), HC * D * 4)?;
                 g.dtod(pm, pf.mix_f.at(lt * 80 * 32 * 4), 80 * 32 * 4)?;
                 let (oh, ol) = if batched { (pf.vhh.at(lt * D * 2), pf.vhl.at(lt * D * 2)) } else { (0, 0) };
-                g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(pm), Arg::B(bytes(&last.hc_ffn)), Arg::P(self.out_norm.ptr), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(oh), Arg::P(ol)])?;
+                g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(pm), Arg::B(bytes(&last.hc_ffn)), Arg::P(onorm), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(oh), Arg::P(ol)])?;
                 if !batched {
                     self.head_logits()?;
                     g.dtod(pf.vnext.at(lt * 4), self.next.ptr, 4)?;
                 }
+            }
+            if draft {
+                // head for all block positions, then in order: + Markov bias from the previous token, argmax
+                let ds = dsx.unwrap();
+                anyhow::ensure!(batched, "DSpark needs the bf16 head");
+                g.htod(pf.vnext.ptr, &[tk[0] as i32])?;
+                let hj = crate::verify::VJob { w: self.head.w.ptr, n: VOCAB as i32, k: D as i32, fmt: 4, xb: pf.vhh.ptr, xl: pf.vhl.ptr, ldx: D as i32, ntok: t as i32, y: pf.vlog.ptr, ldy: VOCAB as i32, split: 1, mul: 1.0, ..Default::default() };
+                self.vlaunch("dspark head", vec![hj], self.st.ptr)?;
+                for i in 0..t {
+                    let mj = crate::verify::VJob { w: ds.markov_head.w.ptr, n: VOCAB as i32, k: ds.rank as i32, fmt: 4, xb: ds.markov_embed.ptr, rows: pf.vnext.at(i * 4), ldx: ds.rank as i32, ntok: 1, y: pf.vlog.at(i * VOCAB * 4), ldy: VOCAB as i32, atomic: 1, mul: 1.0, ..Default::default() };
+                    self.vlaunch("dspark markov", vec![mj], self.st.ptr)?;
+                    g.launch("argmax_part", (128, 1, 1), 256, 0, &[Arg::P(pf.vlog.at(i * VOCAB * 4)), Arg::I(VOCAB as i32), Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr)])?;
+                    g.launch("argmax", (1, 1, 1), 64, 0, &[Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::I(128), Arg::P(pf.vnext.at((i + 1) * 4))])?;
+                }
+                let v: Vec<i32> = g.dtoh(pf.vnext.ptr, t + 1)?;
+                return Ok(v[1..].iter().map(|&x| x as u32).collect());
             }
             if batched {
                 // one pass over the head for all positions (bf16 hi + lo activations, as decode)

@@ -4,7 +4,7 @@
   "runtime": "https://github.com/lxe/dsx (amd/)",
   "target": "AMD Instinct MI325X (gfx942), 256 GiB HBM",
   "quantization": {
-    "routed_experts": "8804 experts MXFP4 as in the checkpoint (hottest by expert-rank.json), 6556 re-quantized to a 3-bit codebook [-8,-4.5,-2.5,-0.625,1.25,2.75,4.5,8] with an e4m3 scale per 32 weights and a multiplier per matrix, stored as device tiles",
+    "routed_experts": "8992 experts MXFP4 as in the checkpoint (hottest by expert-rank.json), 6368 re-quantized to a 3-bit codebook [-8,-4.5,-2.5,-0.625,1.25,2.75,4.5,8] with an e4m3 scale per 32 weights and a multiplier per matrix, stored as device tiles",
     "dense": "FP8 e4m3 with E8M0 32x32 block scales, as in the checkpoint",
     "embeddings_head": "bf16, as in the checkpoint",
     "engram": "not included; read from the official checkpoint's model-00047/00048 shards"
@@ -21,5 +21,5 @@
     "size_bytes": 270465927040,
     "expert_rank": "expert-rank.json"
   },
-  "quality": {"eval": "Lucebox 1017 set, 8 x 1024 tokens vs FP8 top-256 log-probs", "kl": 0.049, "top1": 0.906, "perplexity": 8.71, "kl_range_repeated_runs": [0.047, 0.051]}
+  "quality": {"eval": "Lucebox 1017 set, 8 x 1024 tokens vs FP8 top-256 log-probs", "kl": 0.049, "top1": 0.906, "perplexity": 8.71, "kl_other_run": 0.047}
 }

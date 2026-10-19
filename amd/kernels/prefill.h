@@ -850,7 +850,8 @@ extern "C" __global__ void __launch_bounds__(256) mm2(const MmJob* __restrict__ 
 // hi + lo; waves: head tile w%4, dim tiles (w/4)*8 .. +8. Writes O / L (after the sink) over the query's q row.
 extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restrict__ q, const uint16_t* __restrict__ lin,
                                                           const uint16_t* __restrict__ comp, const int* __restrict__ cidx,
-                                                          const int* ncomp, int ldc, int woff, float scale, const float* sinks) {
+                                                          const int* ncomp, int ldc, int woff, float scale, const float* sinks,
+                                                          int blk) {
     __shared__ uint16_t rows[32][HD + 8];
     __shared__ float sp[2][64][33];
     __shared__ uint16_t ph[64][32 + 8], pl[64][32 + 8];
@@ -882,8 +883,9 @@ extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restr
 #pragma unroll
     for (int i = 0; i < 8; i++) o[i] = f4{0, 0, 0, 0};
     if (tid < 64) { hm[tid] = -INFINITY; hl[tid] = 0.f; }
-    const int lo = max(0, pos - (WIN - 1));
-    const int nwin = pos - lo + 1;
+    // blk > 0 (DSpark draft block): every query sees the window before the block and the whole block
+    const int lo = blk > 0 ? max(0, p0 - WIN) : max(0, pos - (WIN - 1));
+    const int nwin = (blk > 0 ? p0 + blk - 1 : pos) - lo + 1;
     const int nc = comp ? ncomp[t] : 0;
     const int total = nwin + nc;
     for (int r0 = 0; r0 < total; r0 += 32) {
@@ -1015,4 +1017,55 @@ extern "C" __global__ void __launch_bounds__(256) attn_m_out(int p0, float* __re
     }
     __syncthreads();
     write_act(NH * HD, [&](int i) -> float { return ot[i]; }, oq + (size_t)t * NH * HD, os + (size_t)t * NH * HD / 32, nullptr, obq + (size_t)t * NH * HD);
+}
+
+// DSpark router: one wave per token over ne <= 128 experts; sqrt(softplus) scores, top-k by score + bias,
+// weights = score / sum * scale (as the main router). sel/wts [t][k].
+extern "C" __global__ void route_k_t(const float* logits, int ne, int k, const float* bias, float scale, int* sel, float* wts) {
+    const int t = blockIdx.x, lane = threadIdx.x;
+    float sc[2], key[2];
+    for (int j = 0; j < 2; j++) {
+        const int e = lane + 64 * j;
+        if (e < ne) {
+            const float l = logits[(size_t)t * ne + e];
+            const float ex = __expf(l);
+            const float sp = l > 20.f ? l : (ex < 1e-3f ? ex * (1.f - 0.5f * ex) : __logf(1.f + ex));
+            sc[j] = sqrtf(sp);
+            key[j] = sc[j] + bias[e];
+        } else {
+            sc[j] = 0.f;
+            key[j] = -INFINITY;
+        }
+    }
+    float sum = 0, w[8];
+    int id[8];
+    for (int s = 0; s < k; s++) {
+        float bk = key[0] >= key[1] ? key[0] : key[1];
+        int bi = key[0] >= key[1] ? lane : lane + 64;
+        for (int o = 1; o < 64; o <<= 1) {
+            const float ok = __shfl_xor(bk, o);
+            const int oi = __shfl_xor(bi, o);
+            if (ok > bk || (ok == bk && oi < bi)) { bk = ok; bi = oi; }
+        }
+        const float v = __shfl(sc[bi >> 6], bi & 63);
+        if (lane == (bi & 63)) key[bi >> 6] = -INFINITY;
+        id[s] = bi;
+        w[s] = v;
+        sum += v;
+    }
+    if (lane == 0)
+        for (int s = 0; s < k; s++) {
+            sel[t * k + s] = id[s];
+            wts[t * k + s] = w[s] / (sum + 1e-20f) * scale;
+        }
+}
+
+// DSpark main_hidden: the mean of the 4 residual streams of h [t][4][D], bf16-rounded, into out[t][ld] + off
+extern "C" __global__ void mh_t(const float* h, float* out, int ld, int off) {
+    const int t = blockIdx.y;
+    for (int d = blockIdx.x * blockDim.x + threadIdx.x; d < D; d += gridDim.x * blockDim.x) {
+        float v = 0;
+        for (int k = 0; k < HC; k++) v += h[((size_t)t * HC + k) * D + d];
+        out[(size_t)t * ld + off + d] = round_bf16(v / HC);
+    }
 }

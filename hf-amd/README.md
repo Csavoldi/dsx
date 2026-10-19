@@ -27,7 +27,7 @@ MI325X with exact routing. Most routed experts keep the checkpoint's own MXFP4 w
 | | |
 |---|---|
 | Size | 270 GB (6 GGUF shards) + the official Engram shards (203 GB) |
-| Format | dense weights FP8 as in the checkpoint; 57% of routed experts MXFP4 (unchanged), 43% 3-bit codebook + e4m3 scale per 32 |
+| Format | dense weights FP8 as in the checkpoint; 59% of routed experts MXFP4 (unchanged), 41% 3-bit codebook + e4m3 scale per 32 |
 | Routing | exact: no expert pruning, no router bias |
 | Quality vs FP8 | KL 0.049 · top-1 90.6% · perplexity 8.71 (FP8: 8.56) |
 | Speed, 1x MI325X | 110-114 tok/s decode at 4K-256K context · 1,160-1,640 tok/s prefill |
@@ -47,8 +47,8 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 | dsx 2-bit | 148 GB | 0.395 | 74.1% | 10.93 |
 
 Sizes exclude the Engram tables (and, for the original, the vision and draft layers). Measured on these shards;
-repeated runs give KL 0.047-0.051, because float atomics in the runner sum in varying order and that flips
-near-tied expert choices.
+another run gave KL 0.047: float atomics in the runner sum in varying order, which flips a few near-tied expert
+choices.
 
 Greedy reasoning (temperature 0, thinking on, reasoning effort low), two competition-math prompts: 6,624 and 13,482
 generated tokens with boxed answers. The hosted model needed 5.6K and 21K on the same prompts.
@@ -100,8 +100,8 @@ One GPU with 256 GiB of memory (AMD Instinct MI325X, gfx942); the weights take 2
 
 - **Dense weights** (attention, shared experts, routers, Engram projections): the checkpoint's FP8 with its E8M0
   32×32 block scales, unchanged. Embeddings and the output head: bf16, unchanged.
-- **Routed experts:** the 8,804 most used experts (by routing frequency measured on agentic text) keep the
-  checkpoint's MXFP4 weights. The other 6,556 are re-quantized from those FP4 values to a 3-bit codebook of 8 levels
+- **Routed experts:** the 8,992 most used experts (by routing frequency measured on agentic text) keep the
+  checkpoint's MXFP4 weights. The other 6,368 are re-quantized from those FP4 values to a 3-bit codebook of 8 levels
   (fitted by Lloyd iterations on a sample of experts, stored as FP8 values) with one e4m3 scale per 32 weights and a
   multiplier per matrix, round-to-nearest with a per-group scale search.
 - The split is chosen so the whole model fits in 256 GiB of HBM next to the caches for 256K tokens of context.

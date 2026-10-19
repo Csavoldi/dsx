@@ -75,7 +75,7 @@ Experts are spread across VRAM, a RAM arena and the file, hottest first.
 ## One AMD MI325X
 
 [`amd/`](amd/) is a second runner, Rust + HIP for gfx942, that keeps the whole model (minus the Engram tables) in
-the 256 GiB of HBM of one AMD Instinct MI325X. Its build keeps 57% of the routed experts in the checkpoint's own MXFP4
+the 256 GiB of HBM of one AMD Instinct MI325X. Its build keeps 59% of the routed experts in the checkpoint's own MXFP4
 and gives the rest a fitted 3-bit codebook
 ([lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4), 270 GB).
 

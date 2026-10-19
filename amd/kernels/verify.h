@@ -230,11 +230,11 @@ extern "C" __global__ void __launch_bounds__(256) vgemv_x(VJobs js, const int* p
 // dyn layout per job: [fmt, ntok, woff lo, hi, soff lo, hi, mul bits, pad, rows[16] (activation rows = token),
 // orows[16] (output rows = compact pair index t*6+slot)], for gate/up mats 0/1 and down mat 2 (3 job arrays of 36).
 // Also writes the pair weights wrow[t*6+slot].
-extern "C" __global__ void vgroup(int T, const int* sel, const float* wts, const ExpertMat* tab, int* dyn, float* wrow, int* npairs) {
+extern "C" __global__ void vgroup(int T, int K, const int* sel, const float* wts, const ExpertMat* tab, int* dyn, float* wrow, int* npairs) {
     __shared__ int ex[96], cnt[96], nex;
     __shared__ int members[96][16];
     __shared__ int ss[96], lead[96], gidx[96];
-    const int N = T * 6, i = threadIdx.x;
+    const int N = T * K, i = threadIdx.x;
     if (i < N) {
         ss[i] = sel[i];
         wrow[i] = wts[i];
@@ -281,8 +281,8 @@ extern "C" __global__ void vgroup(int T, const int* sel, const float* wts, const
         for (int i = 0; i < 16; i++) {
             const int pr = i < cnt[j] ? members[j][i] : 0;
             // gate/up: activation row = token, output row = pair; down: activation row = pair, output row = token
-            d[8 + i] = m < 2 ? pr / 6 : pr;
-            d[24 + i] = m < 2 ? pr : pr / 6;
+            d[8 + i] = m < 2 ? pr / K : pr;
+            d[24 + i] = m < 2 ? pr : pr / K;
         }
     }
 }

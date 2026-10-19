@@ -9,6 +9,7 @@ mod prefill;
 mod selftest;
 mod serve;
 mod verify;
+mod dspark;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -214,6 +215,7 @@ fn eval_run(dec: &mut Decoder, eval: &Path, seqs: usize, len: usize) -> Result<S
 
 fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<()> {
     let mut dec = Decoder::load(model, ctx, rank, &[], None)?;
+    dec.load_dspark(model)?;
     eprintln!("dev: ready, waiting for {}", cmd.display());
     loop {
         if !cmd.exists() {
@@ -253,6 +255,33 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         for (nm, t, k) in p.iter().take(25) {
                             println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
                         }
+                    }
+                    "spec" => {
+                        // spec N [file]: greedy DSpark generation of N tokens from a chat prompt (file: user text)
+                        let n: usize = w[1].parse()?;
+                        let text = match w.get(2) { Some(f) => std::fs::read_to_string(f)?, None => "Explain how a hash map works, with a short Python example.".into() };
+                        let tok = tokenizers::Tokenizer::from_file(model.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let chat = format!("<｜begin▁of▁sentence｜><｜User｜>{text}<｜Assistant｜></think>");
+                        let ids: Vec<u32> = tok.encode(chat.as_str(), false).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().to_vec();
+                        // reference: plain greedy decode
+                        let t0 = Instant::now();
+                        let mut next = dec.prefill(&ids)?;
+                        let mut plain = vec![];
+                        for _ in 0..n {
+                            plain.push(next);
+                            next = dec.step(next)?;
+                        }
+                        let tplain = t0.elapsed().as_secs_f64();
+                        dec.reset()?;
+                        let t1 = Instant::now();
+                        let next = dec.prefill(&ids)?;
+                        let mut got = vec![];
+                        let (sx, _) = dec.spec_loop(next, n, &mut |tk| { got.push(tk); true })?;
+                        let tspec = t1.elapsed().as_secs_f64();
+                        let same = got.iter().zip(&plain).take_while(|(a, b)| a == b).count();
+                        println!("prompt {} tokens; plain {n} tokens {:.2} s, spec {:.2} s ({:.2}x); {} passes, {:.2} drafts accepted per pass, draft {:.1} ms, verify {:.1} ms per pass; same as plain for {same}/{n}",
+                            ids.len(), tplain, tspec, tplain / tspec, sx.passes, sx.accepted as f64 / sx.passes as f64, sx.draft_us / 1e3 / sx.passes as f64, sx.verify_us / 1e3 / sx.passes as f64);
+                        println!("{}", tok.decode(&got, false).map_err(|e| anyhow::anyhow!("{e}"))?.chars().take(400).collect::<String>());
                     }
                     "vprof" => {
                         // kernel time of one verify pass of T tokens after a short prompt (state left as before)
