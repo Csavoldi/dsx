@@ -335,7 +335,9 @@ def post_overthink():
     css = BRAND_CSS + """
 .card{padding-top:50px}
 h1{font-size:54px;margin-top:12px}
-.panels{margin-top:28px;display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:stretch}
+.v3note{margin-top:14px;font-size:21px;line-height:1.4;color:#c9d6da;white-space:nowrap}
+.v3note b{color:#7df0d4}
+.panels{margin-top:30px;display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:stretch}
 .panel{background:rgba(255,255,255,.045);border:1px solid rgba(228,241,244,.14);border-radius:18px;padding:22px 26px 12px}
 svg{display:block;overflow:visible}
 svg text{font-family:Num,Iosevka,ui-monospace,Menlo,monospace;fill:#f0f6f7}
@@ -346,7 +348,8 @@ svg text{font-family:Num,Iosevka,ui-monospace,Menlo,monospace;fill:#f0f6f7}
 """
     return f"""<!doctype html><meta charset=utf-8><style>{css}</style><div class=card>
 <div class=eyebrow>dsx · 2-bit DeepSeek-V4.1-Flash for 2x RTX 3090 · now with image input</div>
-<h1>Better perplexity doesn't stop overthinking<br><em>v3a ends v2's runaways at the same 148 GB</em></h1>
+<h1>Better perplexity doesn't stop overthinking</h1>
+<div class=v3note><b>v3a:</b> v2's bits and size (148 GB, 2.03 bpw), GPTQ recalibrated with the full model's own reasoning traces in the calibration text.</div>
 <div class=panels>{left}{right}</div>
 <div class=foot><div class=note>Temperature 1.0, each dot one run. Blue band: the full model's range. On problem B every quantized build shown, the 2.6-bit one included, thinks 2–3× longer than the full model.</div>
 <div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
