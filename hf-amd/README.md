@@ -82,8 +82,7 @@ hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
   --include config.json tokenizer.json model.safetensors.index.json model-00047-of-00048.safetensors model-00048-of-00048.safetensors
 cp dsx-mxfp4/dsx-engram.json v41-1017/
 
-# ROCm 7 (gfx942), Rust. The AMD runner (dsx `amd/`) is being merged into the public repo; until it lands, these
-# build steps need that branch.
+# ROCm 7 (gfx942), Rust
 git clone https://github.com/lxe/dsx && cd dsx/amd && cargo build --release
 
 DSXA_WEIGHTS=../../dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf \
