@@ -249,7 +249,13 @@ pub fn encode(st: &AppState, conv: &ConversationRequest) -> Result<(Vec<u32>, Ve
         )));
     }
     tracing::debug!(prompt = rendered.prompt, "rendered prompt");
-    let enc = st.tok.encode(rendered.prompt.as_str(), false).map_err(|e| ConversionError::internal(format!("tokenizer: {e}")))?;
+    // the template writes `<｜image｜>`; tokenizer revisions spell the image token differently (1017:
+    // `<｜deepseek_image｜>`), so use whatever this tokenizer has at the image token id
+    let prompt = match st.tok.id_to_token(crate::vision::IMAGE_TOKEN_ID) {
+        Some(t) if !rendered.image_sources.is_empty() => rendered.prompt.replace(deepseek_recipe_core::multimodal::IMAGE_SPECIAL_TOKEN, &t),
+        _ => rendered.prompt.clone(),
+    };
+    let enc = st.tok.encode(prompt.as_str(), false).map_err(|e| ConversionError::internal(format!("tokenizer: {e}")))?;
     let bytes = rendered
         .image_sources
         .iter()
