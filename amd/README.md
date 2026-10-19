@@ -4,6 +4,37 @@ DeepSeek-V4.1-Flash-1017 on one AMD Instinct MI325X (gfx942, 256 GiB HBM3E): the
 tables in HBM, one HIP graph per decode step, MFMA prompt kernels, DSpark speculative decoding. Rust + HIP; the
 config, readers, CPU reference and server come from [`../core`](../core). Measurements: [../FINDINGS-AMD.md](../FINDINGS-AMD.md).
 
+## Run
+
+| 1x MI325X | |
+|---|---:|
+| Decode at 4K / 128K / 256K context | 114 / 112 / 110 tok/s |
+| With DSpark drafts (greedy) | 1.4-1.7x on code, 1.2-1.4x on math, ~1.0x on prose |
+| Prefill, 4K / 16K / 128K-token prompt | 1,840 / 1,640 / 1,160 tok/s |
+| Quality vs FP8 (Lucebox eval) | KL 0.049, top-1 90.6% |
+| Cost at $3.80/h, one stream | $9.3 per million generated tokens, $0.64 per million prompt tokens |
+
+From the repo root:
+
+```bash
+hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4 --local-dir dsx-mxfp4
+hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
+  --include config.json tokenizer.json model.safetensors.index.json model-00047-of-00048.safetensors model-00048-of-00048.safetensors
+cp dsx-mxfp4/dsx-engram.json v41-1017/
+
+cargo build --release -p dsx-amd      # ROCm 7, gfx942
+DSXA_WEIGHTS=dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf \
+  ./target/release/dsx-amd serve --model v41-1017 --ctx 262144 --host 0.0.0.0 --port 8090
+```
+
+`--model` is the official checkpoint directory (config, tokenizer, Engram shards, plus `dsx-engram.json` from the
+quant repo). `DSXA_DSPARK=3` adds the checkpoint's DSpark draft layers for greedy requests; they are read from the
+official `mtp.*` tensors (add `model-00044-of-00048.safetensors` .. `model-00046-of-00048.safetensors` to the
+download) and take 6.5 GB of HBM, so 1,613 cold experts go to 3-bit
+(KL 0.056). Measurements and design notes: [../FINDINGS-AMD.md](../FINDINGS-AMD.md).
+
+The server is the same as the NVIDIA runner's (web UI at `/`, OpenAI-compatible `/v1`, Anthropic `/v1/messages`).
+
 ## Build
 
 ```bash
