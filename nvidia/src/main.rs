@@ -134,6 +134,16 @@ enum Cmd {
         checkpoint: PathBuf,
         out: PathBuf,
     },
+    /// Run the vision tower alone on one image and write its span rows (raw f32 [tokens][dim]).
+    #[cfg(feature = "cuda")]
+    VisionCheck {
+        #[arg(long)]
+        vision: PathBuf,
+        #[arg(long)]
+        image: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Write a GGUF as llama.cpp-style split files (`<prefix>-0000k-of-0000N.gguf`) and check every tensor's bytes.
     Split {
         input: PathBuf,
@@ -430,6 +440,26 @@ fn main() -> Result<()> {
                 eprintln!("seq {sq}: running ppl {:.3} kl {:.4} top1 {:.4} ({:.0} s)", (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64, t0.elapsed().as_secs_f64());
             }
             println!("{{\"tokens\": {cnt}, \"nll\": {:.6}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", nll / cnt as f64, (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64);
+        }
+        #[cfg(feature = "cuda")]
+        Cmd::VisionCheck { vision, image, out } => {
+            let g = dsx::gpu::Gpu::new(0)?;
+            let mut k = std::collections::HashMap::new();
+            for &n in dsx::gpumodel::KERNELS {
+                k.insert(n, g.kernel(n)?);
+            }
+            let t0 = Instant::now();
+            let vw = dsx::gpumodel::VisionWeights::load(&vision)?;
+            eprintln!("vision weights in {:.1} s", t0.elapsed().as_secs_f64());
+            let im = dsx_core::vision::load(&std::fs::read(&image)?, 0)?;
+            for pass in 0..2 {
+                let t = Instant::now();
+                let rows = dsx::gpumodel::encode_image(&g, &k, &vw, &im)?;
+                eprintln!("pass {pass}: {}x{} patches -> {} tokens in {:.0} ms", im.n_vit_h, im.n_vit_w, im.len(), t.elapsed().as_secs_f64() * 1e3);
+                if pass == 1 {
+                    std::fs::write(&out, rows.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+                }
+            }
         }
         Cmd::VisionExtract { checkpoint, out } => {
             let idx: serde_json::Value = serde_json::from_slice(&std::fs::read(checkpoint.join("model.safetensors.index.json"))?)?;

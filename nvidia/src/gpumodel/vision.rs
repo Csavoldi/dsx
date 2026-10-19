@@ -3,7 +3,8 @@
 //! expert cache keeps its VRAM; activations are f32, GEMM inputs bf16.
 
 use super::GpuModel;
-use crate::gpu::{Arg, Buf};
+use crate::gpu::{Arg, Gpu, Kernel};
+use std::collections::HashMap;
 use anyhow::{Context, Result, ensure};
 use dsx_core::safetensors::SafeTensors;
 use dsx_core::vision::{IMAGE, IMAGE_END, IMAGE_NEW_LINE, IMAGE_START, ImageInput, PATCH};
@@ -106,16 +107,21 @@ impl VisionWeights {
 }
 
 impl GpuModel<'_> {
-    fn ew(&self, n: usize) -> (u32, u32, u32) {
-        ((n as u32).div_ceil(256), 1, 1)
-    }
-
-    /// The span rows for one image, [im.len()][dim] f32: learned delimiter embeddings and, in reading order, the
-    /// aligner rows for the IMAGE slots.
+    /// The span rows for one image, [im.len()][dim] f32 (see [`encode_image`]).
     pub fn encode_image(&self, vw: &VisionWeights, im: &ImageInput) -> Result<Vec<f32>> {
-        let g = &self.g;
+        encode_image(&self.g, &self.k, vw, im)
+    }
+}
+
+fn ew(n: usize) -> (u32, u32, u32) {
+    ((n as u32).div_ceil(256), 1, 1)
+}
+
+/// The span rows for one image, [im.len()][dim] f32: learned delimiter embeddings and, in reading order, the
+/// aligner rows for the IMAGE slots. Needs only a GPU and the kernels (`dsx vision-check` runs it standalone).
+pub fn encode_image(g: &Gpu, k: &HashMap<&'static str, Kernel>, vw: &VisionWeights, im: &ImageInput) -> Result<Vec<f32>> {
+    {
         g.bind();
-        let k = &self.k;
         let (nh, nw) = (im.n_vit_h, im.n_vit_w);
         let n = nh * nw;
         let pin = 3 * PATCH * PATCH;
@@ -131,7 +137,7 @@ impl GpuModel<'_> {
         g.htod_sync(wbuf.ptr, &vw.patch_w)?;
         g.htod_sync(bbuf.ptr, &vw.patch_b)?;
         g.gemm_bf16(xp.ptr, wbuf.ptr, tmp.ptr, n, pin, D, D)?;
-        g.launch(k["vit_bias_add"], self.ew(n * D), 256, 0, &[Arg::P(x.ptr), Arg::P(tmp.ptr), Arg::P(bbuf.ptr), Arg::I(n as i32), Arg::I(D as i32), Arg::I(0)])?;
+        g.launch(k["vit_bias_add"], ew(n * D), 256, 0, &[Arg::P(x.ptr), Arg::P(tmp.ptr), Arg::P(bbuf.ptr), Arg::I(n as i32), Arg::I(D as i32), Arg::I(0)])?;
         drop(xp);
         // ---- blocks
         let xn = bf(n * D)?;
@@ -166,7 +172,7 @@ impl GpuModel<'_> {
             g.htod_sync(wbuf.ptr, &b.wo)?;
             g.htod_sync(bbuf.ptr, &b.bo)?;
             g.gemm_bf16(cat.ptr, wbuf.ptr, tmp.ptr, n, D, D, D)?;
-            g.launch(k["vit_bias_add"], self.ew(n * D), 256, 0, &[Arg::P(x.ptr), Arg::P(tmp.ptr), Arg::P(bbuf.ptr), Arg::I(n as i32), Arg::I(D as i32), Arg::I(1)])?;
+            g.launch(k["vit_bias_add"], ew(n * D), 256, 0, &[Arg::P(x.ptr), Arg::P(tmp.ptr), Arg::P(bbuf.ptr), Arg::I(n as i32), Arg::I(D as i32), Arg::I(1)])?;
             // mlp
             g.htod_sync(nbuf.ptr, &b.norm2)?;
             g.launch(k["vit_rmsnorm"], (n as u32, 1, 1), 256, 0, &[Arg::P(x.ptr), Arg::P(nbuf.ptr), Arg::P(xn.ptr), Arg::I(D as i32), Arg::F(1e-6)])?;
@@ -176,11 +182,11 @@ impl GpuModel<'_> {
             while r0 < n {
                 let rc = MC.min(n - r0);
                 g.gemm_bf16(xn.ptr + (r0 * D * 2) as u64, wbuf.ptr, gu.ptr, rc, D, 2 * INTER, 2 * INTER)?;
-                g.launch(k["vit_swiglu"], self.ew(rc * INTER), 256, 0, &[Arg::P(gu.ptr), Arg::P(act.ptr), Arg::I(rc as i32), Arg::I(INTER as i32)])?;
+                g.launch(k["vit_swiglu"], ew(rc * INTER), 256, 0, &[Arg::P(gu.ptr), Arg::P(act.ptr), Arg::I(rc as i32), Arg::I(INTER as i32)])?;
                 g.gemm_bf16(act.ptr, w2buf.ptr, tmp.ptr + (r0 * D * 4) as u64, rc, INTER, D, D)?;
                 r0 += rc;
             }
-            g.launch(k["vit_bias_add"], self.ew(n * D), 256, 0, &[Arg::P(x.ptr), Arg::P(tmp.ptr), Arg::P(0), Arg::I(n as i32), Arg::I(D as i32), Arg::I(1)])?;
+            g.launch(k["vit_bias_add"], ew(n * D), 256, 0, &[Arg::P(x.ptr), Arg::P(tmp.ptr), Arg::P(0), Arg::I(n as i32), Arg::I(D as i32), Arg::I(1)])?;
         }
         drop((q, kk, v, scores, probs, o, cat, act, gu, w2buf));
         // final norm (bf16 out), back to f32 for the unfold
@@ -199,13 +205,13 @@ impl GpuModel<'_> {
         let y1 = f4(l * dim)?;
         g.gemm_bf16(uf.ptr, wa.ptr, y1.ptr, l, D * 9, dim, dim)?;
         let a1 = bf(l * dim)?;
-        g.launch(k["vit_gelu_bias"], self.ew(l * dim), 256, 0, &[Arg::P(y1.ptr), Arg::P(ba.ptr), Arg::P(a1.ptr), Arg::I(l as i32), Arg::I(dim as i32)])?;
+        g.launch(k["vit_gelu_bias"], ew(l * dim), 256, 0, &[Arg::P(y1.ptr), Arg::P(ba.ptr), Arg::P(a1.ptr), Arg::I(l as i32), Arg::I(dim as i32)])?;
         drop((wa, uf));
         let wb = g.upload(&vw.al_w2)?;
         let bb = g.upload(&vw.al_b2)?;
         g.gemm_bf16(a1.ptr, wb.ptr, y1.ptr, l, dim, dim, dim)?;
         let y2 = f4(l * dim)?;
-        g.launch(k["vit_bias_add"], self.ew(l * dim), 256, 0, &[Arg::P(y2.ptr), Arg::P(y1.ptr), Arg::P(bb.ptr), Arg::I(l as i32), Arg::I(dim as i32), Arg::I(0)])?;
+        g.launch(k["vit_bias_add"], ew(l * dim), 256, 0, &[Arg::P(y2.ptr), Arg::P(y1.ptr), Arg::P(bb.ptr), Arg::I(l as i32), Arg::I(dim as i32), Arg::I(0)])?;
         let rows = g.download::<f32>(y2.ptr, l * dim)?;
         // ---- the span: delimiters + aligner rows in reading order (embeddings are bf16 in the model)
         let round = |v: f32| half::bf16::from_f32(v).to_f32();
