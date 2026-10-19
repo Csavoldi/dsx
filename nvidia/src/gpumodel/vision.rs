@@ -150,7 +150,9 @@ pub fn encode_image(g: &Gpu, k: &HashMap<&'static str, Kernel>, vw: &VisionWeigh
         let gu = f4(MC * 2 * INTER)?;
         let nbuf = f4(D)?;
         let w2buf = bf(D * INTER)?;
-        for b in &vw.blocks {
+        // DSX_VIT_LAYERS=k: run only the first k blocks and return the normed ViT rows (debugging against vision.py)
+        let dbg: Option<usize> = std::env::var("DSX_VIT_LAYERS").ok().and_then(|v| v.parse().ok());
+        for b in vw.blocks.iter().take(dbg.unwrap_or(LAYERS)) {
             // attention
             g.htod_sync(nbuf.ptr, &b.norm1)?;
             g.launch(k["vit_rmsnorm"], (n as u32, 1, 1), 256, 0, &[Arg::P(x.ptr), Arg::P(nbuf.ptr), Arg::P(xn.ptr), Arg::I(D as i32), Arg::F(1e-6)])?;
@@ -193,6 +195,9 @@ pub fn encode_image(g: &Gpu, k: &HashMap<&'static str, Kernel>, vw: &VisionWeigh
         g.htod_sync(nbuf.ptr, &vw.norm)?;
         g.launch(k["vit_rmsnorm"], (n as u32, 1, 1), 256, 0, &[Arg::P(x.ptr), Arg::P(nbuf.ptr), Arg::P(xn.ptr), Arg::I(D as i32), Arg::F(1e-6)])?;
         let xn_f = bf16_to_f32(&g.download::<u16>(xn.ptr, n * D)?);
+        if dbg.is_some() {
+            return Ok(xn_f);
+        }
         g.htod_sync(x.ptr, &xn_f)?;
         // ---- aligner: 3x3 unfold (zero pad right/bottom), w1 + gelu, w2
         let (lh, lw) = (im.n_llm_h, im.n_llm_w);

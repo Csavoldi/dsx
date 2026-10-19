@@ -103,6 +103,102 @@ pub fn token_types(n_llm_h: usize, n_llm_w: usize) -> Vec<i8> {
     t
 }
 
+// ---- Pillow's BICUBIC resize (libImaging/Resample.c), bit for bit: the ViT turns a 0.3% pixel difference on
+// text into ~25% at its output, so an approximate resampler is not good enough.
+
+const PRECISION_BITS: u32 = 32 - 8 - 2;
+
+fn bicubic(x: f64) -> f64 {
+    let a = -0.5;
+    let x = x.abs();
+    if x < 1.0 {
+        ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0
+    } else if x < 2.0 {
+        (((x - 5.0) * x + 8.0) * x - 4.0) * a
+    } else {
+        0.0
+    }
+}
+
+/// (bounds [xmin, xcount] per output pixel, fixed-point coefficients [out][ksize], ksize)
+fn coeffs(in_size: usize, out_size: usize) -> (Vec<(usize, usize)>, Vec<i32>, usize) {
+    let scale = in_size as f64 / out_size as f64;
+    let filterscale = scale.max(1.0);
+    let support = 2.0 * filterscale;
+    let ksize = support.ceil() as usize * 2 + 1;
+    let (mut bounds, mut kk) = (Vec::with_capacity(out_size), vec![0i32; out_size * ksize]);
+    let mut k = vec![0f64; ksize];
+    for xx in 0..out_size {
+        let center = (xx as f64 + 0.5) * scale;
+        let ss = 1.0 / filterscale;
+        let xmin = ((center - support + 0.5) as i64).max(0) as usize;
+        let xmax = ((center + support + 0.5) as i64).min(in_size as i64) as usize - xmin;
+        let mut ww = 0.0;
+        for x in 0..xmax {
+            let w = bicubic((x as f64 + xmin as f64 - center + 0.5) * ss);
+            k[x] = w;
+            ww += w;
+        }
+        for x in 0..ksize {
+            let v = if x < xmax && ww != 0.0 { k[x] / ww } else if x < xmax { k[x] } else { 0.0 };
+            let f = v * (1u32 << PRECISION_BITS) as f64;
+            kk[xx * ksize + x] = if v < 0.0 { (-0.5 + f) as i32 } else { (0.5 + f) as i32 };
+        }
+        bounds.push((xmin, xmax));
+    }
+    (bounds, kk, ksize)
+}
+
+fn clip8(v: i32) -> u8 {
+    (v >> PRECISION_BITS).clamp(0, 255) as u8
+}
+
+/// `Image.resize((w, h), BICUBIC)` on an RGB image: horizontal pass, then vertical, 8-bit between them
+pub fn pil_resize(img: &image::RgbImage, w: usize, h: usize) -> image::RgbImage {
+    let (w0, h0) = (img.width() as usize, img.height() as usize);
+    let src = img.as_raw();
+    let mut tmp = src.clone();
+    let mut tw = w0;
+    if w != w0 {
+        let (b, kk, ks) = coeffs(w0, w);
+        let mut out = vec![0u8; w * h0 * 3];
+        for y in 0..h0 {
+            for xx in 0..w {
+                let (xmin, xn) = b[xx];
+                let k = &kk[xx * ks..];
+                for c in 0..3 {
+                    let mut ss: i32 = 1 << (PRECISION_BITS - 1);
+                    for x in 0..xn {
+                        ss = ss.wrapping_add(src[(y * w0 + xmin + x) * 3 + c] as i32 * k[x]);
+                    }
+                    out[(y * w + xx) * 3 + c] = clip8(ss);
+                }
+            }
+        }
+        tmp = out;
+        tw = w;
+    }
+    if h != h0 {
+        let (b, kk, ks) = coeffs(h0, h);
+        let mut out = vec![0u8; tw * h * 3];
+        for yy in 0..h {
+            let (ymin, yn) = b[yy];
+            let k = &kk[yy * ks..];
+            for x in 0..tw {
+                for c in 0..3 {
+                    let mut ss: i32 = 1 << (PRECISION_BITS - 1);
+                    for y in 0..yn {
+                        ss = ss.wrapping_add(tmp[((ymin + y) * tw + x) * 3 + c] as i32 * k[y]);
+                    }
+                    out[(yy * tw + x) * 3 + c] = clip8(ss);
+                }
+            }
+        }
+        tmp = out;
+    }
+    image::RgbImage::from_raw(w as u32, h as u32, tmp).expect("resize buffer")
+}
+
 /// Encoded bytes of a data URL (base64 or percent-encoded body).
 pub fn data_url_bytes(url: &str) -> Result<Vec<u8>> {
     let (header, payload) = url.split_once(',').context("data URL without a comma")?;
@@ -146,7 +242,7 @@ pub fn load(bytes: &[u8], start: usize) -> Result<ImageInput> {
         }
     }
     let (rw, rh) = (rw.max(1), rh.max(1));
-    let resized = if (rw, rh) == (w0, h0) { img } else { image::imageops::resize(&img, rw as u32, rh as u32, image::imageops::FilterType::CatmullRom) };
+    let resized = if (rw, rh) == (w0, h0) { img } else { pil_resize(&img, rw, rh) };
     let mut canvas = image::RgbImage::from_pixel(best_w as u32, best_h as u32, image::Rgb([127, 127, 127]));
     let (x0, y0) = if rw != best_w {
         (((best_w - rw) as f64 * 0.5).round_ties_even() as i64, 0)
