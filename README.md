@@ -29,7 +29,7 @@ hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit --local-dir dsx-2bit
 hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
   --include model.safetensors.index.json model-00047-of-00048.safetensors model-00048-of-00048.safetensors tokenizer.json
 
-# build (86 = RTX 30xx, 120 = RTX 50xx) and serve
+# build (CUDA_ARCHS: 86 = RTX 30xx, 89 = RTX 40xx, 120 = RTX 50xx, 80 = A100) and serve
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 ./target/release/dsx-server --model dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
   --engram v41-1017 --tokenizer v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
@@ -50,7 +50,7 @@ Thinking is on by default; `"reasoning_effort": "none"` or `"thinking": {"type":
 
 | | |
 |---|---|
-| GPU | NVIDIA, 24 GB+ (sm_86 or sm_120), CUDA 13 |
+| GPU | NVIDIA, 24 GB+, CUDA 13. Run on RTX 3090 (sm_86), RTX 4090 (sm_89) and RTX 5090 (sm_120); A100 (sm_80) builds with `CUDA_ARCHS=80` but is untested |
 | Memory | ~140 GB of VRAM + RAM for the experts |
 | CPU | x86 with AVX2 (AVX-VNNI or AVX-512 VNNI preferred) |
 | Disk | ~350 GB: the quant (148 GB) + the Engram shards (203 GB) |
