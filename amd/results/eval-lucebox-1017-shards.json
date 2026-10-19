@@ -1,0 +1,1 @@
+{"build": "the published 6 GGUF shards (DSXA_WEIGHTS=...-00001-of-00006.gguf): dense FP8, 8804 experts MXFP4 + 6556 3-bit codebook, bf16 head", "eval": "Lucebox 1017 eval, 8 x 1024 tokens, teacher-forced through decode", "tokens": 8184, "nll": 2.164833, "ppl": 8.7131, "kl_top256": 0.049169, "top1_agree": 0.905670}

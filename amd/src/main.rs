@@ -253,6 +253,28 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                             println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
                         }
                     }
+                    "vprof" => {
+                        // kernel time of one verify pass of T tokens after a short prompt (state left as before)
+                        let t: usize = w[1].parse()?;
+                        dec.reset()?;
+                        let prompt: Vec<u32> = (0..64).map(|i| ((i * 7919 + 13) % 120000) as u32).collect();
+                        let _ = dec.prefill(&prompt)?;
+                        let feed: Vec<u32> = (0..t).map(|i| (100 + i * 37) as u32).collect();
+                        let _ = dec.verify(&feed)?;
+                        dec.commit(t, 1)?;
+                        dec.g.sync()?;
+                        dec.g.prof_start();
+                        let t0 = Instant::now();
+                        let r = dec.verify(&feed);
+                        let p = dec.g.prof_end()?;
+                        r?;
+                        dec.commit(t, 1)?;
+                        let tot: f32 = p.iter().map(|x| x.1).sum();
+                        println!("verify {t}: {:.0} us wall, {:.0} us in kernels ({} launches)", t0.elapsed().as_secs_f64() * 1e6, tot, p.iter().map(|x| x.2).sum::<usize>());
+                        for (nm, t, k) in p.iter().take(30) {
+                            println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
+                        }
+                    }
                     "env" => {
                         // env K [V]: set (or with no value, remove) a variable read at run time by debug switches
                         unsafe {
