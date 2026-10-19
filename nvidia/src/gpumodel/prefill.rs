@@ -290,14 +290,27 @@ impl GpuModel<'_> {
             }
         }
         g.htod_sync(pb.winidx.ptr, &widx)?;
-        // ---- embedding + engram history
-        for &tk in tokens {
-            self.engram_hist.push(c.engram_token_map[tk as usize] as i64);
+        // ---- image rows of this chunk (chunk-local ranges), embedding + engram history
+        self.img_rows.clear();
+        for (start, rows) in &self.images {
+            let (lo, hi) = (*start.max(&p0), (start + rows.len() / d).min(p0 + tn));
+            if lo < hi {
+                self.img_rows.push((lo - p0, hi - p0));
+            }
+        }
+        let in_img = |t: usize| self.img_rows.iter().any(|&(lo, hi)| t >= lo && t < hi);
+        for (t, &tk) in tokens.iter().enumerate() {
+            // image positions take no part in an n-gram (model.py: DEAD)
+            self.engram_hist.push(if in_img(t) { -1 } else { c.engram_token_map[tk as usize] as i64 });
         }
         let mut hbuf = vec![0f32; tn * hc * d];
         let mut e = vec![0f32; d];
         for (t, &tk) in tokens.iter().enumerate() {
-            m.embed.dequant(tk as usize, &mut e);
+            let p = p0 + t;
+            match self.images.iter().find(|(s, r)| p >= *s && p < s + r.len() / d) {
+                Some((s, r)) => e.copy_from_slice(&r[(p - s) * d..(p - s + 1) * d]),
+                None => m.embed.dequant(tk as usize, &mut e),
+            }
             for k in 0..hc {
                 hbuf[(t * hc + k) * d..(t * hc + k + 1) * d].copy_from_slice(&e);
             }
@@ -320,7 +333,24 @@ impl GpuModel<'_> {
             let r0 = tn - n;
             if let Some(eidx) = c.engram_layers.iter().position(|&x| x == li) {
                 let tq = std::time::Instant::now();
+                // image rows pass through untouched (model.py: the gate is shut on image tokens)
+                let row = hc * d * 4;
+                let saved: Vec<(usize, usize, crate::gpu::Buf)> = self
+                    .img_rows
+                    .iter()
+                    .map(|&(lo, hi)| -> Result<_> {
+                        let b = self.g.alloc((hi - lo) * row)?;
+                        self.g.dtod(b.ptr, pb.h.ptr + (lo * row) as u64, (hi - lo) * row)?;
+                        Ok((lo, hi, b))
+                    })
+                    .collect::<Result<_>>()?;
                 self.prefill_engram(pb, li, eidx, tn, p0)?;
+                for (lo, hi, b) in &saved {
+                    self.g.dtod(pb.h.ptr + (lo * row) as u64, b.ptr, (hi - lo) * row)?;
+                }
+                if !saved.is_empty() {
+                    self.g.sync()?;
+                }
                 if self.prof.is_some() {
                     self.g.sync()?;
                     *self.prof.as_mut().unwrap().entry("prefill engram").or_default() += tq.elapsed().as_secs_f64();
@@ -658,6 +688,18 @@ impl GpuModel<'_> {
         self.g.gemm_bf16(pb.act16.ptr, l.gate_w.buf.ptr, pb.tmp.ptr, n, d, c.n_experts, c.n_experts)?;
         let (sel_buf, wts_buf) = (pb.gg.ptr, pb.go.ptr); // [n][k] each; both free until the experts run
         self.g.launch(self.k["router_topk"], (n as u32, 1, 1), 32, 0, &[Arg::P(pb.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(sel_buf), Arg::P(wts_buf), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
+        // tokens inside an image span select with the vision bias (model.py Gate: bias_vl)
+        if let Some(bvl) = &l.gate_bias_vl {
+            for &(lo, hi) in &self.img_rows {
+                let (a, b) = (lo.max(r0), hi.min(r0 + n));
+                if a >= b {
+                    continue;
+                }
+                let t0 = a - r0;
+                let (ek, k4) = ((t0 * c.n_experts * 4) as u64, (t0 * c.top_k * 4) as u64);
+                self.g.launch(self.k["router_topk"], ((b - a) as u32, 1, 1), 32, 0, &[Arg::P(pb.tmp.ptr + ek), Arg::P(bvl.ptr), Arg::P(sel_buf + k4), Arg::P(wts_buf + k4), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
+            }
+        }
         let sel: Vec<i32> = self.g.download(sel_buf, n * c.top_k)?;
         let wts: Vec<f32> = self.g.download(wts_buf, n * c.top_k)?;
         // routed experts grouped by expert

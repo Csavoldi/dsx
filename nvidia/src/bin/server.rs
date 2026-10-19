@@ -63,6 +63,9 @@ struct Cli {
     /// expert hotness ranking (rank.json from calibration)
     #[arg(long)]
     rank: Option<std::path::PathBuf>,
+    /// vision weights (`vision.safetensors`, or the official checkpoint directory): enables image input
+    #[arg(long)]
+    vision: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -89,6 +92,7 @@ async fn main() -> Result<()> {
         default_temperature: cli.temperature,
         default_top_p: cli.top_p,
         hesitation_penalty: cli.hesitation_penalty,
+        vision: cli.vision.is_some() && !cli.mock,
         ..ServerConfig::default()
     };
     let st = AppState::new(engine, tok, cfg)?;
@@ -109,6 +113,7 @@ fn real(cli: &Cli) -> Result<EngineHandle> {
         gpu1_gb: cli.gpu1_gb,
         arena_gb: cli.arena_gb,
         rank: cli.rank.clone(),
+        vision: cli.vision.clone(),
     };
     EngineHandle::spawn(move || dsx::server::real::real_engine(&args))
 }

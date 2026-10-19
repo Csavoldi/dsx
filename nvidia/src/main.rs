@@ -128,6 +128,12 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         prefill_check: usize,
     },
+    /// Copy the vision tower, aligner and image delimiter embeddings (bf16) from the official checkpoint into one
+    /// `vision.safetensors` (what `dsx-server --vision` loads).
+    VisionExtract {
+        checkpoint: PathBuf,
+        out: PathBuf,
+    },
     /// Write a GGUF as llama.cpp-style split files (`<prefix>-0000k-of-0000N.gguf`) and check every tensor's bytes.
     Split {
         input: PathBuf,
@@ -424,6 +430,36 @@ fn main() -> Result<()> {
                 eprintln!("seq {sq}: running ppl {:.3} kl {:.4} top1 {:.4} ({:.0} s)", (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64, t0.elapsed().as_secs_f64());
             }
             println!("{{\"tokens\": {cnt}, \"nll\": {:.6}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", nll / cnt as f64, (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64);
+        }
+        Cmd::VisionExtract { checkpoint, out } => {
+            let idx: serde_json::Value = serde_json::from_slice(&std::fs::read(checkpoint.join("model.safetensors.index.json"))?)?;
+            let mut names: Vec<String> = idx["weight_map"].as_object().unwrap().keys()
+                .filter(|k| k.starts_with("vision.") || k.starts_with("aligner.") || k.starts_with("image_")).cloned().collect();
+            names.sort();
+            anyhow::ensure!(!names.is_empty(), "no vision tensors in {}", checkpoint.display());
+            let want: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            let st = dsx::safetensors::SafeTensors::open(&checkpoint, &want)?;
+            let (mut hdr, mut off) = (serde_json::Map::new(), 0usize);
+            for n in &names {
+                let t = st.get(n)?;
+                let len = t.end - t.start;
+                hdr.insert(n.clone(), serde_json::json!({"dtype": t.dtype, "shape": t.shape, "data_offsets": [off, off + len]}));
+                off += len;
+            }
+            hdr.insert("__metadata__".into(), serde_json::json!({"format": "pt", "source": "deepseek-ai/DeepSeek-V4.1-Flash-1017"}));
+            let mut h = serde_json::to_vec(&serde_json::Value::Object(hdr))?;
+            while h.len() % 8 != 0 {
+                h.push(b' ');
+            }
+            use std::io::Write;
+            let mut w = std::io::BufWriter::new(std::fs::File::create(&out)?);
+            w.write_all(&(h.len() as u64).to_le_bytes())?;
+            w.write_all(&h)?;
+            for n in &names {
+                w.write_all(st.bytes(st.get(n)?))?;
+            }
+            w.flush()?;
+            println!("{}: {} tensors, {:.2} GB", out.display(), names.len(), off as f64 / 1e9);
         }
         Cmd::Split { input, prefix, shards, name } => {
             let paths = dsx::gguf::split(&input, &prefix, shards, name.as_deref())?;

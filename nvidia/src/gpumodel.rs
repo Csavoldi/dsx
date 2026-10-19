@@ -8,6 +8,8 @@ use crate::numerics::{round_bf16, silu};
 use anyhow::{Result, bail};
 
 mod prefill;
+mod vision;
+pub use vision::VisionWeights;
 pub use prefill::PrefillBufs;
 use std::collections::HashMap;
 
@@ -72,6 +74,7 @@ struct DLayer {
     hc_ffn: (DMat, Buf, Buf),
     gate_w: DMat,
     gate_bias: Buf,
+    gate_bias_vl: Option<Buf>,
     sh_gate: DMat,
     sh_up: DMat,
     sh_down: DMat,
@@ -157,6 +160,10 @@ pub struct GpuModel<'m> {
     pub pb: Option<PrefillBufs>,
     /// > 0 while a verify pass runs: prefill's experts go through the decode handoff
     verify_t: usize,
+    /// image spans of the current prompt: (first position, span rows [len][dim] f32)
+    pub images: Vec<(usize, Vec<f32>)>,
+    /// image rows of the chunk being prefilled, chunk-local [lo, hi)
+    img_rows: Vec<(usize, usize)>,
     skip_experts: bool,
     prof_host: bool,
     g1p: Option<prefill::Gpu1Prefill>,
@@ -191,6 +198,7 @@ const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16",
+    "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -269,6 +277,7 @@ impl<'m> GpuModel<'m> {
                 hc_ffn: (f16mat(&l.hc_ffn_fn, 24)?, f32buf(&g, &l.hc_ffn_scale)?, f32buf(&g, &l.hc_ffn_base)?),
                 gate_w: bf16mat(&l.gate_w, c.n_experts)?,
                 gate_bias: f32buf(&g, &l.gate_bias)?,
+                gate_bias_vl: l.gate_bias_vl.as_ref().map(|b| f32buf(&g, b)).transpose()?,
                 sh_gate: up(&l.sh_gate)?,
                 sh_up: up(&l.sh_up)?,
                 sh_down: up(&l.sh_down)?,
@@ -333,6 +342,8 @@ impl<'m> GpuModel<'m> {
             bonus: None,
             pb: None,
             verify_t: 0,
+            images: Vec::new(),
+            img_rows: Vec::new(),
             skip_experts: std::env::var_os("DSX_SKIP_EXPERTS").is_some(),
             prof_host: std::env::var("DSX_PROF").is_ok_and(|v| v == "host"),
             g1p: None,

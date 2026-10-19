@@ -196,6 +196,48 @@ impl Gpu {
         Ok(())
     }
 
+    /// Batched bf16 GEMM, f32 out, `batch` problems at fixed strides (elements):
+    /// y[rows][ldy] = x[rows][ldx] . op(w), with op(w) = w[out][ldw]^T (`w_t`) or w[inp][ldw] (not `w_t`)
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_bf16_sb(&self, w_t: bool, x: u64, w: u64, y: u64, rows: usize, inp: usize, out: usize, ldx: usize, ldw: usize, ldy: usize,
+                        sx: usize, sw: usize, sy: usize, batch: usize) -> Result<()> {
+        let h = self.blas()?;
+        self.bind();
+        let (alpha, beta) = (1f32, 0f32);
+        // column-major view: y^T (out x rows) = op(W) (out x inp) . x^T (inp x rows)
+        let st = unsafe {
+            cb::cublasGemmStridedBatchedEx(
+                h,
+                if w_t { cb::cublasOperation_t::CUBLAS_OP_T } else { cb::cublasOperation_t::CUBLAS_OP_N },
+                cb::cublasOperation_t::CUBLAS_OP_N,
+                out as i32,
+                rows as i32,
+                inp as i32,
+                (&alpha as *const f32).cast(),
+                w as *const c_void,
+                cb::cudaDataType_t::CUDA_R_16BF,
+                ldw as i32,
+                sw as i64,
+                x as *const c_void,
+                cb::cudaDataType_t::CUDA_R_16BF,
+                ldx as i32,
+                sx as i64,
+                (&beta as *const f32).cast(),
+                y as *mut c_void,
+                cb::cudaDataType_t::CUDA_R_32F,
+                ldy as i32,
+                sy as i64,
+                batch as i32,
+                cb::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cb::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT,
+            )
+        };
+        if st != cb::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+            bail!("cublasGemmStridedBatchedEx: {st:?}");
+        }
+        Ok(())
+    }
+
     /// y[rows][ldy] (f32) = x[rows][inp] (f32) . w[out][inp]^T (f32), exact f32 (no TF32)
     pub fn gemm_f32(&self, x: u64, w: u64, y: u64, rows: usize, inp: usize, out: usize, ldy: usize) -> Result<()> {
         let h = self.blas()?;

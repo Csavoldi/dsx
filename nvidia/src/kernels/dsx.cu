@@ -1667,3 +1667,134 @@ extern "C" __global__ void dequant_q6p_f16(const uint8_t *lo, const uint8_t *hi,
   int q = ((lo[g / 2] >> (4 * (g & 1))) & 15) | (((hi[g / 4] >> (2 * (g & 3))) & 3) << 4);
   out[g] = __float2half(__half2float(d[g / 256]) * (float)sc[g / 16] * (float)(q - 32));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Vision tower (DeepSeek ViT + aligner), prefill-time only. Activations f32, GEMM inputs bf16.
+
+// out[n][D] (bf16) = rmsnorm(x[n][D]) * w   (eps 1e-6, as vision.py); one block per row
+extern "C" __global__ void vit_rmsnorm(const float *x, const float *w, __nv_bfloat16 *out, int D, float eps) {
+  const float *r = x + (size_t)blockIdx.x * D;
+  __shared__ float red[32];
+  float s = 0.f;
+  for (int i = threadIdx.x; i < D; i += blockDim.x) s += r[i] * r[i];
+  for (int o = 16; o; o >>= 1) s += __shfl_xor_sync(0xffffffff, s, o);
+  if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = s;
+  __syncthreads();
+  if (threadIdx.x < 32) {
+    s = threadIdx.x < (blockDim.x >> 5) ? red[threadIdx.x] : 0.f;
+    for (int o = 16; o; o >>= 1) s += __shfl_xor_sync(0xffffffff, s, o);
+    if (threadIdx.x == 0) red[0] = rsqrtf(s / D + eps);
+  }
+  __syncthreads();
+  float k = red[0];
+  for (int i = threadIdx.x; i < D; i += blockDim.x) out[(size_t)blockIdx.x * D + i] = __float2bfloat16(r[i] * k * w[i]);
+}
+
+// x[n][D] += y[n][D] + b[D]  (b may be null); or with acc == 0: x = y + b
+extern "C" __global__ void vit_bias_add(float *x, const float *y, const float *b, int n, int D, int acc) {
+  long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n * D) return;
+  float v = y[i] + (b ? b[i % D] : 0.f);
+  x[i] = acc ? x[i] + v : v;
+}
+
+// qkv[n][3*H*64] (f32, bias not yet added) -> q, k, v as bf16 [H][n][64], 2D RoPE on q and k:
+// element i < 32 pairs with i + 32; angle uses the row index for i % 32 < 16, the column index otherwise
+extern "C" __global__ void vit_rope_split(const float *qkv, const float *bqkv, __nv_bfloat16 *q, __nv_bfloat16 *k,
+                                          __nv_bfloat16 *v, int n, int H, int nw, float theta) {
+  int t = blockIdx.x, h = blockIdx.y, i = threadIdx.x;  // 32 threads: i in 0..32
+  int D = H * 64;
+  const float *row = qkv + (size_t)t * 3 * D;
+  int hp = t / nw, wp = t % nw;
+  int f = i & 15;
+  float inv = powf(theta, -(float)(2 * f) / 32.f);
+  float ang = (i < 16 ? hp : wp) * inv;
+  float c = cosf(ang), s = sinf(ang);
+  size_t o = ((size_t)h * n + t) * 64;
+  for (int part = 0; part < 2; part++) {
+    const float *src = row + part * D + h * 64;
+    const float *bb = bqkv + part * D + h * 64;
+    float x1 = src[i] + bb[i], x2 = src[i + 32] + bb[i + 32];
+    __nv_bfloat16 *dst = part == 0 ? q : k;
+    dst[o + i] = __float2bfloat16(x1 * c - x2 * s);
+    dst[o + i + 32] = __float2bfloat16(x2 * c + x1 * s);
+  }
+  const float *src = row + 2 * D + h * 64;
+  const float *bb = bqkv + 2 * D + h * 64;
+  v[o + i] = __float2bfloat16(src[i] + bb[i]);
+  v[o + i + 32] = __float2bfloat16(src[i + 32] + bb[i + 32]);
+}
+
+// row softmax of s[rows][n] * scale -> p (bf16); one block per row
+extern "C" __global__ void vit_softmax(const float *s, __nv_bfloat16 *p, int n, float scale) {
+  const float *r = s + (size_t)blockIdx.x * n;
+  __nv_bfloat16 *o = p + (size_t)blockIdx.x * n;
+  __shared__ float red[32];
+  float m = -INFINITY;
+  for (int i = threadIdx.x; i < n; i += blockDim.x) m = fmaxf(m, r[i]);
+  for (int k = 16; k; k >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffff, m, k));
+  if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = m;
+  __syncthreads();
+  if (threadIdx.x < 32) {
+    m = threadIdx.x < (blockDim.x >> 5) ? red[threadIdx.x] : -INFINITY;
+    for (int k = 16; k; k >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffff, m, k));
+    if (threadIdx.x == 0) red[0] = m;
+  }
+  __syncthreads();
+  m = red[0];
+  __syncthreads();
+  float sum = 0.f;
+  for (int i = threadIdx.x; i < n; i += blockDim.x) sum += expf((r[i] - m) * scale);
+  for (int k = 16; k; k >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, k);
+  if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = sum;
+  __syncthreads();
+  if (threadIdx.x < 32) {
+    sum = threadIdx.x < (blockDim.x >> 5) ? red[threadIdx.x] : 0.f;
+    for (int k = 16; k; k >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, k);
+    if (threadIdx.x == 0) red[0] = 1.f / sum;
+  }
+  __syncthreads();
+  float inv = red[0];
+  for (int i = threadIdx.x; i < n; i += blockDim.x) o[i] = __float2bfloat16(expf((r[i] - m) * scale) * inv);
+}
+
+// o[H][qc][64] (f32) -> cat[q0 + t][h * 64 + j] (bf16)
+extern "C" __global__ void vit_heads_merge(const float *o, __nv_bfloat16 *cat, int H, int qc, int q0) {
+  int t = blockIdx.x, h = blockIdx.y, j = threadIdx.x;
+  cat[(size_t)(q0 + t) * H * 64 + h * 64 + j] = __float2bfloat16(o[((size_t)h * qc + t) * 64 + j]);
+}
+
+// g[n][2I] (gate | up, f32) -> a[n][I] = silu(gate) * up (bf16)
+extern "C" __global__ void vit_swiglu(const float *g, __nv_bfloat16 *a, int n, int I) {
+  long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n * I) return;
+  long t = i / I;
+  int j = i % I;
+  float gt = g[t * 2 * I + j], up = g[t * 2 * I + I + j];
+  a[i] = __float2bfloat16(gt / (1.f + expf(-gt)) * up);
+}
+
+// F.unfold(pad(x as [C][nh][nw]), 3, stride 3)^T: out[(i * lw + j)][c * 9 + ky * 3 + kx] = x[(3i+ky) * nw + 3j+kx][c]
+extern "C" __global__ void vit_unfold3(const float *x, __nv_bfloat16 *out, int C, int nh, int nw, int lw) {
+  int L = blockIdx.x, i = L / lw, j = L % lw;
+  for (int e = threadIdx.x; e < C * 9; e += blockDim.x) {
+    int c = e / 9, kk = e % 9, ky = kk / 3, kx = kk % 3;
+    int y = 3 * i + ky, xx = 3 * j + kx;
+    float v = (y < nh && xx < nw) ? x[((size_t)y * nw + xx) * C + c] : 0.f;
+    out[(size_t)L * C * 9 + e] = __float2bfloat16(v);
+  }
+}
+
+// x = gelu(y + b) (exact, erf) -> bf16
+extern "C" __global__ void vit_gelu_bias(const float *y, const float *b, __nv_bfloat16 *out, int n, int D) {
+  long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n * D) return;
+  float v = y[i] + b[i % D];
+  out[i] = __float2bfloat16(0.5f * v * (1.f + erff(v * 0.70710678f)));
+}
+
+// f32 -> bf16
+extern "C" __global__ void vit_to_bf16(const float *x, __nv_bfloat16 *out, int n) {
+  long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) out[i] = __float2bfloat16(x[i]);
+}
