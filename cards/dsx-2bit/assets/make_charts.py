@@ -355,6 +355,85 @@ svg text{font-family:Num,Iosevka,ui-monospace,Menlo,monospace;fill:#f0f6f7}
 <div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
 </div>"""
 
+UNSLOTH = {  # dsx 2-bit v3a vs Unsloth's 1-bit GGUFs; reasoning tokens per run at temperature 1.0, effort low; every run correct
+    "builds": [  # key, label, colour
+        ("hosted", "Full model", "#5b7cff"), ("v3a", "dsx v3a 2-bit", "#7df0d4"),
+        ("iq1s", "Unsloth IQ1_S", "#ffc95c"), ("iq1m", "Unsloth IQ1_M", "#ff9a5c")],
+    "problems": [
+        ("Problem A", {"hosted": [17426, 11069, 10465, 6371, 6799, 5665, 8426, 13485], "v3a": [10469, 10263, 15311],
+                       "iq1s": [10565, 19855, 13080], "iq1m": [10955, 13289]}),
+        ("Problem B", {"hosted": [12523, 7507, 11651, 9523, 8879, 13870, 9741, 12147], "v3a": [21489, 20180],
+                       "iq1s": [33922, 29765, 21215], "iq1m": [20319, 20270]}),
+    ],
+    "xmax": 36000,
+    # Lucebox 1017 eval: 8 x 1024 tokens vs FP8's top-256 log-probs; weights without the Engram tables
+    # same machine, 2x RTX 3090 + 128 GB DDR4, each build in its own runtime; IQ1_S wasn't run there
+    "speed": {"v3a": ("dsx", "~30", 30, 334), "iq1m": ("llama.cpp PR #30817", "12.3", 12.3, 109), "iq1s": None},
+    "quality": [  # label, colour, weights GB, KL, top-1 %, perplexity
+        ("dsx v3a 2-bit", "#7df0d4", "148", 0.397, 74.1, 10.81),
+        ("Unsloth IQ1_S", "#ffc95c", "~122", 0.361, 75.1, 10.76),
+    ],
+}
+
+def post_unsloth():
+    """16:9 social card, a plain measurement card: reasoning tokens, speed on one machine, per-token quality."""
+    import statistics
+    builds = UNSLOTH["builds"]; col = {k: c for k, _, c in builds}; lab = {k: l for k, l, _ in builds}
+    total = {k: sum(statistics.median(p[1][k]) for p in UNSLOTH["problems"]) for k, _, _ in builds}
+    order = ["hosted", "v3a", "iq1m", "iq1s"]
+    mx = max(total.values())
+    reason = "".join(
+        f"<div class=hb><div class=hn style='color:{col[k]}'>{lab[k]}</div><div class=ht><b style='width:{total[k] / mx * 100:.1f}%;background:{col[k]}'></b></div>"
+        f"<div class=hv><b style='color:{col[k]}'>{total[k] / 1000:.1f}K</b><span>{'baseline' if k == 'hosted' else f'{total[k] / total['hosted']:.2f}×'}</span></div></div>"
+        for k in order)
+    def speed_rows(i, mxv):
+        out = ""
+        for k in ["v3a", "iq1m", "iq1s"]:
+            sp = UNSLOTH["speed"][k]
+            if sp is None:
+                continue
+            v = sp[2] if i == 0 else sp[3]; txt = sp[1] if i == 0 else f"{sp[3]}"
+            out += (f"<div class=hb><div class=hn style='color:{col[k]}'>{lab[k]}</div><div class=ht><b style='width:{v / mxv * 100:.1f}%;background:{col[k]}'></b></div>"
+                    f"<div class=hv><b style='color:{col[k]}'>{txt}</b><span>tok/s</span></div></div>")
+        return out
+    qrows = "".join(
+        f"<tr><td style='color:{c}'><b>{n}</b><span>{gb} GB weights</span></td><td>{kl:.3f}</td><td>{t1:.1f}%</td><td>{ppl:.2f}</td></tr>"
+        for n, c, gb, kl, t1, ppl in UNSLOTH["quality"])
+    css = BRAND_CSS + """
+.card{padding-top:50px}
+h1{font-size:54px;margin-top:12px}
+.panels{margin-top:30px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:22px;align-items:stretch}
+.panel{background:rgba(255,255,255,.045);border:1px solid rgba(228,241,244,.14);border-radius:18px;padding:22px 24px 16px}
+.ptitle{font-size:24px;font-weight:700} .psub{font-size:17px;color:#a9b8bd;margin-top:6px;line-height:1.35}
+.sec{margin-top:20px;font-size:19px;font-weight:700;color:#c9d6da}
+.hb{display:grid;grid-template-columns:1fr auto;grid-template-areas:'n v' 't t';column-gap:10px;margin-top:14px}
+.hn{grid-area:n;font-size:19px;font-weight:700} .hv{grid-area:v;text-align:right;white-space:nowrap}
+.hv b{font-size:24px} .hv b.na{color:#8a9a9f} .hv span{font-size:16px;color:#a9b8bd;margin-left:8px}
+.ht{grid-area:t;height:16px;border-radius:5px;background:rgba(255,255,255,.06);margin-top:6px} .ht b{display:block;height:100%;border-radius:5px}
+table.q{margin-top:22px;border-collapse:collapse;width:100%}
+table.q th{font-size:16px;color:#a9b8bd;font-weight:400;text-align:right;padding:0 0 10px 10px}
+table.q td{font-size:22px;font-weight:700;text-align:right;padding:12px 0 12px 10px;border-top:1px solid rgba(228,241,244,.12)}
+table.q td:first-child{text-align:left;font-size:19px;padding-left:0} table.q td span{display:block;font-size:15px;font-weight:400;color:#a9b8bd;margin-top:4px}
+.qnote{margin-top:12px;font-size:16px;color:#8a9a9f}
+.rs .hb{margin-top:30px}
+.rs .hv b{font-size:30px}
+.foot{flex-direction:column;gap:6px;bottom:26px;font-size:17px}
+.foot .r{display:flex;justify-content:space-between} .foot .note{color:#a9b8bd}
+"""
+    return f"""<!doctype html><meta charset=utf-8><style>{css}</style><div class=card>
+<div class=eyebrow>DeepSeek-V4.1-Flash-1017 · dsx 2-bit v3a and Unsloth 1-bit GGUFs</div>
+<h1>Reasoning, speed and quality at 1–2 bits</h1>
+<div class=panels>
+ <div class='panel rs'><div class=ptitle>Reasoning tokens</div><div class=psub>median on problem A + median on problem B, two olympiad math problems, every answer correct</div>{reason}</div>
+ <div class=panel><div class=ptitle>Speed</div><div class=psub>2x RTX 3090 + 128 GB DDR4; v3a in dsx, IQ1_M in llama.cpp PR #30817</div>
+  <div class=sec>Decode</div>{speed_rows(0, 30)}<div class=sec>Prefill, 3K-token prompt</div>{speed_rows(1, 334)}<div class=qnote style='margin-top:22px'>IQ1_S wasn't run on this machine.</div></div>
+ <div class=panel><div class=ptitle>Per-token quality vs FP8</div><div class=psub>same eval, 8 × 1,024 tokens</div>
+  <table class=q><tr><th></th><th>KL ↓</th><th>top-1 ↑</th><th>ppl ↓</th></tr>{qrows}</table><div class=qnote>IQ1_M wasn't measured on this eval.</div></div>
+</div>
+<div class=foot><div class=note>Reasoning at temperature 1.0, effort low; 8 runs for the full model, 2–3 per quant. Engram tables not in the sizes: dsx 203 GB, Unsloth 110 GB.</div>
+<div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
+</div>"""
+
 # ---------------------------------------------------------------- render
 def chromium():
     if os.environ.get("PW_CHROMIUM"): return os.environ["PW_CHROMIUM"]
@@ -362,7 +441,7 @@ def chromium():
     return found[-1] if found else None
 
 if __name__ == "__main__":
-    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality(), "post.png": post(), "post-eval.png": post_eval(), "post-overthink.png": post_overthink()}
+    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality(), "post.png": post(), "post-eval.png": post_eval(), "post-overthink.png": post_overthink(), "post-unsloth.png": post_unsloth()}
     with sync_playwright() as p:
         b = p.chromium.launch(executable_path=chromium(), args=["--allow-file-access-from-files"])
         pg = b.new_page(viewport={"width": 840, "height": 900}, device_scale_factor=2)
