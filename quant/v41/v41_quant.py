@@ -229,6 +229,12 @@ class Layer:
             else:
                 H1, H2 = torch.eye(C.D, device=xe.device), torch.eye(W2.shape[1], device=xe.device)
             prep.append((ex, W1, W3, W2, H1, H2, do, n_fit))
+            dump = os.environ.get("V41_DUMP")   # DIR: save every 8th expert's weights, Hessians, held-out inputs (experiments)
+            if dump and do and ex % 8 == 0 and str(L) == os.environ.get("V41_DUMP_LAYER", str(L)):
+                os.makedirs(dump, exist_ok=True)
+                torch.save({"L": L, "ex": ex, "W1": W1.bfloat16().cpu(), "W3": W3.bfloat16().cpu(), "W2": W2.bfloat16().cpu(),
+                            "H1": H1.cpu(), "H2": H2.cpu(), "xv": xe[~fit].cpu(), "gv": ge[~fit].cpu(), "lim": lim,
+                            "gu": self.gu[ex], "dn": self.dn[ex], "n_fit": n_fit}, os.path.join(dump, f"L{L:02d}_e{ex:03d}.pt"))
         t0 = mark("dequant+hessians", t0)
         q = {}
         for part in ("gu", "dn"):
