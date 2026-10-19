@@ -99,6 +99,9 @@ enum Cmd {
         /// feed each sequence token by token through decode (step) instead of one prefill pass
         #[arg(long)]
         decode: bool,
+        /// score only predictions of positions >= FROM in each sequence (llama-perplexity scores the second half)
+        #[arg(long, default_value_t = 0)]
+        from: usize,
     },
     /// Teacher-force a conversation through decode: per-position log-prob, rank and entropy of each continuation
     /// token, and the probability of ending the reasoning (`</think>`). TSV to stdout.
@@ -411,7 +414,7 @@ fn main() -> Result<()> {
             }
         }
         #[cfg(feature = "cuda")]
-        Cmd::Eval { model, engram, eval, seqs, len, topk, gpu0_gb, gpu1_gb, arena_gb, rank, decode } => {
+        Cmd::Eval { model, engram, eval, seqs, len, topk, gpu0_gb, gpu1_gb, arena_gb, rank, decode, from } => {
             let rd = |f: &str| std::fs::read(eval.join(f));
             let toks: Vec<u32> = rd("heldout.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
             let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
@@ -424,7 +427,7 @@ fn main() -> Result<()> {
                 gm.reset();
                 let seq = &toks[sq * len..(sq + 1) * len];
                 let lg = if decode { seq[..len - 1].iter().map(|&tk| gm.step(tk)).collect::<Result<Vec<_>>>()? } else { gm.eval_logits(seq)? };
-                for p in 0..len - 1 {
+                for p in from.saturating_sub(1)..len - 1 {
                     let l = &lg[p];
                     let mx = l.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
                     let lse = mx + l.iter().map(|&v| (v as f64 - mx).exp()).sum::<f64>().ln();
