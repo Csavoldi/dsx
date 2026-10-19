@@ -57,7 +57,7 @@ pub async fn props(State(st): State<Arc<AppState>>) -> Response {
         "model_path": c.model_name,
         "model_alias": c.model_name,
         "role": "model",
-        "modalities": {"vision": false, "audio": false, "video": false},
+        "modalities": {"vision": c.vision, "audio": false, "video": false},
         "chat_template": "",
         "bos_token": "<｜begin▁of▁sentence｜>",
         "eos_token": "<｜end▁of▁sentence｜>",

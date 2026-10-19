@@ -288,11 +288,11 @@ async fn limits_and_stops() {
         "messages": [{"role": "user", "content": "Hello"}]})).await;
     assert_eq!(r["stop_reason"], "stop_sequence");
     assert_eq!(r["stop_sequence"], " mock");
-    // images are rejected up front
+    // images need the vision weights: rejected up front by a server without them
     let (status, text) = post(&base, "/v1/chat/completions", json!({"model": "m", "messages": [{"role": "user",
         "content": [{"type": "text", "text": "what is this"}, {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}]}]})).await;
     assert_eq!(status, 400);
-    assert!(text.contains("text only"), "{text}");
+    assert!(text.contains("vision weights"), "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

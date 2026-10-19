@@ -19,6 +19,8 @@ pub struct GenParams {
     pub stop_token_ids: Vec<u32>,
     /// logit penalty on hesitation tokens while the model is reasoning (None = off)
     pub hesitation: Option<Hesitation>,
+    /// images in the prompt, in order (their spans already expanded in the prompt ids)
+    pub images: std::sync::Arc<Vec<crate::vision::ImageInput>>,
 }
 
 /// Subtract `lambda` from the logits of `ids` until `close` (`</think>`) is generated.

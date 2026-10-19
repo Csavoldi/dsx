@@ -9,3 +9,4 @@ pub mod model;
 pub mod numerics;
 pub mod safetensors;
 pub mod server;
+pub mod vision;

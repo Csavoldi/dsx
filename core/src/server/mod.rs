@@ -24,6 +24,8 @@ use deepseek_recipe::response::ProtocolResponse;
 use deepseek_recipe::stream::{ChunkGenerator, InferenceChunk, InferenceFinishReason, PromptUsage, StreamProcessor};
 use deepseek_recipe::util::append_delta::AppendDelta;
 use deepseek_recipe_encoding::PromptEncoding;
+use deepseek_recipe_core::multimodal::ImageSource;
+use crate::vision::ImageInput;
 use deepseek_recipe_encoding::v4::dsv41::DeepseekV41Encoding;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -48,6 +50,8 @@ pub struct ServerConfig {
     pub default_top_p: f32,
     /// hesitation-token logit penalty while reasoning; 0 = off. Requests can set `hesitation_penalty`.
     pub hesitation_penalty: f32,
+    /// the engine has the vision tower loaded: image inputs are accepted
+    pub vision: bool,
     /// SSE comment interval while nothing else is sent (long prefills)
     pub keepalive: Duration,
 }
@@ -61,6 +65,7 @@ impl Default for ServerConfig {
             default_temperature: 1.0,
             default_top_p: 1.0,
             hesitation_penalty: 0.0,
+            vision: false,
             keepalive: Duration::from_secs(10),
         }
     }
@@ -206,7 +211,7 @@ async fn count_tokens(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Re
     let e = |err| ApiError(Proto::Anthropic, err);
     let req: MessagesRequest = parse_with_model(&st, &body).map_err(e)?;
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
-    let ids = encode(&st, &conv).map_err(e)?;
+    let (ids, _) = encode(&st, &conv).map_err(e)?;
     Ok(axum::Json(json!({"input_tokens": ids.len()})).into_response())
 }
 
@@ -235,17 +240,26 @@ fn hesitation_override(body: &[u8]) -> Option<f32> {
 }
 
 /// Render + tokenize the conversation (V4.1 template). Rejects images.
-pub fn encode(st: &AppState, conv: &ConversationRequest) -> Result<Vec<u32>, ConversionError> {
+pub fn encode(st: &AppState, conv: &ConversationRequest) -> Result<(Vec<u32>, Vec<ImageInput>), ConversionError> {
     let rendered = DeepseekV41Encoding::new().render_conversation(&conv.conversation);
-    if !rendered.image_sources.is_empty() {
+    if !rendered.image_sources.is_empty() && !st.cfg.vision {
         return Err(ConversionError::bad_request(format!(
-            "image input is not supported by this server (text only); the request has {} image(s)",
+            "this server was started without the vision weights (--vision); the request has {} image(s)",
             rendered.image_sources.len()
         )));
     }
     tracing::debug!(prompt = rendered.prompt, "rendered prompt");
     let enc = st.tok.encode(rendered.prompt.as_str(), false).map_err(|e| ConversionError::internal(format!("tokenizer: {e}")))?;
-    Ok(enc.get_ids().to_vec())
+    let bytes = rendered
+        .image_sources
+        .iter()
+        .map(|s| match s {
+            ImageSource::DataUrl { data_url, .. } => crate::vision::data_url_bytes(data_url).map_err(|e| ConversionError::bad_request(e.to_string())),
+            ImageSource::Bytes { data, .. } => Ok(data.clone()),
+            ImageSource::Url { .. } => Err(ConversionError::bad_request("remote image URLs are not fetched by this server; send the image as a data URL (base64)")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    crate::vision::expand(enc.get_ids(), bytes).map_err(|e| ConversionError::bad_request(e.to_string()))
 }
 
 async fn run<T>(
@@ -260,7 +274,7 @@ where
     T: ProtocolRequest,
     Chunk<T>: Serialize + Send,
 {
-    let prompt = encode(&st, &conv)?;
+    let (prompt, images) = encode(&st, &conv)?;
     let cfg = &st.cfg;
     let lambda = hesitation.unwrap_or(cfg.hesitation_penalty);
     let hesitation = match st.think {
@@ -283,6 +297,7 @@ where
         seed,
         stop_token_ids: st.stop_ids.clone(),
         hesitation,
+        images: Arc::new(images),
     };
     let id = engine::request_id(id_prefix);
     let model = conv.model.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| cfg.model_name.clone());
