@@ -269,63 +269,86 @@ h1{font-size:54px;margin-top:14px}
 <div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
 </div>"""
 
-OVERTHINK = {  # reasoning tokens per run, temperature 1.0 unless noted; every run correct unless noted
-    "builds": [("hosted", "Full model, hosted", "#5b7cff"), ("v2", "v2 2-bit", "#ff6b7a"), ("v3a", "v3a 2-bit", "#7df0d4")],
+OVERTHINK = {  # reasoning tokens per run at temperature 1.0 (the model's recommended sampling); every run correct
+    "builds": [  # key, label, colour
+        ("hosted", "Full model", "#5b7cff"), ("b26", "2.6-bit", "#ffc95c"),
+        ("v3a", "v3a 2-bit", "#7df0d4"), ("v2", "v2 2-bit", "#ff6b7a")],
     "problems": [
-        ("Problem A", "olympiad math, answer 480/49", {
-            "hosted": [17426, 11069, 10465, 6371, 6799, 5665, 8426, 13485],
-            "v2": [10126, 39479, 12159, 31487], "v3a": [10469, 10263, 15311]}, None),
-        ("Problem B", "olympiad math, answer 500", {
-            "hosted": [12523, 7507, 11651, 9523, 8879, 13870, 9741, 12147],
-            "v2": [26462, 22645], "v3a": [21489, 20180]}, "v2"),  # v2 at temperature 0: looped past 55K, no answer
+        ("Problem A", {"hosted": [17426, 11069, 10465, 6371, 6799, 5665, 8426, 13485], "b26": [9735, 10302, 11585],
+                       "v3a": [10469, 10263, 15311], "v2": [10126, 39479, 12159, 31487]}),
+        ("Problem B", {"hosted": [12523, 7507, 11651, 9523, 8879, 13870, 9741, 12147], "b26": [29133, 32858],
+                       "v3a": [21489, 20180], "v2": [26462, 22645]}),
     ],
-    "xmax": 60000,
+    "xmax": 42000,
+    # perplexity vs download size, Lucebox 1017 eval; sizes include the 203 GB Engram tables
+    "ppl": [  # label, GB, GB range or None, perplexity, colour, label offset (dx, dy, anchor)
+        ("FP8 original", 510, None, 8.56, "#e6eef0", (0, 30, "middle")),
+        ("MXFP4 (MI325X)", 473, None, 8.71, "#c79bff", (0, -18, "middle")),
+        ("Lucebox 2.5 bpw", 395, (383, 405), 9.78, "#8a9a9f", (0, -18, "middle")),
+        ("2.6-bit", 391, None, 9.37, "#ffc95c", (18, 6, "start")),
+        ("v3a 2-bit", 351, None, 10.81, "#7df0d4", (18, 18, "start")),
+        ("v2 2-bit", 351, None, 10.93, "#ff6b7a", (18, -8, "start")),
+    ],
 }
 
 def post_overthink():
-    """16:9 social card: reasoning tokens per run, v2 vs v3a vs the hosted full model, on two hard math problems."""
-    W, L, R, rowh = 1448, 250, 56, 49
+    """16:9 social card: perplexity vs size beside reasoning tokens per run on two hard math problems."""
+    # left: perplexity against size
+    PW, PH = 470, 520
+    X0, X1, Y0, Y1 = 58, PW - 16, PH - 64, 64
+    xl, xh, yl, yh = 330, 530, 8.4, 11.2
+    px = lambda v: X0 + (v - xl) / (xh - xl) * (X1 - X0)
+    py = lambda v: Y0 - (v - yl) / (yh - yl) * (Y0 - Y1)
+    s = ['<text x="0" y="24" class="pt">Perplexity vs size</text>', '<text x="0" y="50" class="ps">lower is better · with Engram tables</text>']
+    for g in range(350, 531, 50):
+        s.append(f'<line x1="{px(g):.1f}" x2="{px(g):.1f}" y1="{Y1}" y2="{Y0}" stroke="rgba(228,241,244,.10)"/><text x="{px(g):.1f}" y="{Y0 + 26}" class="ax" text-anchor="middle">{g}</text>')
+    for g in (9, 10, 11):
+        s.append(f'<line x1="{X0}" x2="{X1}" y1="{py(g):.1f}" y2="{py(g):.1f}" stroke="rgba(228,241,244,.10)"/><text x="{X0 - 10}" y="{py(g) + 6}" class="ax" text-anchor="end">{g}</text>')
+    s.append(f'<text x="{X1}" y="{Y0 + 54}" class="ax" text-anchor="end">download, GB</text>')
+    for name, gb, rng, ppl, col, (dx, dy, an) in OVERTHINK["ppl"]:
+        if rng: s.append(f'<line x1="{px(rng[0]):.1f}" x2="{px(rng[1]):.1f}" y1="{py(ppl):.1f}" y2="{py(ppl):.1f}" stroke="{col}" stroke-width="3"/>')
+        s.append(f'<circle cx="{px(gb):.1f}" cy="{py(ppl):.1f}" r="10" fill="{col}" stroke="#0d1318" stroke-width="2.5"/>')
+        s.append(f'<text x="{px(gb) + dx:.1f}" y="{py(ppl) + dy:.1f}" class="dl" text-anchor="{an}" style="fill:{col}">{name}</text>')
+    left = f'<div class="panel pl"><svg width="{PW}" height="{PH}">{"".join(s)}</svg></div>'
+    # right: reasoning tokens per run
+    W, L, R, rowh = 860, 150, 24, 38
     xmax = OVERTHINK["xmax"]; builds = OVERTHINK["builds"]
     x = lambda v: L + min(v, xmax) / xmax * (W - L - R)
-    panels = ""
-    for name, sub, runs, loop in OVERTHINK["problems"]:
-        H = 40 + rowh * len(builds) + (56 if name == OVERTHINK["problems"][-1][0] else 30)
-        top = 40
-        s = [f'<text x="0" y="22" class="pt">{name}</text><text x="{len(name) * 15 + 18}" y="22" class="ps">{sub}</text>']
+    s = ['<text x="0" y="24" class="pt">Reasoning tokens per run</text>', '<text x="0" y="50" class="ps">two olympiad math problems · every run correct</text>']
+    top = 96
+    for pi, (name, runs) in enumerate(OVERTHINK["problems"]):
+        blk = top + pi * (rowh * len(builds) + 62)
+        s.append(f'<text x="0" y="{blk + 4}" class="pn">{name}</text>')
+        y0 = blk + 16
         lo, hi = min(runs["hosted"]), max(runs["hosted"])
-        s.append(f'<rect x="{x(lo):.1f}" y="{top}" width="{x(hi) - x(lo):.1f}" height="{rowh * len(builds)}" rx="6" fill="rgba(91,124,255,.16)"/>')
+        s.append(f'<rect x="{x(lo):.1f}" y="{y0}" width="{x(hi) - x(lo):.1f}" height="{rowh * len(builds)}" rx="6" fill="rgba(91,124,255,.17)"/>')
         for t in range(0, xmax + 1, 10000):
-            s.append(f'<line x1="{x(t):.1f}" x2="{x(t):.1f}" y1="{top}" y2="{top + rowh * len(builds)}" stroke="rgba(228,241,244,.10)"/>')
-            s.append(f'<text x="{x(t):.1f}" y="{top + rowh * len(builds) + 24}" class="ax" text-anchor="middle">{"0" if t == 0 else f"{t // 1000}K"}</text>')
+            s.append(f'<line x1="{x(t):.1f}" x2="{x(t):.1f}" y1="{y0}" y2="{y0 + rowh * len(builds)}" stroke="rgba(228,241,244,.10)"/>')
+            s.append(f'<text x="{x(t):.1f}" y="{y0 + rowh * len(builds) + 22}" class="ax" text-anchor="middle">{"0" if t == 0 else f"{t // 1000}K"}</text>')
         for i, (k, label, col) in enumerate(builds):
-            cy = top + rowh * i + rowh / 2
+            cy = y0 + rowh * i + rowh / 2
             s.append(f'<text x="0" y="{cy + 7}" class="rl" style="fill:{col}">{label}</text>')
-            for j, v in enumerate(sorted(runs[k])):
-                s.append(f'<circle cx="{x(v):.1f}" cy="{cy}" r="12.5" fill="{col}" stroke="#0d1318" stroke-width="2.5"/>')
-            if loop == k:
-                ax = x(xmax)
-                s.append(f'<path d="M {ax - 22} {cy - 11} L {ax} {cy} L {ax - 22} {cy + 11} Z" fill="{col}"/>')
-                s.append(f'<text x="{ax - 32}" y="{cy + 7}" class="lp" text-anchor="end">temperature 0: looped past 55K, no answer</text>')
-        if name == OVERTHINK["problems"][-1][0]:
-            s.append(f'<text x="{W - R}" y="{top + rowh * len(builds) + 52}" class="ax" text-anchor="end">reasoning tokens per run</text>')
-        panels += f'<div class=panel><svg width="{W}" height="{H}">{"".join(s)}</svg></div>'
+            for v in sorted(runs[k]):
+                s.append(f'<circle cx="{x(v):.1f}" cy="{cy}" r="11" fill="{col}" stroke="#0d1318" stroke-width="2.5"/>')
+    H = top + 2 * (rowh * len(builds) + 62) - 22
+    right = f'<div class="panel pr"><svg width="{W}" height="{H}">{"".join(s)}</svg></div>'
     css = BRAND_CSS + """
-.card{padding-top:52px}
-h1{font-size:56px;margin-top:14px}
-.panels{margin-top:30px;display:flex;flex-direction:column;gap:18px}
-.panel{background:rgba(255,255,255,.045);border:1px solid rgba(228,241,244,.14);border-radius:18px;padding:18px 26px 8px}
+.card{padding-top:50px}
+h1{font-size:54px;margin-top:12px}
+.panels{margin-top:28px;display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:stretch}
+.panel{background:rgba(255,255,255,.045);border:1px solid rgba(228,241,244,.14);border-radius:18px;padding:22px 26px 12px}
 svg{display:block;overflow:visible}
 svg text{font-family:Num,Iosevka,ui-monospace,Menlo,monospace;fill:#f0f6f7}
-.pt{font-size:26px;font-weight:700} .ps{font-size:21px;fill:#a9b8bd} .rl{font-size:22px;font-weight:700}
-.ax{font-size:17px;fill:#8a9a9f} .lp{font-size:19px;fill:#ffb3bc}
-.foot{flex-direction:column;gap:6px;bottom:28px;font-size:18px}
+.pt{font-size:25px;font-weight:700} .ps{font-size:18px;fill:#a9b8bd} .pn{font-size:20px;font-weight:700;fill:#c9d6da}
+.rl{font-size:20px;font-weight:700} .dl{font-size:18px;font-weight:700} .ax{font-size:16px;fill:#8a9a9f}
+.foot{flex-direction:column;gap:6px;bottom:26px;font-size:18px}
 .foot .r{display:flex;justify-content:space-between} .foot .note{color:#a9b8bd}
 """
     return f"""<!doctype html><meta charset=utf-8><style>{css}</style><div class=card>
 <div class=eyebrow>dsx · 2-bit DeepSeek-V4.1-Flash for 2x RTX 3090 · now with image input</div>
-<h1>v3a stops the runaway reasoning<br><em>same size, speed and KL as v2</em></h1>
-<div class=panels>{panels}</div>
-<div class=foot><div class=note>Each dot is one run at temperature 1.0, all correct. Blue band: the full model's range. v3a still thinks about 2× as long as the full model on problem B.</div>
+<h1>Better perplexity doesn't stop overthinking<br><em>v3a ends v2's runaways at the same 148 GB</em></h1>
+<div class=panels>{left}{right}</div>
+<div class=foot><div class=note>Temperature 1.0, each dot one run. Blue band: the full model's range. On problem B every quantized build shown, the 2.6-bit one included, thinks 2–3× longer than the full model.</div>
 <div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
 </div>"""
 
