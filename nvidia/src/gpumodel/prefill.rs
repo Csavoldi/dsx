@@ -105,7 +105,7 @@ impl Gpu1Prefill {
     }
 }
 
-const SUB: usize = 256; // indexer queries per pass (bounds the [queries][positions] score matrix)
+pub(crate) const SUB: usize = 256; // indexer queries per pass (bounds the [queries][positions] score matrix)
 
 impl PrefillBufs {
     pub fn new(g: &Gpu, m: &Model, tmax: usize, max_ctx: usize) -> Result<PrefillBufs> {
@@ -615,6 +615,9 @@ impl GpuModel<'_> {
                 &[Arg::P(pb.iq.ptr + (s0 * nhh * id * 4) as u64), Arg::P(kc), Arg::P(pb.iw.ptr + (s0 * nhh * 4) as u64), Arg::P(pb.score.ptr), Arg::P(pb.ns.ptr), Arg::I(n_max as i32), Arg::I(nhh as i32), Arg::I(id as i32)],
             )?;
             let rr = crate::topk::Rows { scores: pb.score.ptr, lds: n_max, rows, ns: pb.ns.ptr, n_max };
+            // the top-k scratch is shared with decode: never let a pass write past it
+            let need = crate::topk::TopK::topk_scratch(n_max, c.idx_topk, rows).max(if li == c.cand_layer { crate::topk::TopK::blocks_scratch(n_max, c.cand_block, c.cand_blocks, rows) } else { 0 });
+            anyhow::ensure!(need <= self.topk_scratch.bytes, "top-k scratch: {need} bytes needed for {rows} rows of {n_max}, {} allocated", self.topk_scratch.bytes);
             let out = pb.compidx.ptr + ((r0 + s0) * c.idx_topk * 4) as u64;
             if li == c.cand_layer {
                 self.topk.blocks(&self.g, &rr, c.cand_block, c.cand_blocks, pb.keep.ptr, nbmax, self.topk_scratch.ptr)?;

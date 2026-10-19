@@ -318,7 +318,8 @@ impl<'m> GpuModel<'m> {
             tokp: g.alloc_zeroed(4 * 256)?,
             tokp_host: crate::gpu::HostBuf::new(1 << 20)?,
             topk: crate::topk::TopK::new(&g)?,
-            topk_scratch: g.alloc_zeroed(crate::topk::TopK::topk_scratch(max_ctx, c.idx_topk, 1).max(crate::topk::TopK::blocks_scratch(max_ctx, c.cand_block, c.cand_blocks, 1)).max(64))?,
+            // shared by decode (1 row) and the prefill indexer (up to prefill::SUB rows per pass)
+            topk_scratch: g.alloc_zeroed(crate::topk::TopK::topk_scratch(max_ctx, c.idx_topk, prefill::SUB).max(crate::topk::TopK::blocks_scratch(max_ctx, c.cand_block, c.cand_blocks, prefill::SUB)).max(64))?,
             keep: g.alloc_zeroed(max_ctx / c.cand_block + 64)?,
             topk_k: 0,
             xch: None,
