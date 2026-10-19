@@ -162,18 +162,7 @@ def size_quality():
     svg = f'<svg width="{W-44}" height="{Y0 + 42}">{"".join(s)}</svg>'
     return page("Size against perplexity", "Lucebox 1017 eval set. Sizes include the 203 GB Engram tables.", svg)
 
-POST = {  # the X post: a few big numbers, one comparison
-    "speed": "30+", "size": "148", "prefill": "500",  # prefill: 508 tok/s on an 8K prompt
-    # top-1 match with FP8 on the Lucebox 1017 eval set (QUALITY above), rounded
-    "match": [("FP8 original", 100, "#c9d6da"), ("Lucebox 2.5-bit", 79, "#9aa8ff"), ("dsx 2-bit", 74, "#7df0d4")],
-}
-
-def post():
-    """16:9 social card in Pocket Model's site style: dark ground, mint accent, Pathway Extreme headings."""
-    bars = "".join(
-        f"<div class=row><span class=nm style='color:{c}'>{n}</span><div class=track><b style='width:{v}%;background:{c}'></b></div>"
-        f"<span class=pc style='color:{c}'>{v}%</span></div>" for n, v, c in POST["match"])
-    css = f"""
+BRAND_CSS = f"""
 @import url('https://fonts.googleapis.com/css2?family=Pathway+Extreme:ital,opsz,wdth,wght@0,8..12,75..100,300..600;1,8..12,75..100,300..600&display=swap');
 {f"@font-face{{font-family:Num;src:url(file://{FONT})}}" if FONT else ""}
 html,body{{margin:0}}
@@ -196,6 +185,19 @@ h1 em{{color:#7df0d4;font-style:italic}}
 .track{{height:26px;border-radius:6px;background:rgba(255,255,255,.06)}} .track b{{display:block;height:100%;border-radius:6px}}
 .foot{{position:absolute;left:76px;right:76px;bottom:40px;display:flex;justify-content:space-between;color:#8a9a9f;font-size:20px}}
 """
+
+POST = {  # the X post: a few big numbers, one comparison
+    "speed": "30+", "size": "148", "prefill": "500",  # prefill: 508 tok/s on an 8K prompt
+    # top-1 match with FP8 on the Lucebox 1017 eval set (QUALITY above), rounded
+    "match": [("FP8 original", 100, "#c9d6da"), ("Lucebox 2.5-bit", 79, "#9aa8ff"), ("dsx 2-bit", 74, "#7df0d4")],
+}
+
+def post():
+    """16:9 social card in Pocket Model's site style: dark ground, mint accent, Pathway Extreme headings."""
+    bars = "".join(
+        f"<div class=row><span class=nm style='color:{c}'>{n}</span><div class=track><b style='width:{v}%;background:{c}'></b></div>"
+        f"<span class=pc style='color:{c}'>{v}%</span></div>" for n, v, c in POST["match"])
+    css = BRAND_CSS
     return f"""<!doctype html><meta charset=utf-8><style>{css}</style><div class=card>
 <div class=eyebrow>dsx · 2-bit quant + engine</div>
 <h1>DeepSeek-V4.1-Flash-1017 (552B MoE)<br><em>on 2x RTX 3090 + 128 GB RAM</em></h1>
@@ -208,6 +210,67 @@ h1 em{{color:#7df0d4;font-style:italic}}
 <div class=foot><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div>
 </div>"""
 
+EVAL_POST = {  # Pocket Model dogfood v26b: dsx 2-bit vs the hosted model, temperature 1.0, think low, graded in code
+    "rows": [("Tool calls", 20, 16, 14), ("Olympiad math", 3, 3, 3), ("Hard multiple choice", 3, 1, 1), ("All", 26, 20, 18)],
+    "dsx": ("dsx 2-bit, at home", "#7df0d4"), "hosted": ("Full model, hosted", "#5b7cff"),
+}
+
+def post_eval():
+    """16:9 social card: dsx 2-bit vs the hosted model on a 26-row Pocket Model eval."""
+    dn, dc = EVAL_POST["dsx"]; hn, hc = EVAL_POST["hosted"]
+    groups = ""
+    for name, n, d, h in EVAL_POST["rows"]:
+        bar = lambda k, c: (f"<div class=vb><span style='color:{c}'>{k}/{n}</span>"
+                            f"<b style='height:{k / n * 240:.0f}px;background:{c}'></b></div>")
+        groups += (f"<div class='grp{' all' if name == 'All' else ''}'><div class=pair>{bar(d, dc)}{bar(h, hc)}</div>"
+                   f"<div class=gn>{name}</div><div class=gr>{n} rows</div></div>")
+    css = BRAND_CSS + """
+h1{font-size:54px;margin-top:14px}
+.card{padding-top:52px}
+.body{margin-top:30px;display:grid;grid-template-columns:1fr 430px;gap:40px}
+.chart{background:rgba(255,255,255,.045);border:1px solid rgba(228,241,244,.14);border-radius:18px;padding:22px 30px 16px}
+.chart h2{margin:0;font:600 25px/1 Num,Iosevka,ui-monospace,monospace}
+.chart .k{display:flex;gap:26px;margin-top:14px;font-size:20px}
+.chart .k i{display:inline-block;width:16px;height:16px;border-radius:4px;margin-right:9px;vertical-align:-2px}
+.groups{margin-top:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:14px;align-items:end;height:310px;border-bottom:2px solid rgba(228,241,244,.3)}
+.grp{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.grp.all{background:rgba(255,255,255,.04);border-radius:12px 12px 0 0}
+.pair{display:flex;gap:10px;align-items:flex-end}
+.vb{width:62px;display:flex;flex-direction:column;align-items:center}
+.vb span{font-weight:700;font-size:23px;margin-bottom:8px;white-space:nowrap}
+.vb b{display:block;width:100%;border-radius:5px 5px 0 0}
+.gn,.gr{position:relative;top:0}
+.grp .gn{order:3;margin-top:0}
+.labels{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;text-align:center;margin-top:12px}
+.labels b{display:block;font-size:20px} .labels span{color:#a9b8bd;font-size:17px}
+.tiles{display:flex;flex-direction:column;gap:16px}
+.tiles .tile{padding:18px 26px}
+.tiles .big{font-size:66px}
+.tiles .lab{margin-top:8px;font-size:20px}
+.foot{flex-direction:column;gap:6px;bottom:28px;font-size:18px}
+.foot .r{display:flex;justify-content:space-between}
+.foot .note{color:#a9b8bd}
+"""
+    names = [r[0] for r in EVAL_POST["rows"]]; ns = [r[1] for r in EVAL_POST["rows"]]
+    groups = groups.replace("<div class=gn>", "<div style='display:none'>").replace("<div class=gr>", "<div style='display:none'>")
+    labels = "".join(f"<div><b>{a}</b><span>{n} rows</span></div>" for a, n in zip(names, ns))
+    return f"""<!doctype html><meta charset=utf-8><style>{css}</style><div class=card>
+<div class=eyebrow>dsx · Pocket Model eval · 26 hard rows</div>
+<h1>2-bit DeepSeek-V4.1-Flash-1017 on two RTX 3090s<br><em>matches the hosted full model</em></h1>
+<div class=body>
+ <div class=chart><h2>Rows passed</h2>
+  <div class=k><span><i style='background:{dc}'></i>{dn}</span><span><i style='background:{hc}'></i>{hn}</span></div>
+  <div class=groups>{groups}</div><div class=labels>{labels}</div></div>
+ <div class=tiles>
+  <div class=tile><div class=big>2×<small>tokens</small></div><div class=lab>thinking on math and multiple choice</div></div>
+  <div class=tile><div class=big>29<small>tok/s</small></div><div class=lab>2x RTX 3090 + 128 GB RAM</div></div>
+  <div class=tile><div class=big>$0<small>per token</small></div><div class=lab>self-hosted, 148 GB</div></div>
+ </div>
+</div>
+<div class=foot><div class=note>Both at temperature 1.0, think low, graded in code. Within noise (p = 0.69): the hosted model scored 20/26 here at temperature 0.</div>
+<div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
+</div>"""
+
 # ---------------------------------------------------------------- render
 def chromium():
     if os.environ.get("PW_CHROMIUM"): return os.environ["PW_CHROMIUM"]
@@ -215,14 +278,14 @@ def chromium():
     return found[-1] if found else None
 
 if __name__ == "__main__":
-    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality(), "post.png": post()}
+    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality(), "post.png": post(), "post-eval.png": post_eval()}
     with sync_playwright() as p:
         b = p.chromium.launch(executable_path=chromium(), args=["--allow-file-access-from-files"])
         pg = b.new_page(viewport={"width": 840, "height": 900}, device_scale_factor=2)
         for name, html in charts.items():
             tmp = OUT / f".{name}.html"
             tmp.write_text(html)
-            pg.set_viewport_size({"width": 1600, "height": 900} if name == "post.png" else {"width": 840, "height": 900})
+            pg.set_viewport_size({"width": 1600, "height": 900} if name.startswith("post") else {"width": 840, "height": 900})
             pg.goto(tmp.as_uri(), wait_until="networkidle")
             pg.evaluate("document.fonts.ready")
             pg.locator(".card").screenshot(path=str(OUT / name), omit_background=True)
