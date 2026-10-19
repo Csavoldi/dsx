@@ -172,7 +172,7 @@ pub fn up_bf16_as_fp8(g: &Gpu, st: &SafeTensors, name: &str) -> Result<DMat> {
                     a = a.max(w[(rb * 32 + r) * k + cb * 32 + c].abs());
                 }
             }
-            let s = dsx::numerics::pow2_ceil((a / 448.0).max(f32::MIN_POSITIVE));
+            let s = dsx_core::numerics::pow2_ceil((a / 448.0).max(f32::MIN_POSITIVE));
             *sv = ((s.to_bits() >> 23) & 0xFF) as u8;
         }
     });
@@ -180,7 +180,7 @@ pub fn up_bf16_as_fp8(g: &Gpu, st: &SafeTensors, name: &str) -> Result<DMat> {
     q.par_chunks_mut(k).enumerate().for_each(|(r, qrow)| {
         for c in 0..k {
             let s = f32::from_bits((sc[(r / 32) * kb + c / 32] as u32) << 23);
-            qrow[c] = e4m3_byte(dsx::numerics::e4m3(w[r * k + c] / s));
+            qrow[c] = e4m3_byte(dsx_core::numerics::e4m3(w[r * k + c] / s));
         }
     });
     let t = tile_fp8(&q, n, k);

@@ -1,7 +1,7 @@
 # Hardware microbenchmarks
 
 Reference machine: i7-12700K, 128 GB DDR4-3200 (dual channel), RTX 3090 on PCIe 4.0 x16 + RTX 3090 on PCIe 3.0 x4.
-Sources: `membw.c`, `qdot.c` (synthetic weights, real kernels), `pcie.cu`, and `engine/src/bin/cpubench.rs`.
+Sources: `membw.c`, `qdot.c` (synthetic weights, real kernels), `pcie.cu`, and `nvidia/src/bin/cpubench.rs`.
 
 ## Memory and PCIe
 

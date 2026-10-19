@@ -23,6 +23,16 @@ pub struct SafeTensors {
 
 impl SafeTensors {
     /// Open only the shards that hold `wanted` tensors (all shards if `wanted` is empty).
+    /// Only the tensors whose names start with `prefix` (and only their shards need to be present).
+    pub fn open_prefix(dir: &Path, prefix: &str) -> Result<SafeTensors> {
+        let idx: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("model.safetensors.index.json")).context("index json")?)?;
+        let names: Vec<String> = idx["weight_map"].as_object().context("weight_map")?.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
+        anyhow::ensure!(!names.is_empty(), "no tensors named {prefix}* in {}", dir.display());
+        let want: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        Self::open(dir, &want)
+    }
+
     pub fn open(dir: &Path, wanted: &[&str]) -> Result<SafeTensors> {
         let idx: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("model.safetensors.index.json")).context("index json")?)?;

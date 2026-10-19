@@ -3,9 +3,9 @@
 use crate::hip::{Arg, Buf, Gpu, Graph};
 use crate::load::{self, DMat};
 use anyhow::{Context, Result, bail};
-use dsx::model::Config;
+use dsx_core::model::Config;
 use crate::ck::Ck;
-use dsx::safetensors::SafeTensors;
+use dsx_core::safetensors::SafeTensors;
 use std::path::Path;
 
 pub const D: usize = 5120;
@@ -635,7 +635,7 @@ impl Decoder {
         let head = if head_fp8 { load::up_bf16_as_fp8(&g, &st, "head.weight")? } else { load::up_bf16(&g, &st, "head.weight")? };
         let out_norm = load::up_f32(&g, &st, "norm.weight")?;
         let ropes = |orig: usize, base: f32| -> Vec<f32> {
-            dsx::numerics::Rope::new(cfg.rope_dim, orig, base, cfg.rope_factor, cfg.beta_fast, cfg.beta_slow).freqs
+            dsx_core::numerics::Rope::new(cfg.rope_dim, orig, base, cfg.rope_factor, cfg.beta_fast, cfg.beta_slow).freqs
         };
         let rope_f = g.upload(&ropes(0, cfg.rope_theta))?;
         let rope_fc = g.upload(&ropes(cfg.original_seq_len, cfg.compress_rope_theta))?;

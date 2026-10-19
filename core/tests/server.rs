@@ -9,8 +9,8 @@ use deepseek_recipe::openai::ChatCompletionRequest;
 use deepseek_recipe::request::{ConversionOptions, ProtocolRequest};
 use deepseek_recipe_encoding::PromptEncoding;
 use deepseek_recipe_encoding::v4::dsv41::DeepseekV41Encoding;
-use dsx::server::mock::{MOCK_REASONING, MOCK_REPLY, MockEngine, MockMode};
-use dsx::server::{AppState, Engine, EngineHandle, ServerConfig};
+use dsx_core::server::mock::{MOCK_REASONING, MOCK_REPLY, MockEngine, MockMode};
+use dsx_core::server::{AppState, Engine, EngineHandle, ServerConfig};
 use serde_json::{Value, json};
 use tokenizers::Tokenizer;
 
@@ -38,7 +38,7 @@ async fn start(mode: MockMode, delay_ms: u64) -> String {
     let st = AppState::new(engine, tok, ServerConfig::default()).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(dsx::server::serve(listener, st));
+    tokio::spawn(dsx_core::server::serve(listener, st));
     base
 }
 

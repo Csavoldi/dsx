@@ -1,15 +1,16 @@
-# dsx
+# dsx: the NVIDIA runner
 
-DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200.
-Rust + CUDA (cudarc driver API, one nvcc fatbin for sm_86 and sm_120). Plan and numbers: ../DESIGN.md, ../FINDINGS.md,
-../bench/RESULTS.md.
+DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200 (or one RTX 5090).
+Rust + CUDA (cudarc driver API, one nvcc fatbin for sm_86 and sm_120). Config, readers, block formats, the CPU
+reference and the server are in [`../core`](../core) (re-exported as `dsx::model`, `dsx::server`, ...). Plan and
+numbers: ../DESIGN.md, ../FINDINGS.md, ../bench/RESULTS.md.
 
 ## Build
 
 ```bash
-cargo build --release --features cuda          # CUDA_ARCHS=86 for RTX 30xx (default 86,120)
-cargo test --release                            # CPU tests (formats, numerics, CPU expert kernels)
-cargo test --release --features cuda            # + GPU kernel tests (gemv vs CPU decoders, top-k, handshake)
+cargo build --release -p dsx --features cuda    # CUDA_ARCHS=86 for RTX 30xx (default 86,120); binaries in ../target/release
+cargo test --release                            # CPU tests (core: formats, numerics, server; CPU expert kernels)
+cargo test --release -p dsx --features cuda     # + GPU kernel tests (gemv vs CPU decoders, top-k, handshake)
 ```
 
 ## Commands
@@ -29,10 +30,8 @@ Debug: `DSX_DUMP=dir` (per-layer residual streams, ref vs GPU), `DSX_ROUTES=1` (
 
 | file | |
 |---|---|
-| `gguf.rs`, `safetensors.rs` | mmap readers (GGUF splits, HF shards) |
-| `formats.rs`, `numerics.rs` | block decoders (Q8_0, Q2_0, PTQ1_0, Q3_K, Q6_K, FP8 32x32, FP4), FP8/FP4 fake quant, RoPE + YaRN |
-| `model.rs` | config, weight handles (`Mat`), the CPU reference forward |
-| `dspark.rs` | DSpark draft stack (reference) |
+| `../core/src/` | `gguf.rs`, `safetensors.rs` (mmap readers), `formats.rs`, `numerics.rs` (block decoders: Q8_0, Q2_0, PTQ1_0, Q3_K, Q6_K, FP8 32x32, FP4; fake quant; RoPE + YaRN), `model.rs` (config, weight handles, the CPU reference forward), `dspark.rs` (draft stack reference), `server/` |
+| `server/real.rs` | the GPU engine behind the server (prefix reuse, snapshots) |
 | `cpu/` | AVX2 + AVX-VNNI expert kernels, pinned thread pool, per-layer CPU MoE |
 | `gpu.rs` | CUDA boundary: contexts, buffers, hugepage host memory, launches, cuBLAS, stream flag ops |
 | `kernels/` | `dsx.cu` (dense path, attention, compressor, indexer, router, prefill helpers), `moe.cuh`, `expert_fast.cuh` (repacked VRAM experts, int8 mma, T tokens), `topk.cuh` |

@@ -2,7 +2,7 @@
 //! names and dtypes, with the re-quantized experts as device tiles). Both look like `SafeTensors` to the loader.
 
 use anyhow::{Context, Result};
-use dsx::safetensors::{SafeTensors, StTensor};
+use dsx_core::safetensors::{SafeTensors, StTensor};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -11,16 +11,22 @@ pub struct Ck {
     /// codebook experts in an export: tensor name ("....w1.cb") -> (format, multiplier)
     pub cb: HashMap<String, (i32, f32)>,
     st: Option<SafeTensors>,
-    gg: Option<dsx::gguf::Gguf>,
+    gg: Option<dsx_core::gguf::Gguf>,
 }
 
 impl Ck {
+    /// A checkpoint directory's tensors starting with `prefix` (only their shards need to be downloaded)
+    pub fn open_prefix(dir: &Path, prefix: &str) -> Result<Ck> {
+        let st = SafeTensors::open_prefix(dir, prefix)?;
+        Ok(Ck { tensors: st.tensors.clone(), cb: HashMap::new(), st: Some(st), gg: None })
+    }
+
     pub fn open(path: &Path) -> Result<Ck> {
         if path.is_dir() {
             let st = SafeTensors::open(path, &[])?;
             return Ok(Ck { tensors: st.tensors.clone(), cb: HashMap::new(), st: Some(st), gg: None });
         }
-        let g = dsx::gguf::Gguf::open(path)?;
+        let g = dsx_core::gguf::Gguf::open(path)?;
         let idx: serde_json::Value = serde_json::from_str(g.kv.get("dsxa.index").and_then(|v| v.as_str()).context("dsxa.index (not a dsx-amd export)")?)?;
         let mut tensors = HashMap::new();
         let mut cb = HashMap::new();

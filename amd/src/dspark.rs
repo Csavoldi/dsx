@@ -1,4 +1,4 @@
-//! DSpark, the checkpoint's speculative draft stack (`mtp.*`), on the GPU; the CPU reference is engine/src/dspark.rs.
+//! DSpark, the checkpoint's speculative draft stack (`mtp.*`), on the GPU; the CPU reference is core/src/dspark.rs.
 //!
 //! Three window-only layers with their own 128-expert MoE (top-3) read the main model's residual (the mean of its 4
 //! streams at the entry of layers 37-39, projected by `main_proj`) and draft a block of 5 tokens at once,
@@ -58,7 +58,8 @@ impl Dspark {
     pub fn load(dec: &Decoder, dir: &Path, fmt: i32) -> Result<Dspark> {
         let g = &dec.g;
         let t0 = std::time::Instant::now();
-        let st = Ck::open(dir)?;
+        // the draft tensors (official shards 44-46), not the whole checkpoint
+        let st = Ck::open_prefix(dir, "mtp.")?;
         let cfg: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json"))?)?;
         let t = &cfg["text_config"];
         let mut layers = vec![];

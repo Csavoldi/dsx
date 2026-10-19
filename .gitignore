@@ -1,4 +1,5 @@
-engine/target/
+target/
+nvidia/target/
 libqkern.so
 __pycache__/
-amd/target
+amd/target/

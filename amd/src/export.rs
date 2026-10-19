@@ -8,7 +8,7 @@ use anyhow::Result;
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 
-fn keep(name: &str, c: &dsx::model::Config) -> bool {
+fn keep(name: &str, c: &dsx_core::model::Config) -> bool {
     if name.starts_with("vision.") || name.starts_with("aligner.") || name.starts_with("image_") || name.starts_with("mtp.") {
         return false;
     }

@@ -22,7 +22,8 @@ tags:
 
 DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in 270 GB, built to run entirely from the HBM of one AMD Instinct
 MI325X with exact routing. Most routed experts keep the checkpoint's own MXFP4 weights; the least-used ones get a fitted
-3-bit codebook. Runs on [**dsx**](https://github.com/lxe/dsx)'s AMD runner (`amd/`, Rust + HIP).
+3-bit codebook. Runs on [**dsx**](https://github.com/lxe/dsx)'s AMD runner (`amd/`, Rust + HIP). For a desktop with NVIDIA GPUs, see
+the 2-bit build: [lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit).
 
 | | |
 |---|---|
@@ -82,11 +83,11 @@ hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
   --include config.json tokenizer.json model.safetensors.index.json model-00047-of-00048.safetensors model-00048-of-00048.safetensors
 cp dsx-mxfp4/dsx-engram.json v41-1017/
 
-# ROCm 7 (gfx942), Rust
-git clone https://github.com/lxe/dsx && cd dsx/amd && cargo build --release
+# dsx's AMD runner: ROCm 7 (gfx942), Rust
+git clone https://github.com/lxe/dsx && cd dsx && cargo build --release -p dsx-amd
 
-DSXA_WEIGHTS=../../dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf \
-  ./target/release/dsx-amd serve --model ../../v41-1017 --ctx 262144 --host 0.0.0.0 --port 8090
+DSXA_WEIGHTS=../dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf \
+  ./target/release/dsx-amd serve --model ../v41-1017 --ctx 262144 --host 0.0.0.0 --port 8090
 ```
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI-compatible client at `http://localhost:8090/v1`.

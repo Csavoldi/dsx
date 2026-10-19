@@ -20,7 +20,9 @@ tags:
 # DeepSeek-V4.1-Flash-1017 · dsx 2-bit
 
 DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in 148 GB, built to run on two RTX 3090s and 128 GB of RAM with
-exact routing. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engine made for this model.
+exact routing. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engine made for this model. For one AMD
+MI325X (256 GiB HBM) there is a near-lossless build: [lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4)
+(KL 0.049, 110-114 tok/s).
 
 | | |
 |---|---|
@@ -75,13 +77,13 @@ hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit --local-dir dsx-2bit
 hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
   --include model.safetensors.index.json model-00047-of-00048.safetensors model-00048-of-00048.safetensors tokenizer.json
 
-# the engine
-git clone https://github.com/lxe/dsx && cd dsx/engine
-CUDA_ARCHS=86 cargo build --release --features cuda      # 86 = RTX 30xx, 120 = RTX 50xx
+# the engine (dsx's NVIDIA runner)
+git clone https://github.com/lxe/dsx && cd dsx
+CUDA_ARCHS=86 cargo build --release -p dsx --features cuda      # 86 = RTX 30xx, 120 = RTX 50xx
 
-./target/release/dsx-server --model ../../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
-  --engram ../../v41-1017 --tokenizer ../../v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
-  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../../dsx-2bit/expert-rank.json
+./target/release/dsx-server --model ../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
+  --engram ../v41-1017 --tokenizer ../v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
+  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../dsx-2bit/expert-rank.json
 ```
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI-compatible client at `http://localhost:8090/v1`:

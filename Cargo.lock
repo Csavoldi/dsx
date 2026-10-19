@@ -612,6 +612,7 @@ dependencies = [
  "deepseek-recipe",
  "deepseek-recipe-core",
  "deepseek-recipe-encoding",
+ "dsx-core",
  "flate2",
  "half",
  "memmap2",
@@ -625,6 +626,46 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "dsx-amd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dsx-core",
+ "half",
+ "memmap2",
+ "rayon",
+ "serde_json",
+ "tokenizers",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dsx-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "deepseek-recipe",
+ "deepseek-recipe-core",
+ "deepseek-recipe-encoding",
+ "flate2",
+ "half",
+ "memmap2",
+ "rayon",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "tokio",
+ "tokio-stream",
+ "tracing",
 ]
 
 [[package]]

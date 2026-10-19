@@ -148,8 +148,8 @@ fn log_softmax(l: &[f32]) -> Vec<f64> {
 }
 
 fn engram_json(gguf: &Path, out: &Path) -> Result<()> {
-    let g = dsx::gguf::Gguf::open(gguf)?;
-    let c = dsx::model::Config::from_gguf(&g)?;
+    let g = dsx_core::gguf::Gguf::open(gguf)?;
+    let c = dsx_core::model::Config::from_gguf(&g)?;
     let per_layer = (c.engram_ngram - 1) * c.engram_heads;
     let primes: Vec<Vec<u64>> = c.engram_primes.chunks(per_layer).map(|x| x.to_vec()).collect();
     let mults: Vec<Vec<u64>> = c.engram_multipliers.chunks(c.engram_ngram).map(|x| x.to_vec()).collect();
@@ -476,9 +476,9 @@ fn main() -> Result<()> {
                 }
                 None => {
                     let t0 = Instant::now();
-                    let m = dsx::model::Model::load_hf(&model)?;
+                    let m = dsx_core::model::Model::load_hf(&model)?;
                     eprintln!("reference loaded in {:.1} s", t0.elapsed().as_secs_f32());
-                    let mut st = dsx::model::RefState::new(&m);
+                    let mut st = dsx_core::model::RefState::new(&m);
                     let mut feed = ids.clone();
                     let mut out = vec![];
                     let mut i = 0;

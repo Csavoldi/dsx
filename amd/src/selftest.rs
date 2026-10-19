@@ -1,8 +1,8 @@
-//! Kernel self-tests against CPU implementations (dsx::numerics), on synthetic inputs: no model needed.
+//! Kernel self-tests against CPU implementations (dsx_core::numerics), on synthetic inputs: no model needed.
 
 use crate::hip::{Arg, Gpu};
 use anyhow::Result;
-use dsx::numerics::*;
+use dsx_core::numerics::*;
 
 struct Rng(u64);
 impl Rng {
@@ -180,12 +180,12 @@ pub fn run() -> Result<()> {
         }
         report("gemv2 rope epilogue", &b2, &want2);
         let xv: Vec<f32> = codes.iter().map(|&c| fnuz(c)).collect();
-        let cpu2: Vec<f32> = (0..n).map(|i| (0..k).map(|c| dsx::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xv[c]).sum()).collect();
+        let cpu2: Vec<f32> = (0..n).map(|i| (0..k).map(|c| dsx_core::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xv[c]).sum()).collect();
         report("gemv2 fp8 vs cpu", &a2, &cpu2);
         // and the GEMV itself against the CPU (FP8 OCP weights x fake_fp8(x))
         let mut xq = x.clone();
         fake_fp8(&mut xq, 32);
-        let cpu: Vec<f32> = (0..n).map(|i| (0..k).map(|c| dsx::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xq[c]).sum()).collect();
+        let cpu: Vec<f32> = (0..n).map(|i| (0..k).map(|c| dsx_core::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xq[c]).sum()).collect();
         report("fp8 gemv vs cpu", &a, &cpu);
     }
     // ---- MXFP4 expert GEMV (exact table) vs CPU dequant, through the expert table (expert 0)
@@ -213,7 +213,7 @@ pub fn run() -> Result<()> {
         let mut row = vec![0f32; k];
         let cpu: Vec<f32> = (0..n)
             .map(|i| {
-                dsx::formats::dequant_row_scaled(dsx::gguf::GType::Fp4, &w[i * k / 2..(i + 1) * k / 2], &sc[i * k / 32..(i + 1) * k / 32], &mut row);
+                dsx_core::formats::dequant_row_scaled(dsx_core::gguf::GType::Fp4, &w[i * k / 2..(i + 1) * k / 2], &sc[i * k / 32..(i + 1) * k / 32], &mut row);
                 row.iter().zip(&xq).map(|(a, b)| a * b).sum()
             })
             .collect();
@@ -297,11 +297,11 @@ pub fn run() -> Result<()> {
         let gp: Vec<f32> = g.dtoh(nmix.ptr, 80 * 32)?;
         let gm: Vec<f32> = (0..25).map(|j| (0..80).map(|b| gp[b * 32 + j]).sum()).collect();
         // CPU: model.rs hc_mixes(h, fn_prev) -> (pre, post, comb); h' = hc_post(bf16(y), h, post, comb); x = hc_pre(h', pre)
-        let c = dsx::model::Config { hc, dim: d, eps: 1e-20, hc_eps: cfg_hc_eps, sinkhorn_iters: 20, ..fake_cfg() };
-        let (pre, post, comb) = dsx::model::hc_mixes_pub(&c, &h, &fn_prev, &pa.scale, &pa.base);
+        let c = dsx_core::model::Config { hc, dim: d, eps: 1e-20, hc_eps: cfg_hc_eps, sinkhorn_iters: 20, ..fake_cfg() };
+        let (pre, post, comb) = dsx_core::model::hc_mixes_pub(&c, &h, &fn_prev, &pa.scale, &pa.base);
         let yb: Vec<f32> = y.iter().map(|&v| round_bf16(v)).collect();
-        let h2 = dsx::model::hc_post_pub(&c, &yb, &h, &post, &comb);
-        let x = dsx::model::hc_pre_pub(&c, &h2, &pre);
+        let h2 = dsx_core::model::hc_post_pub(&c, &yb, &h, &post, &comb);
+        let x = dsx_core::model::hc_pre_pub(&c, &h2, &pre);
         let us = g.time(|| {
             for _ in 0..100 {
                 crate::decode::test_hc_step_nosync(&g, dh.ptr, dy.ptr, dpm.ptr, &pa, dpm.ptr, &pa, dfn.ptr, nmix.ptr, xr.ptr, xss.ptr)?;
@@ -330,7 +330,7 @@ pub fn run() -> Result<()> {
         let (dw, dsc) = (g.upload(&crate::load::tile_fp8(&w, n, k))?, g.upload(&sc)?);
         crate::prefill::test_mm(&g, 0, dw.ptr, dsc.ptr, 0, 0, n, k, dq.ptr, dxs.ptr, 0, nt, y.ptr, (0, 0, 0))?;
         let got: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
-        let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| dsx::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xv[t * k + c]).sum() }).collect();
+        let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| dsx_core::model::fp8_e4m3_to_f32(w[i * k + c]) * f32::from_bits((sc[(i / 32) * (k / 32) + c / 32] as u32) << 23) * xv[t * k + c]).sum() }).collect();
         report("mm fp8 dense (37 tok)", &got, &cpu);
         let xbf = g.upload(&bf16r(&xv))?;
         crate::prefill::test_mm(&g, 0, dw.ptr, dsc.ptr, 0, 0, n, k, dq.ptr, dxs.ptr, xbf.ptr, nt, y.ptr, (0, 0, 0))?;
@@ -351,7 +351,7 @@ pub fn run() -> Result<()> {
         crate::prefill::test_mm(&g, 1, ar.ptr, 0, 0, c4.len() as i64, n, k, dq.ptr, dxs.ptr, 0, nt, y.ptr, (0, 0, 0))?;
         let got: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
         let mut row = vec![0f32; k];
-        let wd: Vec<Vec<f32>> = (0..n).map(|i| { dsx::formats::dequant_row_scaled(dsx::gguf::GType::Fp4, &w4[i * k / 2..(i + 1) * k / 2], &s4[i * k / 32..(i + 1) * k / 32], &mut row); row.clone() }).collect();
+        let wd: Vec<Vec<f32>> = (0..n).map(|i| { dsx_core::formats::dequant_row_scaled(dsx_core::gguf::GType::Fp4, &w4[i * k / 2..(i + 1) * k / 2], &s4[i * k / 32..(i + 1) * k / 32], &mut row); row.clone() }).collect();
         let cpu: Vec<f32> = (0..nt * n).map(|o| { let (t, i) = (o / n, o % n); (0..k).map(|c| wd[i][c] * xv[t * k + c]).sum() }).collect();
         report("mm mxfp4 (37 tok)", &got, &cpu);
         crate::prefill::test_mm(&g, 1, ar.ptr, 0, 0, c4.len() as i64, n, k, dq.ptr, dxs.ptr, xbf.ptr, nt, y.ptr, (0, 0, 0))?;
@@ -407,8 +407,8 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn fake_cfg() -> dsx::model::Config {
-    dsx::model::Config {
+fn fake_cfg() -> dsx_core::model::Config {
+    dsx_core::model::Config {
         vocab: 0, dim: 0, inter: 0, n_layers: 0, n_heads: 0, head_dim: 0, rope_dim: 0, q_lora: 0, o_lora: 0, o_groups: 0,
         n_experts: 0, top_k: 0, window: 0, idx_heads: 0, idx_dim: 0, idx_topk: 0, cand_layer: 0, cand_blocks: 0,
         cand_block: 0, hc: 0, sinkhorn_iters: 0, hc_eps: 0.0, eps: 0.0, swiglu_limit: 0.0, route_scale: 0.0,

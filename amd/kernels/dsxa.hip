@@ -2,7 +2,7 @@
 //
 // One decode step is a fixed sequence of kernels captured once in a HIP graph. Everything that depends on the
 // position (ring slots, compressed-row counts, indexer lengths) is read from device memory (`st`), so the same graph
-// replays for every token. Numerics follow the CPU reference (engine/src/model.rs, DeepSeek's model.py): bf16
+// replays for every token. Numerics follow the CPU reference (core/src/model.rs, DeepSeek's model.py): bf16
 // rounding points, FP8 activation quantization for FP8/FP4 weights, the training-time FP4 fake quantization of caches.
 #include "gemv.h"
 

@@ -3,7 +3,7 @@
 
 use crate::decode::Decoder;
 use anyhow::{Result, anyhow};
-use dsx::server::engine::{Engine, Finish, GenParams, GenStats};
+use dsx_core::server::engine::{Engine, Finish, GenParams, GenStats};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -32,7 +32,7 @@ impl Engine for AmdEngine {
         self.cached = prompt.to_vec();
         let prefill = t0.elapsed();
         let td = Instant::now();
-        let mut sampler = dsx::server::sample::Sampler::from_params(p);
+        let mut sampler = dsx_core::server::sample::Sampler::from_params(p);
         let greedy = p.temperature <= 0.0;
         let mut fin = Finish::Length;
         if greedy && self.dec.dspark.is_some() {
@@ -79,16 +79,16 @@ pub fn serve(model: PathBuf, rank: Vec<(usize, usize)>, ctx: usize, host: String
         let tpath = model.join("tokenizer.json");
         let tok = Arc::new(tokenizers::Tokenizer::from_file(&tpath).map_err(|e| anyhow!("{}: {e}", tpath.display()))?);
         let m2 = model.clone();
-        let engine = dsx::server::EngineHandle::spawn(move || {
+        let engine = dsx_core::server::EngineHandle::spawn(move || {
             let mut dec = Decoder::load(&m2, ctx, &rank, &[], None)?;
             dec.load_dspark(&m2)?;
             Ok(Box::new(AmdEngine { dec, cached: vec![], stats: GenStats::default() }) as Box<dyn Engine>)
         })?;
-        let cfg = dsx::server::ServerConfig { model_name: "deepseek-v4.1-flash".into(), ctx, default_max_tokens: max_tokens, default_temperature: 1.0, default_top_p: 1.0, ..dsx::server::ServerConfig::default() };
-        let st = dsx::server::AppState::new(engine, tok, cfg)?;
+        let cfg = dsx_core::server::ServerConfig { model_name: "deepseek-v4.1-flash".into(), ctx, default_max_tokens: max_tokens, default_temperature: 1.0, default_top_p: 1.0, ..dsx_core::server::ServerConfig::default() };
+        let st = dsx_core::server::AppState::new(engine, tok, cfg)?;
         let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
         tracing::info!("listening on http://{}", listener.local_addr()?);
-        dsx::server::serve(listener, st).await?;
+        dsx_core::server::serve(listener, st).await?;
         Ok(())
     })
 }

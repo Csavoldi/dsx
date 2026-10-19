@@ -4,7 +4,7 @@
 # ///
 """Draws the model card's charts: speed.png, quality.png, size.png, size-vs-quality.png.
 
-Run:  uv run hf/assets/make_charts.py      (uv installs playwright; any Chromium works)
+Run:  uv run cards/dsx-2bit/assets/make_charts.py      (uv installs playwright; any Chromium works)
 Each chart is an SVG drawn here, rendered by headless Chromium at 2x (1200 px wide) on a white card.
 Chromium: PW_CHROMIUM=/path/to/chrome, else the first one found in ~/.cache/ms-playwright, else
 `uv run --with playwright playwright install chromium` once. Fonts: Pathway Extreme from Google Fonts,
