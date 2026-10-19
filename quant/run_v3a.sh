@@ -6,7 +6,7 @@ cd ~/ai/ds41
 CAL=~/ai/ds41/calib3; Q=~/ai/ds41/qwork-v3a; OUT=gguf/1017-v3a.gguf
 mkdir -p $CAL
 if [ ! -f $CAL/hashes.npy ]; then
-  (cd quant2 && V41_WORK=$CAL ../guard.sh prep3 60 ../venv/bin/python v41_calib.py prep --n 192 --seq 2048 \
+  (cd quant2 && V41_WORK=$CAL ../guard.sh prep3 60 ../venv/bin/python v41_calib.py prep --n 160 --seq 2048 \
      --corpus ~/ai/ds41/corpus3 --think-weight 16)
 fi
 ./guard.sh chain3 110 quant2/quant_chain_v3.sh $Q 0 $CAL
