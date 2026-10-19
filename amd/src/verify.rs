@@ -64,8 +64,14 @@ impl Decoder {
                     }
                     j.split = s as i32;
                 }
-                if j.split > 1 {
+                if j.split > 1 && j.atomic == 0 {
+                    // k-split partial sums accumulate: zero this job's output rows first
                     j.atomic = 1;
+                    if j.orows != 0 || j.ndyn > 0 {
+                        anyhow::bail!("{label}: split scatter job without atomic output");
+                    }
+                    let span = ((j.ntok as usize - 1) * j.ldy as usize + j.n as usize) * 4;
+                    self.g.memset(j.y, 0, span)?;
                 }
                 j.blocks = ((j.n as usize).div_ceil(64) * j.split as usize * j.ndyn.max(1) as usize) as i32;
                 blocks += j.blocks as u32;
@@ -82,4 +88,19 @@ impl Decoder {
         }
         Ok(())
     }
+}
+
+/// self-test hook: one static vgemv job over `ntok` activation rows
+#[allow(clippy::too_many_arguments)]
+pub fn test_vgemv(g: &crate::hip::Gpu, fmt: i32, w: u64, sc: u64, soff: i64, n: usize, k: usize, xq: u64, xs: u64, xb: u64, ntok: usize, y: u64, split: i32) -> Result<()> {
+    let mut j = VJob { w, sc, soff, mul: 1.0, fmt, n: n as i32, k: k as i32, xq, xs, xb, ldx: k as i32, ntok: ntok as i32, y, ldy: n as i32, split, ..Default::default() };
+    if split > 1 {
+        j.atomic = 1;
+    }
+    j.blocks = (n.div_ceil(64) * split as usize) as i32;
+    let js = VJobs { j: [j; VMAX], n: 1, cb3lo: 0, cb3hi: 0, cb2: 0 };
+    let b = unsafe { std::slice::from_raw_parts(&js as *const VJobs as *const u8, std::mem::size_of::<VJobs>()).to_vec() };
+    let pos = g.upload(&[0i32; 4])?;
+    g.launch("vgemv", (j.blocks as u32, 1, 1), 256, 0, &[Arg::B(b), Arg::P(pos.ptr), Arg::P(0), Arg::P(0)])?;
+    g.sync()
 }

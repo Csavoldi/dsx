@@ -219,6 +219,7 @@ pub fn run() -> Result<()> {
             .collect();
         report("mxfp4 expert gemv vs cpu", &got, &cpu);
         // timing on a full-size expert matrix (2304 x 5120), replicated across 1.5 GB so it streams from HBM
+        if std::env::var_os("SELFTEST_TIMING").is_some() {
         let (n, k) = (2304usize, 5120usize);
         let w: Vec<u8> = (0..n * k / 2).map(|_| ((r.f() + 1.0) * 127.9) as u8).collect();
         let sc: Vec<u8> = (0..n * k / 32).map(|_| 118 + ((r.f() + 1.0) * 3.0) as u8).collect();
@@ -250,6 +251,7 @@ pub fn run() -> Result<()> {
                 Ok(())
             })? / copies as f32;
             println!("mxfp4 expert 2304x5120 split {split}: {us:.1} us, {:.0} GB/s", per as f32 / us / 1e3);
+        }
         }
     }
     // ---- BF16 GEMV with the hi/lo activation split vs CPU f32
@@ -334,6 +336,11 @@ pub fn run() -> Result<()> {
         crate::prefill::test_mm(&g, 0, dw.ptr, dsc.ptr, 0, 0, n, k, dq.ptr, dxs.ptr, xbf.ptr, nt, y.ptr, (0, 0, 0))?;
         let got2: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
         report("mm2 fp8 dense (37 tok)", &got2, &cpu);
+        // vgemv over the first 5 token rows (split 2: atomics)
+        g.memset(y.ptr, 0, nt * n * 4)?;
+        crate::verify::test_vgemv(&g, 0, dw.ptr, dsc.ptr, 0, n, k, dq.ptr, dxs.ptr, 0, 5, y.ptr, 2)?;
+        let gv: Vec<f32> = g.dtoh(y.ptr, 5 * n)?;
+        report("vgemv fp8 (5 tok)", &gv, &cpu[..5 * n]);
         // MXFP4
         let w4: Vec<u8> = (0..n * k / 2).map(|_| ((r.f() + 1.0) * 127.9) as u8).collect();
         let s4: Vec<u8> = (0..n * k / 32).map(|_| 118 + ((r.f() + 1.0) * 3.0) as u8).collect();
@@ -350,6 +357,10 @@ pub fn run() -> Result<()> {
         crate::prefill::test_mm(&g, 1, ar.ptr, 0, 0, c4.len() as i64, n, k, dq.ptr, dxs.ptr, xbf.ptr, nt, y.ptr, (0, 0, 0))?;
         let got2: Vec<f32> = g.dtoh(y.ptr, nt * n)?;
         report("mm2 mxfp4 (37 tok)", &got2, &cpu);
+        g.memset(y.ptr, 0, nt * n * 4)?;
+        crate::verify::test_vgemv(&g, 1, ar.ptr, 0, c4.len() as i64, n, k, dq.ptr, dxs.ptr, 0, 5, y.ptr, 1)?;
+        let gv: Vec<f32> = g.dtoh(y.ptr, 5 * n)?;
+        report("vgemv mxfp4 (5 tok)", &gv, &cpu[..5 * n]);
         // BF16 weights x bf16 activations (xv is bf16-exact)
         let wb: Vec<f32> = (0..n * k).map(|_| r.f() * 0.1).collect();
         let wbb = bf16r(&wb);

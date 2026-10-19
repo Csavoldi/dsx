@@ -253,6 +253,15 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                             println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
                         }
                     }
+                    "env" => {
+                        // env K [V]: set (or with no value, remove) a variable read at run time by debug switches
+                        unsafe {
+                            match w.get(2) {
+                                Some(v) => std::env::set_var(w[1], v),
+                                None => std::env::remove_var(w[1]),
+                            }
+                        }
+                    }
                     "vtest" => {
                         // decode a greedy continuation, then replay it through verify with the true continuation as
                         // drafts: every draft should be accepted; times the verify passes
@@ -273,6 +282,9 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                             let t0 = Instant::now();
                             let out = dec.verify(feed)?;
                             us += t0.elapsed().as_secs_f64() * 1e6;
+                            if passes < 2 {
+                                println!("  feed {:?}\n  out  {:?}\n  want {:?}", feed, out, &cont[i + 1..(i + t + 1).min(cont.len())]);
+                            }
                             let mut acc = 0;
                             while acc + 1 < t && out[acc] == cont[i + acc + 1] {
                                 acc += 1;
