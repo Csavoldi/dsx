@@ -196,6 +196,10 @@ def cmd_prep(a):
             "multi": mix(cj("antirez_translation"), eu),
         }
         want = {"agentic_long": 10, "agent": 5, "code": 6, "reason": 4, "web": 2, "zh": 3, "chat": 1, "multi": 1}
+        if a.think_weight > 0:  # the full model's own reasoning traces (traces/collect.py + dsx render): think.jsonl
+            pools["think"] = cj("think")
+            assert pools["think"], f"--think-weight needs {a.corpus}/think.jsonl"
+            want["think"] = a.think_weight
     scale = a.n / sum(want.values())
     want = {k: max(1, round(v * scale)) for k, v in want.items()}
 
@@ -668,6 +672,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prep"); p.add_argument("--n", type=int, default=128); p.add_argument("--seq", type=int, default=2048)
     p.add_argument("--corpus", default=None, help="build_corpus.py output dir (agentic-first V4.1 mix)")
+    p.add_argument("--think-weight", type=int, default=0, help="share of reasoning traces (think.jsonl) next to the mix's 32")
     sub.add_parser("init")
     p = sub.add_parser("prep-ids"); p.add_argument("ids", nargs="+"); p.add_argument("--domain", default="custom")
     p = sub.add_parser("head"); p.add_argument("--layer", type=int, default=40, help="h/L to read (40 = after the last block)")
