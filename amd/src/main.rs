@@ -228,7 +228,8 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                 continue;
             }
             println!("== {line}");
-            let r: Result<()> = (|| {
+            // a malformed command (missing argument) must not take the loaded model down
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
                 match w[0] {
                     "reload" => {
                         let img = std::fs::read(w[1])?;
@@ -275,6 +276,7 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                             println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
                         }
                     }
+                    "vwaves" => dsx_amd_vwaves(w[1].parse()?),
                     "env" => {
                         // env K [V]: set (or with no value, remove) a variable read at run time by debug switches
                         unsafe {
@@ -357,9 +359,11 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                     c => println!("unknown command {c}"),
                 }
                 Ok(())
-            })();
-            if let Err(e) = r {
-                println!("error: {e:#}");
+            }));
+            match r {
+                Ok(Err(e)) => println!("error: {e:#}"),
+                Err(_) => println!("error: command panicked"),
+                Ok(Ok(())) => {}
             }
             dec.reset()?;
         }
@@ -568,4 +572,8 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn dsx_amd_vwaves(n: usize) {
+    verify::VWAVES.store(n, std::sync::atomic::Ordering::Relaxed);
 }

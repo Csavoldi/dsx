@@ -97,6 +97,10 @@ pub struct PfBufs {
     mixd: Buf,
     vlin: Buf,
     vnext: Buf,
+    /// verify head: final-norm outputs as bf16 hi/lo rows, logits per position
+    vhh: Buf,
+    vhl: Buf,
+    vlog: Buf,
     dyn_: Buf,
     jobs: Buf,
     blk: Buf,
@@ -178,6 +182,9 @@ impl PfBufs {
             mixd: f(t * 48)?,
             vlin: b(40 * 16 * HD * 2)?,
             vnext: f(16)?,
+            vhh: b(16 * D * 2)?,
+            vhl: b(16 * D * 2)?,
+            vlog: f(16 * VOCAB)?,
             dyn_: f(3 * 48 * 40)?,
             jobs: g.alloc(RING)?,
             blk: f(1)?,
@@ -285,7 +292,7 @@ impl Decoder {
     fn prep(&self, mode: i32, src: u64, src2: u64, lds: usize, nw: u64, part: u64, wt: u64, n: usize, rows: usize, oq: u64, os: u64, ob: u64, obq: u64) -> Result<()> {
         self.g.launch(
             "prep_t",
-            (rows as u32, 1, 1),
+            (rows as u32, n.div_ceil(1024) as u32, 1),
             256,
             0,
             &[Arg::I(mode), Arg::P(src), Arg::P(src2), Arg::I(lds as i32), Arg::P(nw), Arg::P(part), Arg::P(wt), Arg::I(n as i32), Arg::F(self.cfg.eps), Arg::F(self.cfg.swiglu_limit), Arg::P(oq), Arg::P(os), Arg::P(ob), Arg::P(obq)],
@@ -533,11 +540,10 @@ impl Decoder {
                 let mut sj = MmJob::dense(&l.sh_w2, 0, pf.shq.ptr, pf.shs.ptr, INTER, pf.y.ptr, D);
                 sj.ntok = t as i32;
                 sj.yatomic = 1;
-                let mut jobs = vec![ej(2, D, INTER, pf.hq.ptr, pf.hs.ptr, INTER, pf.y.ptr, D, 1)];
                 let mut sv = self.as_v(&[sj]);
                 sv[0].atomic = 1;
-                jobs.append(&mut sv);
-                self.vlaunch("verify experts down", jobs, self.st.ptr)?;
+                self.vlaunch("verify shared down", sv, self.st.ptr)?;
+                self.vlaunch("verify experts down", vec![ej(2, D, INTER, pf.hq.ptr, pf.hs.ptr, INTER, pf.y.ptr, D, 1)], self.st.ptr)?;
                 continue;
             }
             let counts: Vec<i32> = g.dtoh(pf.counts.ptr, NE)?;
@@ -620,12 +626,25 @@ impl Decoder {
         if verify {
             let mut out = vec![];
             let pm = self.accp(nl - 1, A_HMIX_F);
+            let batched = self.head.sc.is_none();
             for lt in 0..t {
                 g.dtod(self.h.ptr, pf.h.at(lt * HC * D * 4), HC * D * 4)?;
                 g.dtod(pm, pf.mix_f.at(lt * 80 * 32 * 4), 80 * 32 * 4)?;
-                g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(pm), Arg::B(bytes(&last.hc_ffn)), Arg::P(self.out_norm.ptr), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(0), Arg::P(0)])?;
-                self.head_logits()?;
-                g.dtod(pf.vnext.at(lt * 4), self.next.ptr, 4)?;
+                let (oh, ol) = if batched { (pf.vhh.at(lt * D * 2), pf.vhl.at(lt * D * 2)) } else { (0, 0) };
+                g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(pm), Arg::B(bytes(&last.hc_ffn)), Arg::P(self.out_norm.ptr), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(oh), Arg::P(ol)])?;
+                if !batched {
+                    self.head_logits()?;
+                    g.dtod(pf.vnext.at(lt * 4), self.next.ptr, 4)?;
+                }
+            }
+            if batched {
+                // one pass over the head for all positions (bf16 hi + lo activations, as decode)
+                let hj = crate::verify::VJob { w: self.head.w.ptr, n: VOCAB as i32, k: D as i32, fmt: 4, xb: pf.vhh.ptr, xl: pf.vhl.ptr, ldx: D as i32, ntok: t as i32, y: pf.vlog.ptr, ldy: VOCAB as i32, split: 1, mul: 1.0, ..Default::default() };
+                self.vlaunch("verify head", vec![hj], self.st.ptr)?;
+                for lt in 0..t {
+                    g.launch("argmax_part", (128, 1, 1), 256, 0, &[Arg::P(pf.vlog.at(lt * VOCAB * 4)), Arg::I(VOCAB as i32), Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr)])?;
+                    g.launch("argmax", (1, 1, 1), 64, 0, &[Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::I(128), Arg::P(pf.vnext.at(lt * 4))])?;
+                }
             }
             let v: Vec<i32> = g.dtoh(pf.vnext.ptr, t)?;
             out.extend(v.iter().map(|&x| x as u32));

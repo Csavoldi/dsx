@@ -228,7 +228,11 @@ extern "C" __global__ void __launch_bounds__(256) prep_t(int mode, const float* 
         sc = 1.f / sqrtf(ss / n + eps);
     }
     const float w = (mode == 3 && wt) ? wt[r] : 1.f;
-    write_act(n, [&](int i) -> float {
+    // blockIdx.y: 1024-wide slice of the row (n is a multiple of 32, so FP8 scale groups never straddle slices)
+    const int c0 = blockIdx.y * 1024, nc = min(1024, n - c0);
+    if (nc <= 0) return;
+    write_act(nc, [&](int i) -> float {
+        i += c0;
         const float v = x[i];
         switch (mode) {
             case 0:
@@ -240,7 +244,7 @@ extern "C" __global__ void __launch_bounds__(256) prep_t(int mode, const float* 
             }
             default: return v;
         }
-    }, oq + (size_t)r * n, os + (size_t)r * (n / 32), ob ? ob + (size_t)r * n : nullptr, obq ? obq + (size_t)r * n : nullptr);
+    }, oq + (size_t)r * n + c0, os + (size_t)r * (n / 32) + c0 / 32, ob ? ob + (size_t)r * n + c0 : nullptr, obq ? obq + (size_t)r * n + c0 : nullptr);
 }
 
 // RoPE on the last 64 dims of each head for a batch: x [T][heads][hd], position p0 + t (inverse: conjugate)
@@ -408,18 +412,38 @@ DEV void block_topk(const float* sc, int n, int k, const int* map, int offset, i
         if (v != -INFINITY) atomicAdd(&hist[fkey(v) >> 20], 1u);
     }
     __syncthreads();
-    if (tid == 0) {
-        uint32_t acc = 0;
-        int b = 4095;
-        for (; b >= 0; b--) {
-            if (acc + hist[b] >= (uint32_t)k) break;
-            acc += hist[b];
+    {
+        // the bin where the count from the top reaches k: thread tid owns bins 4*tid..4*tid+3, suffix scan over threads
+        // (cand doubles as scan scratch; it is filled only after this)
+        uint32_t* tsum = reinterpret_cast<uint32_t*>(cand);
+        const uint32_t own = hist[4 * tid] + hist[4 * tid + 1] + hist[4 * tid + 2] + hist[4 * tid + 3];
+        tsum[tid] = own;
+        __syncthreads();
+        for (int d = 1; d < 1024; d <<= 1) {
+            const uint32_t v = tid + d < 1024 ? tsum[tid + d] : 0u;
+            __syncthreads();
+            tsum[tid] += v;
+            __syncthreads();
         }
-        bin = b;  // -1: fewer than k valid
-        need = b >= 0 ? k - (int)acc : 0;
-        total = b >= 0 ? k : (int)acc;
+        const uint32_t incl = tsum[tid], above = incl - own;  // bins above this thread's range
+        if (tid == 0 && incl < (uint32_t)k) {
+            bin = -1;  // fewer than k valid
+            need = 0;
+            total = (int)incl;
+        }
+        if (above < (uint32_t)k && incl >= (uint32_t)k) {
+            uint32_t acc = above;
+            int b = 4 * tid + 3;
+            for (; b > 4 * tid; b--) {
+                if (acc + hist[b] >= (uint32_t)k) break;
+                acc += hist[b];
+            }
+            bin = b;
+            need = k - (int)acc;
+            total = k;
+        }
+        __syncthreads();
     }
-    __syncthreads();
     for (int i = tid; i < n; i += 1024) {
         const float v = sc[i];
         if (v == -INFINITY) continue;

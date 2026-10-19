@@ -23,6 +23,7 @@ struct VJob {
     int blocks, epi;    // epi 1/2: RoPE (q: 512-dim heads, idx: 128) at position pos0 + token
     int ropec, ndyn;    // ndyn: dyn points at ndyn consecutive device-built jobs (40 ints each)
     const int* dyn;     // device-built expert job (null: static): [fmt, ntok, woff_lo, woff_hi, soff_lo, soff_hi, mul_bits, ...]
+    const uint16_t* xl; // fmt 4: optional bf16 low parts (x = xb + xl, as decode's head)
 };
 
 struct VJobs {
@@ -32,6 +33,7 @@ struct VJobs {
 };
 
 // One wave: one 16-row tile over k-units [u0, u1) for up to 16 tokens.
+template <int KIND>  // 0: any format, 1: dense only (FP8, BF16), 2: experts only
 DEV f4 vwave(const VJob& J, int rt, int u0, int u1, int lane, uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
     const int col = lane & 15, g8 = 8 * (lane >> 4), g4 = 4 * (lane >> 4);
     const bool live = col < J.ntok;
@@ -40,7 +42,7 @@ DEV f4 vwave(const VJob& J, int rt, int u0, int u1, int lane, uint32_t cb3lo, ui
     const float* xs = J.xs + (size_t)xrow * (J.ldx / 32);
     const float lm = live ? 1.f : 0.f;
     f4 acc = {0, 0, 0, 0};
-    if (J.fmt == 0) {
+    if (KIND != 2 && J.fmt == 0) {
         const int KP = J.k / 64, KB = J.k / 32;
         const u4v* wp = (const u4v*)J.w + (size_t)rt * KP * 64 + lane;
         const uint8_t* sp = (const uint8_t*)J.sc + (size_t)(rt >> 1) * KB;
@@ -77,7 +79,7 @@ DEV f4 vwave(const VJob& J, int rt, int u0, int u1, int lane, uint32_t cb3lo, ui
         }
         return acc * 2.f;
     }
-    if (J.fmt == 4) {
+    if (KIND != 2 && J.fmt == 4) {
         const int KQ = J.k / 32;
         const u4v* wp = (const u4v*)J.w + (size_t)rt * KQ * 64 + lane;
         const uint16_t* xb = J.xb + (size_t)xrow * J.ldx;
@@ -90,65 +92,80 @@ DEV f4 vwave(const VJob& J, int rt, int u0, int u1, int lane, uint32_t cb3lo, ui
                 a[0] = (short)(w0 & 0xFFFF); a[1] = (short)(w0 >> 16); a[2] = (short)(w1 & 0xFFFF); a[3] = (short)(w1 >> 16);
                 uint64_t bv = live ? *reinterpret_cast<const uint64_t*>(xb + kq * 32 + 16 * h + g4) : 0;
                 acc = mfma_bf16(a, *reinterpret_cast<const s4v*>(&bv), acc);
+                if (J.xl) {
+                    uint64_t lv = live ? *reinterpret_cast<const uint64_t*>(J.xl + (size_t)xrow * J.ldx + kq * 32 + 16 * h + g4) : 0;
+                    acc = mfma_bf16(a, *reinterpret_cast<const s4v*>(&lv), acc);
+                }
             }
         }
         return acc;
     }
-    // experts: per-row scales (lane rows 4*(lane/16)+j), per-lane token scales
+    if (KIND == 1) return acc;
+    // experts: per-row scales (lane rows 4*(lane/16)+j), per-lane token scales. Weights, scales and the token's
+    // activation fragments are loaded U units ahead (latency, not bandwidth, bounds a 16-row tile).
     const char* base = (const char*)J.w;
     const int KU = J.k / 128;
     const int NDW = J.fmt == 1 ? 4 : (J.fmt == 2 ? 3 : 2);
     const u4v* sp = (const u4v*)(base + J.soff) + (size_t)rt * KU * 4 + (lane >> 4);
     const uint32_t* wp = (const uint32_t*)(base + J.woff) + (size_t)rt * KU * 64 * NDW + lane * NDW;
-    uint32_t cw[4] = {0, 0, 0, 0}, nw[4] = {0, 0, 0, 0};
-    u4v cs = {0, 0, 0, 0}, ns = {0, 0, 0, 0};
-    if (u0 < u1) {
-        for (int q = 0; q < NDW; q++) cw[q] = __builtin_nontemporal_load(wp + (size_t)u0 * 64 * NDW + q);
-        cs = sp[(size_t)u0 * 4];
-    }
-    for (int u = u0; u < u1; u++) {
-        if (u + 1 < u1) {
-            for (int q = 0; q < NDW; q++) nw[q] = __builtin_nontemporal_load(wp + (size_t)(u + 1) * 64 * NDW + q);
-            ns = sp[(size_t)(u + 1) * 4];
-        }
-        const uint32_t ss[4] = {cs.x, cs.y, cs.z, cs.w};
+    constexpr int U = 2;
+    struct Unit { uint32_t w[4]; u4v s; uint64_t x[4]; float xs[4]; };
+    Unit cu[U], nu[U];
+    auto ld = [&](int u, Unit& o) {
+#pragma unroll
+        for (int q = 0; q < 4; q++) o.w[q] = q < NDW ? __builtin_nontemporal_load(wp + (size_t)u * 64 * NDW + q) : 0u;
+        o.s = sp[(size_t)u * 4];
 #pragma unroll
         for (int m = 0; m < 4; m++) {
-            uint64_t a;
-            if (J.fmt == 1) a = fp4x8_to_fp8(cw[m]);
-            else {
-                const uint32_t tlo = J.fmt == 2 ? cb3lo : cb2, thi = J.fmt == 2 ? cb3hi : 0u;
-                const uint32_t dl = cw[m >> 1];
-                const int sh = 4 * (m & 1);
-                uint32_t s0 = (dl >> sh) & 0x03030303u, s1 = (dl >> (sh + 2)) & 0x03030303u;
-                if (J.fmt == 2) {
-                    s0 |= ((cw[2] >> (2 * m)) & 0x01010101u) << 2;
-                    s1 |= ((cw[2] >> (2 * m + 1)) & 0x01010101u) << 2;
-                }
-                a = (uint64_t)perm(thi, tlo, s1) << 32 | perm(thi, tlo, s0);
-            }
-            const int kb = 4 * u + m;
-            const uint64_t b = live ? *reinterpret_cast<const uint64_t*>(xq + kb * 32 + g8) : 0;
-            const f4 d = mfma_fp8(a, b, f4{0, 0, 0, 0});
-            const float xsv = xs[kb] * lm;
+            o.x[m] = live ? *reinterpret_cast<const uint64_t*>(xq + (4 * u + m) * 32 + g8) : 0ull;
+            o.xs[m] = xs[4 * u + m] * lm;
+        }
+    };
 #pragma unroll
-            for (int j = 0; j < 4; j++) {
-                const uint32_t bb = (ss[j] >> (8 * m)) & 0xFFu;
-                const float ws = J.fmt == 1 ? __uint_as_float(bb << 23) : fp8_to_f32(bb, 0);
-                acc[j] += d[j] * (ws * xsv);
+    for (int i = 0; i < U; i++)
+        if (u0 + i < u1) ld(u0 + i, cu[i]);
+    for (int u = u0; u < u1; u += U) {
+#pragma unroll
+        for (int i = 0; i < U; i++)
+            if (u + U + i < u1) ld(u + U + i, nu[i]);
+#pragma unroll
+        for (int i = 0; i < U; i++) {
+            if (u + i >= u1) break;
+            const Unit& c = cu[i];
+            const uint32_t ss[4] = {c.s.x, c.s.y, c.s.z, c.s.w};
+#pragma unroll
+            for (int m = 0; m < 4; m++) {
+                uint64_t a;
+                if (J.fmt == 1) a = fp4x8_to_fp8(c.w[m]);
+                else {
+                    const uint32_t tlo = J.fmt == 2 ? cb3lo : cb2, thi = J.fmt == 2 ? cb3hi : 0u;
+                    const uint32_t dl = c.w[m >> 1];
+                    const int sh = 4 * (m & 1);
+                    uint32_t s0 = (dl >> sh) & 0x03030303u, s1 = (dl >> (sh + 2)) & 0x03030303u;
+                    if (J.fmt == 2) {
+                        s0 |= ((c.w[2] >> (2 * m)) & 0x01010101u) << 2;
+                        s1 |= ((c.w[2] >> (2 * m + 1)) & 0x01010101u) << 2;
+                    }
+                    a = (uint64_t)perm(thi, tlo, s1) << 32 | perm(thi, tlo, s0);
+                }
+                const f4 d = mfma_fp8(a, c.x[m], f4{0, 0, 0, 0});
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    const uint32_t bb = (ss[j] >> (8 * m)) & 0xFFu;
+                    const float ws = J.fmt == 1 ? __uint_as_float(bb << 23) : fp8_to_f32(bb, 0);
+                    acc[j] += d[j] * (ws * c.xs[m]);
+                }
             }
         }
-        for (int q = 0; q < 4; q++) cw[q] = nw[q];
-        cs = ns;
+#pragma unroll
+        for (int i = 0; i < U; i++) cu[i] = nu[i];
     }
     return acc * J.mul;
 }
 
 // Blocks enumerate (job, row-block of 4 tiles, k-slice). Dynamic expert jobs read fmt/offsets/tokens from `dyn`.
-extern "C" __global__ void __launch_bounds__(256) vgemv(VJobs js, const int* pos0p, const float* rope_f, const float* rope_fc) {
-    int b = blockIdx.x, ji = 0;
-    while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;
-    VJob J = js.j[ji];
+template <int KIND>
+DEV void vgemv_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2, const int* pos0p, const float* rope_f, const float* rope_fc) {
     const int lane = threadIdx.x & 63, wv = threadIdx.x >> 6;
     if (J.dyn) {
         // device-built expert job: [fmt, ntok, woff lo/hi, soff lo/hi, mul bits, rows[16], orows[16]]
@@ -171,7 +188,7 @@ extern "C" __global__ void __launch_bounds__(256) vgemv(VJobs js, const int* pos
     const int KU = J.fmt == 0 ? 64 : (J.fmt == 4 ? 32 : 128);
     const int KUs = J.k / KU;
     const int u0 = KUs * sl / J.split, u1 = KUs * (sl + 1) / J.split;
-    f4 acc = vwave(J, rt, u0, u1, lane, js.cb3lo, js.cb3hi, js.cb2);
+    f4 acc = vwave<KIND>(J, rt, u0, u1, lane, cb3lo, cb3hi, cb2);
     const int col = lane & 15;
     if (col >= J.ntok) return;
     const int r0 = rt * 16 + 4 * (lane >> 4);
@@ -193,6 +210,22 @@ extern "C" __global__ void __launch_bounds__(256) vgemv(VJobs js, const int* pos
     }
 }
 
+extern "C" __global__ void __launch_bounds__(256) vgemv(VJobs js, const int* pos0p, const float* rope_f, const float* rope_fc) {
+    int b = blockIdx.x, ji = 0;
+    while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;
+    vgemv_impl<0>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2, pos0p, rope_f, rope_fc);
+}
+extern "C" __global__ void __launch_bounds__(256) vgemv_d(VJobs js, const int* pos0p, const float* rope_f, const float* rope_fc) {
+    int b = blockIdx.x, ji = 0;
+    while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;
+    vgemv_impl<1>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2, pos0p, rope_f, rope_fc);
+}
+extern "C" __global__ void __launch_bounds__(256) vgemv_x(VJobs js, const int* pos0p, const float* rope_f, const float* rope_fc) {
+    int b = blockIdx.x, ji = 0;
+    while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;
+    vgemv_impl<2>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2, pos0p, rope_f, rope_fc);
+}
+
 // Expert grouping for a verify batch (one block): picks sel[t][6] -> one job per distinct expert with its tokens.
 // dyn layout per job: [fmt, ntok, woff lo, hi, soff lo, hi, mul bits, pad, rows[16] (activation rows = token),
 // orows[16] (output rows = compact pair index t*6+slot)], for gate/up mats 0/1 and down mat 2 (3 job arrays of 36).
@@ -200,17 +233,39 @@ extern "C" __global__ void __launch_bounds__(256) vgemv(VJobs js, const int* pos
 extern "C" __global__ void vgroup(int T, const int* sel, const float* wts, const ExpertMat* tab, int* dyn, float* wrow, int* npairs) {
     __shared__ int ex[96], cnt[96], nex;
     __shared__ int members[96][16];
-    if (threadIdx.x == 0) {
-        nex = 0;
-        for (int i = 0; i < T * 6; i++) {
-            const int e = sel[i];
-            int k = 0;
-            while (k < nex && ex[k] != e) k++;
-            if (k == nex) { ex[nex] = e; cnt[nex] = 0; nex++; }
-            if (cnt[k] < 16) members[k][cnt[k]++] = i;
-            wrow[i] = wts[i];
-        }
-        *npairs = T * 6;
+    __shared__ int ss[96], lead[96], gidx[96];
+    const int N = T * 6, i = threadIdx.x;
+    if (i < N) {
+        ss[i] = sel[i];
+        wrow[i] = wts[i];
+    }
+    if (i == 0) *npairs = N;
+    __syncthreads();
+    if (i < N) {
+        int L = 0;
+        while (ss[L] != ss[i]) L++;
+        lead[i] = L;
+    }
+    __syncthreads();
+    if (i < N && lead[i] == i) {
+        int g = 0, c = 0;
+        for (int j = 0; j < i; j++) g += lead[j] == j;
+        for (int j = i; j < N; j++) c += lead[j] == i;
+        gidx[i] = g;
+        ex[g] = ss[i];
+        cnt[g] = c < 16 ? c : 16;
+    }
+    if (i == 0) {
+        int n = 0;
+        for (int j = 0; j < N; j++) n += lead[j] == j;
+        nex = n;
+    }
+    __syncthreads();
+    if (i < N) {
+        const int L = lead[i];
+        int r = 0;
+        for (int j = L; j < i; j++) r += lead[j] == L;
+        if (r < 16) members[gidx[L]][r] = i;
     }
     __syncthreads();
     for (int q = threadIdx.x; q < 3 * 48; q += blockDim.x) {

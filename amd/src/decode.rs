@@ -87,7 +87,7 @@ pub(crate) const MAXJ: usize = 13;
 pub(crate) const ROUTE_BYTES: usize = 1024; // Route struct slot per layer
 
 /// target waves per GEMV launch for the shared k-split choice (dev-tunable)
-pub static TARGET_WAVES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(8192);
+pub static TARGET_WAVES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2048);
 /// minimum weight units (k-pairs / k128 blocks) per wave
 pub static MIN_UNITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4);
 

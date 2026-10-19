@@ -34,9 +34,12 @@ pub(crate) struct VJob {
     pub ropec: i32,
     pub ndyn: i32,
     pub dyn_: u64,
+    pub xl: u64,
 }
 
 const VMAX: usize = 12;
+/// waves a vgemv launch aims for (k-split until reached); dev `vwaves N`
+pub static VWAVES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2048);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -59,7 +62,9 @@ impl Decoder {
                     let ku = match j.fmt { 0 => 64, 4 => 32, _ => 128 };
                     let units = j.k as usize / ku;
                     let mut s = 1;
-                    while tiles * s < 2048 && s * 2 <= units / 2 {
+                    // scattered outputs that are stored (not added) cannot be zeroed up front: no k-split
+                    let fixed = j.atomic == 0 && (j.orows != 0 || j.ndyn > 0);
+                    while !fixed && tiles * s < VWAVES.load(std::sync::atomic::Ordering::Relaxed) && s * 2 <= units / 2 {
                         s *= 2;
                     }
                     j.split = s as i32;
@@ -67,9 +72,6 @@ impl Decoder {
                 if j.split > 1 && j.atomic == 0 {
                     // k-split partial sums accumulate: zero this job's output rows first
                     j.atomic = 1;
-                    if j.orows != 0 || j.ndyn > 0 {
-                        anyhow::bail!("{label}: split scatter job without atomic output");
-                    }
                     let span = ((j.ntok as usize - 1) * j.ldy as usize + j.n as usize) * 4;
                     self.g.memset(j.y, 0, span)?;
                 }
@@ -82,7 +84,11 @@ impl Decoder {
             let js = VJobs { j: arr, n: n as i32, cb3lo: self.cb3[0], cb3hi: self.cb3[1], cb2: self.cb2 };
             let b = unsafe { std::slice::from_raw_parts(&js as *const VJobs as *const u8, std::mem::size_of::<VJobs>()).to_vec() };
             self.g.set_label(Some(label));
-            let r = self.g.launch("vgemv", (blocks, 1, 1), 256, 0, &[Arg::B(b), Arg::P(pos0), Arg::P(self.rope_f.ptr), Arg::P(self.rope_fc.ptr)]);
+            // kernels specialized by format family (fewer registers, more waves in flight)
+            let dense = chunk.iter().all(|j| j.ndyn == 0 && (j.fmt == 0 || j.fmt == 4));
+            let experts = chunk.iter().all(|j| j.ndyn > 0 || (1..=3).contains(&j.fmt));
+            let kn = if dense { "vgemv_d" } else if experts { "vgemv_x" } else { "vgemv" };
+            let r = self.g.launch(kn, (blocks, 1, 1), 256, 0, &[Arg::B(b), Arg::P(pos0), Arg::P(self.rope_f.ptr), Arg::P(self.rope_fc.ptr)]);
             self.g.set_label(None);
             r?;
         }
