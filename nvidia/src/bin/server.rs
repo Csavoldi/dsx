@@ -63,9 +63,13 @@ struct Cli {
     /// expert hotness ranking (rank.json from calibration)
     #[arg(long)]
     rank: Option<std::path::PathBuf>,
-    /// vision weights (`vision.safetensors`, or the official checkpoint directory): enables image input
+    /// vision weights (`vision.safetensors`, or the official checkpoint directory): enables image input.
+    /// Default: `vision.safetensors` next to the model, when present.
     #[arg(long)]
     vision: Option<std::path::PathBuf>,
+    /// text only: don't load the vision weights even if `vision.safetensors` sits next to the model
+    #[arg(long)]
+    no_vision: bool,
 }
 
 #[tokio::main]
@@ -73,7 +77,17 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if cli.no_vision {
+        cli.vision = None;
+    } else if cli.vision.is_none() {
+        // vision.safetensors next to the model (the quant repo ships it beside the shards)
+        let dir = cli.model.as_ref().and_then(|m| if m.is_dir() { Some(m.clone()) } else { m.parent().map(|p| p.to_path_buf()) });
+        cli.vision = dir.map(|d| d.join("vision.safetensors")).filter(|p| p.is_file());
+    }
+    if let Some(v) = &cli.vision {
+        tracing::info!("vision: {}", v.display());
+    }
     let tok = Arc::new(Tokenizer::from_file(&cli.tokenizer).map_err(|e| anyhow!("{}: {e}", cli.tokenizer.display()))?);
     let engine = if cli.mock {
         let (tok, mode, delay) = (tok.clone(), if cli.mock_echo { MockMode::Echo } else { MockMode::Scripted }, cli.mock_delay_ms);

@@ -33,8 +33,7 @@ hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 ./target/release/dsx-server --model dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
   --engram v41-1017 --tokenizer v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
-  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank dsx-2bit/expert-rank.json \
-  --vision dsx-2bit/vision.safetensors
+  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank dsx-2bit/expert-rank.json
 ```
 
 Open `http://localhost:8090/` for the web UI, or use any OpenAI client with base URL `http://localhost:8090/v1`:
@@ -65,7 +64,7 @@ Experts are spread across VRAM, a RAM arena and the file, hottest first.
 | `--gpu0-gb`, `--gpu1-gb` | GB of experts per GPU; negative = all free VRAM minus that much; `--gpu1-gb 0` for one GPU |
 | `--arena-gb` | RAM for experts the CPU computes |
 | `--rank` | expert hotness order (`expert-rank.json` from the quant repo) |
-| `--vision` | the vision tower (`vision.safetensors` from the quant repo): image input; leave it out for text only |
+| `--vision` | the vision tower for image input; default: `vision.safetensors` next to the model. `--no-vision` for text only |
 | `DSX_ADAPT=N` | GPU0 expert swaps per token to follow the conversation (default 8; 0 = static) |
 
 | Machine | Flags |
