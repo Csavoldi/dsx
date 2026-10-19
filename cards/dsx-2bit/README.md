@@ -29,7 +29,7 @@ MI325X (256 GiB HBM) there is a near-lossless build: [lxe/DeepSeek-V4.1-Flash-10
 | Size | 148 GB (4 GGUF shards) + the official Engram shards (203 GB) |
 | Format | per-expert mixed precision: ternary, Q2_0 or Q3_K for each expert, Q8_0 dense |
 | Routing | exact: no expert pruning, no router bias |
-| Quality vs FP8 | KL 0.395 · top-1 74.1% · perplexity 10.93 (FP8: 8.56) |
+| Quality vs FP8 | KL 0.397 · top-1 74.1% · perplexity 10.81 (FP8: 8.56) |
 | Speed, 2x RTX 3090 | 30-37 tok/s decode · 334-508 tok/s prefill |
 | Runtime | [dsx](https://github.com/lxe/dsx) (OpenAI / Anthropic API, image input, web UI) |
 
@@ -44,7 +44,19 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 |---|---|---:|---:|---:|
 | FP8 / FP4 original | FP4 | 0 | 100% | 8.56 |
 | Lucebox ROCMFP | 2.5 bpw | 0.253 | 78.7% | 9.78 |
-| **dsx 2-bit** | **2.03 bpw** | **0.395** | **74.1%** | **10.93** |
+| **dsx 2-bit** | **2.03 bpw** | **0.397** | **74.1%** | **10.81** |
+
+## Reasoning
+
+Calibrated on the full model's own reasoning traces as well as agent text. Reasoning tokens per run on two
+Omni-MATH problems, temperature 1.0, all answers correct:
+
+| | Problem A | Problem B |
+|---|---|---|
+| FP8 model, hosted (8 runs) | 5.7K-17.4K (median 9.4K) | 7.5K-13.9K (median 10.7K) |
+| dsx 2-bit | 10.3K, 10.5K, 15.3K | 20.2K, 21.5K |
+
+On harder problems it reasons longer than the FP8 model, up to about 2×. Sample at temperature 1.0 for reasoning.
 
 ## Speed
 
@@ -118,7 +130,8 @@ Also needed: CUDA 13, Rust, an AVX2 CPU, ~350 GB of disk.
   forgiving ones ~1.76. Average: 2.03 bpw.
 - **Method:** GPTQ per expert, with Hessians from a layer-by-layer calibration pass through DeepSeek's reference
   `model.py` (GSQ pipeline from [Xolotl](https://github.com/Indras-Mirror/Xolotl)).
-- **Calibration text:** 128 × 2048 tokens of coding-agent sessions and antirez's agent and code prompts.
+- **Calibration text:** 160 × 2048 tokens: coding-agent sessions, antirez's agent and code prompts, and 53 sequences
+  of the full model's own reasoning traces on Omni-MATH and SuperGPQA questions (none from the evaluated rows).
 - **Dense weights:** Q8_0. **Engram:** unquantized, read from the official shards.
 
 Pipeline: [github.com/lxe/dsx/tree/main/quant](https://github.com/lxe/dsx/tree/main/quant).
@@ -135,7 +148,7 @@ Pipeline: [github.com/lxe/dsx/tree/main/quant](https://github.com/lxe/dsx/tree/m
 | `results/` | raw quality and speed logs |
 | `assets/` | charts and the script that draws them |
 
-The earlier 2.0-bpw-per-layer build (KL 0.462) is at revision [`v1`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v1).
+Earlier builds: revision [`v2`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v2) (agent-text calibration, KL 0.395) and [`v1`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v1) (KL 0.462).
 
 ## Credits
 
