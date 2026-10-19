@@ -141,6 +141,8 @@ pub struct SpecStats {
     pub passes: usize,
     pub accepted: usize,
     pub tokens: usize,
+    /// tokens decoded plainly (low acceptance)
+    pub plain: usize,
     pub draft_us: f64,
     pub verify_us: f64,
 }
@@ -195,7 +197,37 @@ impl Decoder {
         let mut stx = SpecStats::default();
         let mut committed = vec![];
         let block = self.dspark.as_ref().unwrap().block;
+        // adaptive: a pass costs ~3 decode steps, so below ~2 accepted drafts per pass decode plainly for a while
+        // (the decode graph records main_hidden, observed in one batch), then probe again
+        let thresh: f64 = std::env::var("DSXA_SPEC_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0);
+        let mut ema = thresh + 1.0;
         while stx.tokens < max_new && self.pos + 1 < self.max_ctx {
+            if ema < thresh {
+                let pf_mh = self.pf.as_ref().unwrap().dspark_bufs().0;
+                let p_start = self.pos;
+                let k = 15.min(max_new - stx.tokens).min(self.max_ctx - self.pos - 1);
+                let mut stop = false;
+                let mut n = 0;
+                for i in 0..k {
+                    stx.tokens += 1;
+                    stx.plain += 1;
+                    committed.push(next);
+                    let go = emit(next);
+                    next = self.step(next)?;
+                    self.g.dtod(pf_mh + (i * 3 * D * 4) as u64, self.dmh.ptr, 3 * D * 4)?;
+                    n += 1;
+                    if !go {
+                        stop = true;
+                        break;
+                    }
+                }
+                self.observe(p_start, n, 0)?;
+                if stop {
+                    break;
+                }
+                ema = thresh + 0.25;
+                continue;
+            }
             self.g.sync()?;
             let t0 = Instant::now();
             let drafts = self.draft(next)?;
@@ -215,6 +247,7 @@ impl Decoder {
             let t2 = Instant::now();
             stx.passes += 1;
             stx.accepted += acc;
+            ema = 0.6 * ema + 0.4 * acc as f64;
             stx.draft_us += (t1 - t0).as_secs_f64() * 1e6;
             stx.verify_us += (t2 - t1).as_secs_f64() * 1e6;
             committed.extend_from_slice(&feed[..=acc]);

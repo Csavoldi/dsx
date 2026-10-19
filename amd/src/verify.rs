@@ -18,7 +18,7 @@ pub(crate) struct VJob {
     pub n: i32,
     pub k: i32,
     pub split: i32,
-    pub pad0: i32,
+    pub zero: i32,
     pub xq: u64,
     pub xs: u64,
     pub xb: u64,
@@ -70,10 +70,9 @@ impl Decoder {
                     j.split = s as i32;
                 }
                 if j.split > 1 && j.atomic == 0 {
-                    // k-split partial sums accumulate: zero this job's output rows first
+                    // k-split partial sums accumulate: zero this job's output rows first (vzero)
                     j.atomic = 1;
-                    let span = ((j.ntok as usize - 1) * j.ldy as usize + j.n as usize) * 4;
-                    self.g.memset(j.y, 0, span)?;
+                    j.zero = 1;
                 }
                 j.blocks = ((j.n as usize).div_ceil(64) * j.split as usize * j.ndyn.max(1) as usize) as i32;
                 blocks += j.blocks as u32;
@@ -83,6 +82,10 @@ impl Decoder {
             arr[..n].copy_from_slice(chunk);
             let js = VJobs { j: arr, n: n as i32, cb3lo: self.cb3[0], cb3hi: self.cb3[1], cb2: self.cb2 };
             let b = unsafe { std::slice::from_raw_parts(&js as *const VJobs as *const u8, std::mem::size_of::<VJobs>()).to_vec() };
+            if chunk.iter().any(|j| j.zero != 0) {
+                let elems: usize = chunk.iter().filter(|j| j.zero != 0).map(|j| (j.n * j.ntok) as usize).sum();
+                self.g.launch("vzero", (elems.div_ceil(1024).clamp(1, 1216) as u32, 1, 1), 256, 0, &[Arg::B(b.clone())])?;
+            }
             self.g.set_label(Some(label));
             // kernels specialized by format family (fewer registers, more waves in flight)
             let dense = chunk.iter().all(|j| j.ndyn == 0 && (j.fmt == 0 || j.fmt == 4));

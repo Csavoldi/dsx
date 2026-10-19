@@ -324,6 +324,8 @@ pub struct Decoder {
     pub(crate) os: Buf,
     pub(crate) route: Buf,
     pub(crate) xfin: Buf,
+    /// DSpark main_hidden of the last decoded token [3][D]
+    pub(crate) dmh: Buf,
     pub logits: Buf,
     pub(crate) next: Buf,
     pub(crate) eng_rows: Buf,
@@ -336,6 +338,8 @@ pub struct Decoder {
     pub hist_tokens: Vec<i64>,
     /// DSpark draft layers (DSXA_DSPARK)
     pub(crate) dspark: Option<crate::dspark::Dspark>,
+    /// verify / draft pass graphs by (tokens, draft, 16K-position bucket)
+    pub(crate) vgraphs: std::cell::RefCell<std::collections::HashMap<(usize, bool, usize), Graph>>,
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
@@ -657,7 +661,7 @@ impl Decoder {
                 }
             }
             let mut tot: usize = fmt.iter().map(|&f| expert_bytes(f)).sum();
-            if tot > budget {
+            if draft > 0 && tot > budget {
                 anyhow::ensure!(!rank.is_empty(), "export does not fit next to the draft layers: pass --rank to choose experts to re-quantize");
                 for &(l, e) in rank.iter().rev() {
                     if tot <= budget {
@@ -712,6 +716,7 @@ impl Decoder {
             os: f(NH * HD / 32)?,
             route: g.alloc_zeroed(64 * ROUTE_BYTES)?,
             xfin: f(D)?,
+            dmh: f(3 * D)?,
             logits: f(VOCAB)?,
             next: f(4)?,
             eng_rows: g.alloc_zeroed(2 * ENG_ROW_BYTES)?,
@@ -722,6 +727,7 @@ impl Decoder {
             engram_st: None,
             hist_tokens: vec![],
             dspark: None,
+            vgraphs: Default::default(),
             pos: 0,
             dump: None,
             etab: vec![],
@@ -746,6 +752,7 @@ impl Decoder {
         let est = SafeTensors::open(dir, &want)?;
         est.advise_random();
         dec.engram_st = Some(est);
+        dec.set_globals()?;
         eprintln!("loaded in {:.1} s; {:.1} GB on device", t0.elapsed().as_secs_f32(), dec.g.allocated.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9);
         Ok(dec)
     }
@@ -1363,6 +1370,10 @@ impl Decoder {
                     self.hc_step(py, true, pm, &p.hc_ffn, pm, &p.hc_ffn, l.hc_attn_fn.ptr, self.accp(li, A_HMIX_A), self.x_a.ptr, self.accp(li, A_XSS_A), None)?;
                 }
             }
+            if let Some(slot) = self.dspark.as_ref().and_then(|d| d.targets.iter().position(|&x| x == li)) {
+                // DSpark main_hidden of this token (observed after plain steps)
+                g.launch("mh_t", (20, 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.dmh.ptr), Arg::I((3 * D) as i32), Arg::I((slot * D) as i32)])?;
+            }
             // ---- attention projections
             let xs = self.accp(li, A_XSS_A);
             let mut jobs = vec![
@@ -1513,7 +1524,15 @@ impl Decoder {
 
     pub fn reload_kernels(&mut self, image: &[u8]) -> Result<()> {
         self.graph = None;
-        self.g.reload(image)
+        self.vgraphs.borrow_mut().clear();
+        self.g.reload(image)?;
+        self.set_globals()
+    }
+
+    /// device globals of the code object: the decode state's position for graph-replayed prompt kernels
+    pub(crate) fn set_globals(&self) -> Result<()> {
+        let (p, _) = self.g.global("g_posp")?;
+        self.g.htod(p, &[self.st.ptr])
     }
 
     pub fn capture(&mut self) -> Result<()> {

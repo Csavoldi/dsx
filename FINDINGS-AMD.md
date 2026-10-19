@@ -5,6 +5,7 @@
 | | |
 |---|---|
 | Decode, single stream | 114.1 tok/s at 4K context, 111.5 at 128K, 110.4 at 256K (8.8-9.1 ms per token, one HIP graph) |
+| With DSpark drafts (greedy) | 1.4-1.7x on code, 1.2-1.4x on math, ~1.0x on prose (section 6) |
 | Prefill | 1,640 tok/s (4K and 16K prompts), 1,160 (128K) |
 | Quality vs FP8 (Lucebox 1017 eval, 8 x 1024 tokens) | KL 0.049, top-1 90.6%, perplexity 8.71 (FP8: 8.56), on the published shards (0.047 on another run) |
 | Model in HBM | 271.6 GB: dense FP8 as in the checkpoint (7.2 GB), 8,992 experts exact MXFP4 + 6,368 re-quantized to a 3-bit codebook (260.6 GB), bf16 embeddings and head |
@@ -112,32 +113,48 @@ DSpark-7). None of the 1017 quants that fit 256 GB has a gfx942 runtime, so the 
   near-tied expert choices. The published build measured KL 0.049 and 0.047 on two runs (an earlier placement with
   8,804 MXFP4 experts: 0.051).
 
-## 6. Speculative decoding (in progress)
+## 6. Speculative decoding (DSpark)
 
-The verify pass runs the main model over the newest token plus drafts (up to 16 positions) with decode-style weight
-streaming: each wave streams a 16-row tile once and multiplies it with all positions as MFMA columns
-(`kernels/verify.h`). Routed experts are grouped on the device (one job per distinct expert, its tokens as columns).
-The window cache, compressor state and position are committed only for the accepted prefix.
+The checkpoint's draft stack (`mtp.*`: 3 window-only layers with 128 experts each, top-3, drafting a block of 5
+tokens at once, plus a Markov head) runs on the GPU: the draft layers are ordinary layers on the prompt path with
+block-bidirectional attention over a window of the main model's projected residual (`amd/src/dspark.rs`). The main
+model verifies the newest token plus the 5 drafts in one pass of 6 positions: decode-style weight streaming with the
+positions as MFMA columns (`kernels/verify.h`), routed experts grouped on the device, state committed for the
+accepted prefix only. `DSXA_DSPARK=3` loads it (6.5 GB of HBM; 1,613 cold experts go from MXFP4 to 3-bit to make
+room: KL 0.056 instead of 0.049); the server then uses it for greedy requests.
 
-Checked by replaying a greedy decode through verify: every draft is accepted (5 of 5 per pass at 6 positions).
+| 300 tokens, greedy | Drafts accepted per pass | vs plain decode |
+|---|---:|---:|
+| Code (parser + tests) | 3.0-4.0 | 1.4-1.7x |
+| Math word problem | 2.8-3.0 | 1.2-1.4x |
+| Explanation, translation | 1.4-2.8 | 1.0-1.2x |
+| Short story | 1.0 | 0.94x (falls back to plain decode) |
 
-| Verify pass (main model only) | Time |
-|---|---:|
-| 4 positions | 19.9 ms |
-| 6 positions | 22.9 ms |
+A pass costs ~23-26 ms (draft 1.5 ms, verify of 6 positions 18 ms, commit and window update) against 8.6 ms per
+plain token, so it pays above ~2 accepted drafts; below that the loop decodes 15 tokens plainly and probes again.
+Raw runs: [amd/results/dspark-spec.log](amd/results/dspark-spec.log).
 
-Six positions cost 2.6 decode steps. Of that, routed experts are 9.4 ms (6 random tokens touch ~36 distinct experts
-per layer, 6x the bytes of one token; at ~55% of HBM bandwidth), dense GEMVs ~4.8 ms (~1.9 TB/s), and the rest is
-small per-token kernels from the prompt path (attention, hyper-connection mixes, norms) that do not fill the GPU at
-6 tokens. DSpark drafting (3 draft layers, 128 experts each) needs ~4-6 GB of HBM that the current build does not
-leave free.
+Where the verify pass goes (6 positions, ~18 ms): routed experts ~7-9 ms (6 tokens touch ~25 distinct experts per
+layer, 4x the bytes of one token, streamed at ~2 TB/s), dense GEMVs ~3.7 ms, and ~6 ms of small per-token kernels
+(attention, hyper-connection mixes, norms). Replaying the pass as a HIP graph changes nothing (it is GPU-bound).
+Tuning that mattered: one k-unit in flight per wave instead of two in the expert kernel (more waves resident; 19.8 →
+18.2 ms), k-split expert GEMVs with outputs zeroed by the grouping kernel, a batched head.
 
-## 7. Plan
+The expert GEMV is also decode's largest cost: per launch, every block spends ~8 µs picking the experts from the
+router logits and ~9 µs staging the activation before ~15 µs of streaming (`gtime`). Producing the routing and the
+FP8 activation once, and blocks that stream several tiles each, is the next step for both decode and verify.
 
-1. Measure the box: HBM bandwidth for GEMV shapes, graph launch cost, MFMA throughput for 16-row tiles.
-2. Runner (`amd/`, Rust + HIP): everything in HBM; one HIP graph per decode step with all position-dependent values
-   read from device memory; GEMVs on MFMA (FP8 weights × FP8 activations, exactly the checkpoint's numerics); routed
-   experts gathered by device-side router output; indexer scoring on MFMA with device top-k.
-3. First end to end: dsx's 2-bit quant (148 GB) fully in HBM.
-4. Quant: ~3.5 bpw experts allocated by measured error, measured on Lucebox's eval set.
-5. DSpark speculation.
+## 7. Status and next steps
+
+Done: the runner (`amd/`), the MXFP4 + 3-bit build (published as 6 GGUF shards), decode 110-114 tok/s at 4K-256K,
+prefill 1,160-1,840 tok/s, the OpenAI / Anthropic server, DSpark speculation (opt-in). Rental: one MI325X,
+~9 hours (~$34 at $3.80/h).
+
+Next, in order of expected gain:
+
+1. Expert GEMVs at HBM speed: route once per layer (the router's last block) and FP8 activations produced once,
+   so expert blocks start streaming immediately; several tiles per wave. Decode spends ~65 µs per layer here at
+   ~1.7 TB/s; at ~4 TB/s decode would be ~135 tok/s, and verify passes ~4 ms shorter.
+2. Verify pass: fold the per-token prompt kernels (mix, norm, rope, window copy) into fewer launches with more
+   blocks per token; target ~12 ms for 6 positions, which would make DSpark ~1.5-2x on most text.
+3. DSpark draft layers in the export (they are read from the official checkpoint today).

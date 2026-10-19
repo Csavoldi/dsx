@@ -1,0 +1,27 @@
+DSpark speculative decoding on 1x MI325X (dsx-amd dev `spec N prompt`), greedy, chat prompts, short context.
+Build: export with DSXA_DSPARK=3 (draft experts 3-bit; 1,613 cold main experts demoted to 3-bit to make room:
+7,379 MXFP4 + 7,981 3-bit), Lucebox eval with this placement: KL 0.0558, top-1 90.4%, ppl 8.68.
+Plain = decode graph, one token per step. Spec = DSpark block of 5 drafts, verified by one main-model pass of 6
+positions; adaptive (below ~2 accepted drafts per pass: 15 plain steps, then probe again).
+
+Without the adaptive fallback:
+code (ISO 8601 parser)   300 tok: 1.39x, 3.05 drafts accepted per pass, verify 24.7 ms, draft 1.5 ms per pass
+story (lighthouse)       300 tok: 0.70x, 0.96 accepted
+math (two trains)        300 tok: 1.37x, 3.00 accepted
+translation (to French)  200 tok: 1.11x, 2.08 accepted
+hash map explanation     200 tok: 1.07-1.16x, 2.2-2.8 accepted
+
+With the adaptive fallback:
+code                     300 tok: 1.68x, 4.00 accepted per pass, 45 tokens plain
+story                    300 tok: 0.94x, 0.96 accepted, 255 tokens plain
+math                     300 tok: 1.18x, 2.82 accepted, 105 tokens plain
+translation              200 tok: 0.98x, 1.42 accepted, 154 tokens plain
+hash map explanation     300 tok: 1.02x, 2.24 accepted, 180 tokens plain
+
+Verify pass of 6 positions (main model): 17.9 ms (vtest; 19.8 before the prefetch tuning, 40 ms in the first
+version). HIP-graph replay of verify/draft: no change (GPU-bound). Per pass in the spec loop incl. commit and
+observe: 23-26 ms.
+
+Output vs plain greedy: identical until the first near-tie, then both continue coherently; the main model's prompt
+path is not bit-reproducible run to run (float atomics flip near-tied routes), checked against the published commit:
+prefill top logit 24.75 / 24.96 on two runs of the old build, 25.79 / 24.79 on the new.

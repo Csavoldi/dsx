@@ -7,6 +7,11 @@
 
 #define MMG 8  // token groups of 16 per block (128 tokens)
 
+// Graph-replayed passes (verify, draft) pass p0 = -1: the position comes from the decode state on the device
+__device__ const int* g_posp;
+#define P0_DEV(p0) \
+    if (p0 < 0) p0 = ld_dev_i(g_posp)
+
 struct MmJob {
     const void* w;       // tiles (FP8: [rt][kpair][lane][16 B]; experts: arena)
     const uint8_t* sc;   // FP8: E8M0 [N/32][K/32]
@@ -249,6 +254,7 @@ extern "C" __global__ void __launch_bounds__(256) prep_t(int mode, const float* 
 
 // RoPE on the last 64 dims of each head for a batch: x [T][heads][hd], position p0 + t (inverse: conjugate)
 extern "C" __global__ void rope_t(float* x, int heads, int hd, const float* freqs, int p0, int inverse) {
+    P0_DEV(p0);
     const int t = blockIdx.x, h = blockIdx.y, i = threadIdx.x;  // 32 pairs
     float* v = x + ((size_t)t * heads + h) * hd + hd - RD;
     const float ang = (float)(p0 + t) * freqs[i];
@@ -261,6 +267,7 @@ extern "C" __global__ void rope_t(float* x, int heads, int hd, const float* freq
 
 // Window kv rows of a batch: kv_raw [T][512] -> rmsnorm, rope(p0+t), fake_fp8 -> lin[base + t] (bf16)
 extern "C" __global__ void __launch_bounds__(512) kv_t(const float* kv_raw, const float* kv_norm, const float* rf, int p0, uint16_t* lin, int base) {
+    P0_DEV(p0);
     __shared__ float red[16];
     const int t = blockIdx.x, i = threadIdx.x;
     float v = kv_raw[(size_t)t * HD + i];
@@ -284,6 +291,7 @@ extern "C" __global__ void __launch_bounds__(512) comp_t(int p0, int T, int rati
                                                          float* cstate, const float* comp_norm, const uint16_t* wk,
                                                          const float* knorm, uint16_t* comp_cache, uint16_t* idx_cache,
                                                          const float* rope_fc, float eps) {
+    P0_DEV(p0);
     __shared__ float red[16];
     __shared__ float lat[HD];
     __shared__ float kk[ID];
@@ -356,6 +364,7 @@ extern "C" __global__ void __launch_bounds__(512) comp_t(int p0, int T, int rati
 extern "C" __global__ void __launch_bounds__(256) iscore_t(int p0, int q0, int ratio, const float* iq, const float* iw, float wscale,
                                                            const uint16_t* __restrict__ kc, const int* rows, const int* nrows,
                                                            int ldrows, float* score, int lds) {
+    P0_DEV(p0);
     __shared__ uint16_t qs[IH][ID + 8];
     __shared__ float ws[IH];
     const int qi = blockIdx.y, tq = q0 + qi;
@@ -504,6 +513,7 @@ DEV void block_topk(const float* sc, int n, int k, const int* map, int offset, i
 extern "C" __global__ void __launch_bounds__(1024) itopk_t(int p0, int q0, int ratio, const float* score, int lds, const int* rows,
                                                            const int* nrows, int ldrows, int k, int offset, int* out, int ldo,
                                                            int* nout, int sorted) {
+    P0_DEV(p0);
     const int qi = blockIdx.x, tq = q0 + qi;
     const int n = rows ? nrows[tq] : (p0 + tq + 1) / ratio;
     block_topk(score + (size_t)qi * lds, n, k, rows ? rows + (size_t)tq * ldrows : nullptr, offset, out + (size_t)tq * ldo, k, nout + tq, sorted != 0);
@@ -513,6 +523,7 @@ extern "C" __global__ void __launch_bounds__(1024) itopk_t(int p0, int q0, int r
 // expanded to positions -> keep[q][16384], nkeep[q]; scores [q][lds] in, block scores scratch bsc [q][lds/8]
 extern "C" __global__ void __launch_bounds__(1024) icand_t(int p0, int q0, int ratio, int bs, int nblk, const float* score, int lds,
                                                            float* bsc, int* kb, int* keep, int* nkeep) {
+    P0_DEV(p0);
     __shared__ int nb_s;
     const int qi = blockIdx.x, tq = q0 + qi;
     const int end = (p0 + tq + 1) / ratio;
@@ -543,6 +554,7 @@ extern "C" __global__ void __launch_bounds__(256) attn_t(int p0, const float* __
                                                          const uint16_t* __restrict__ comp, const int* __restrict__ cidx,
                                                          const int* ncomp, int ldc, int woff, float scale, const float* sinks,
                                                          const float* rf, uint8_t* oq, float* os, uint16_t* obq) {
+    P0_DEV(p0);
     __shared__ uint16_t rows[16][HD + 8];
     __shared__ float p[16][16];
     __shared__ int rowsrc[16];
@@ -676,6 +688,7 @@ extern "C" __global__ void embed_t(const uint16_t* __restrict__ emb, const int* 
 
 // window rows of positions p0-128 .. p0-1 from the ring into lin[0..128) (positions < 0 left as is)
 extern "C" __global__ void ring_to_lin(const uint16_t* ring, int p0, uint16_t* lin) {
+    P0_DEV(p0);
     const int r = blockIdx.x;  // lin row: position p0 - 128 + r
     const int p = p0 - WIN + r;
     if (p < 0) return;
@@ -683,6 +696,7 @@ extern "C" __global__ void ring_to_lin(const uint16_t* ring, int p0, uint16_t* l
 }
 // the batch's newest min(T, 128) positions from lin back into the ring
 extern "C" __global__ void lin_to_ring(const uint16_t* lin, int p0, int T, uint16_t* ring) {
+    P0_DEV(p0);
     const int j = blockIdx.x;  // 0 .. min(T,128)-1
     const int n = min(T, WIN);
     const int t = T - n + j, p = p0 + t;
@@ -852,6 +866,7 @@ extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restr
                                                           const uint16_t* __restrict__ comp, const int* __restrict__ cidx,
                                                           const int* ncomp, int ldc, int woff, float scale, const float* sinks,
                                                           int blk) {
+    P0_DEV(p0);
     __shared__ uint16_t rows[32][HD + 8];
     __shared__ float sp[2][64][33];
     __shared__ uint16_t ph[64][32 + 8], pl[64][32 + 8];
@@ -998,9 +1013,11 @@ extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restr
 }
 
 // after attn_m: inverse RoPE on the last 64 dims of each head, then FP8 per 32 (+ bf16 copy) for wo_a. Block per query.
+// blockIdx.y: group of 8 heads (the FP8 scale groups of 32 never straddle groups)
 extern "C" __global__ void __launch_bounds__(256) attn_m_out(int p0, float* __restrict__ o, const float* rf, uint8_t* oq, float* os, uint16_t* obq) {
-    const int t = blockIdx.x, pos = p0 + t;
-    float* ot = o + (size_t)t * NH * HD;
+    P0_DEV(p0);
+    const int t = blockIdx.x, pos = p0 + t, h0 = blockIdx.y * 8;
+    float* ot = o + (size_t)t * NH * HD + (size_t)h0 * HD;
     __shared__ float cs[32], sn[32];
     if (threadIdx.x < 32) {
         const float ang = (float)pos * rf[threadIdx.x];
@@ -1008,7 +1025,7 @@ extern "C" __global__ void __launch_bounds__(256) attn_m_out(int p0, float* __re
         sn[threadIdx.x] = -sinf(ang);
     }
     __syncthreads();
-    for (int i = threadIdx.x; i < NH * 32; i += 256) {
+    for (int i = threadIdx.x; i < 8 * 32; i += 256) {
         const int h = i / 32, pi = i % 32;
         float* v = ot + h * HD + HD - RD + 2 * pi;
         const float a = v[0], b = v[1];
@@ -1016,7 +1033,8 @@ extern "C" __global__ void __launch_bounds__(256) attn_m_out(int p0, float* __re
         v[1] = a * sn[pi] + b * cs[pi];
     }
     __syncthreads();
-    write_act(NH * HD, [&](int i) -> float { return ot[i]; }, oq + (size_t)t * NH * HD, os + (size_t)t * NH * HD / 32, nullptr, obq + (size_t)t * NH * HD);
+    const size_t off = (size_t)t * NH * HD + (size_t)h0 * HD;
+    write_act(8 * HD, [&](int i) -> float { return ot[i]; }, oq + off, os + off / 32, nullptr, obq + off);
 }
 
 // DSpark router: one wave per token over ne <= 128 experts; sqrt(softplus) scores, top-k by score + bias,

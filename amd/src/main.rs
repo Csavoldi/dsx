@@ -266,22 +266,72 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         // reference: plain greedy decode
                         let t0 = Instant::now();
                         let mut next = dec.prefill(&ids)?;
+                        let top2 = |lg: &[f32]| { let (mut a, mut b) = (f32::NEG_INFINITY, f32::NEG_INFINITY); for &v in lg { if v > a { b = a; a = v; } else if v > b { b = v; } } a - b };
+                        let m0 = top2(&dec.logits()?);
                         let mut plain = vec![];
-                        for _ in 0..n {
+                        let mut margin = vec![];
+                        for i in 0..n {
                             plain.push(next);
                             next = dec.step(next)?;
+                            if i < 64 {
+                                // top-2 gap of the logits that chose the next token (near-ties explain divergence)
+                                let lg = dec.logits()?;
+                                let (mut a, mut b) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+                                for &v in &lg {
+                                    if v > a { b = a; a = v; } else if v > b { b = v; }
+                                }
+                                margin.push(a - b);
+                            }
                         }
                         let tplain = t0.elapsed().as_secs_f64();
                         dec.reset()?;
                         let t1 = Instant::now();
                         let next = dec.prefill(&ids)?;
+                        let m1 = top2(&dec.logits()?);
+                        println!("first token: plain {} (top-2 gap {m0:.4}), spec run {next} (gap {m1:.4})", plain[0]);
                         let mut got = vec![];
                         let (sx, _) = dec.spec_loop(next, n, &mut |tk| { got.push(tk); true })?;
                         let tspec = t1.elapsed().as_secs_f64();
                         let same = got.iter().zip(&plain).take_while(|(a, b)| a == b).count();
-                        println!("prompt {} tokens; plain {n} tokens {:.2} s, spec {:.2} s ({:.2}x); {} passes, {:.2} drafts accepted per pass, draft {:.1} ms, verify {:.1} ms per pass; same as plain for {same}/{n}",
-                            ids.len(), tplain, tspec, tplain / tspec, sx.passes, sx.accepted as f64 / sx.passes as f64, sx.draft_us / 1e3 / sx.passes as f64, sx.verify_us / 1e3 / sx.passes as f64);
+                        if same < n && same >= 1 && same - 1 < margin.len() {
+                            println!("first difference at {same}: plain {} vs spec {}; plain's top-2 logit gap there {:.4} (median gap {:.3})", plain[same], got[same], margin[same - 1], { let mut m = margin.clone(); m.sort_by(|a, b| a.partial_cmp(b).unwrap()); m[m.len() / 2] });
+                        }
+                        println!("prompt {} tokens; plain {n} tokens {:.2} s, spec {:.2} s ({:.2}x); {} passes, {:.2} drafts accepted per pass, {} tokens decoded plainly, draft {:.1} ms, verify {:.1} ms per pass; same as plain for {same}/{n}",
+                            ids.len(), tplain, tspec, tplain / tspec, sx.passes, sx.accepted as f64 / sx.passes as f64, sx.plain, sx.draft_us / 1e3 / sx.passes as f64, sx.verify_us / 1e3 / sx.passes as f64);
                         println!("{}", tok.decode(&got, false).map_err(|e| anyhow::anyhow!("{e}"))?.chars().take(400).collect::<String>());
+                    }
+                    "pdet" => {
+                        // prefill determinism: the same chat prompt N times, top-2 logits each time
+                        let n: usize = w[1].parse()?;
+                        let text = match w.get(2) { Some(f) => std::fs::read_to_string(f)?, None => "Explain how a hash map works, with a short Python example.".into() };
+                        let tok = tokenizers::Tokenizer::from_file(model.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let chat = format!("<｜begin▁of▁sentence｜><｜User｜>{text}<｜Assistant｜></think>");
+                        let ids: Vec<u32> = tok.encode(chat.as_str(), false).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().to_vec();
+                        for _ in 0..n {
+                            dec.reset()?;
+                            let next = dec.prefill(&ids)?;
+                            let lg = dec.logits()?;
+                            let mut ix: Vec<usize> = (0..lg.len()).collect();
+                            ix.sort_by(|&a, &b| lg[b].partial_cmp(&lg[a]).unwrap());
+                            println!("next {next}: top {} {:.4}, {} {:.4}, {} {:.4}", ix[0], lg[ix[0]], ix[1], lg[ix[1]], ix[2], lg[ix[2]]);
+                        }
+                    }
+                    "sprof" => {
+                        // kernel time of DSpark generation (N tokens) after a short prompt
+                        let n: usize = w[1].parse()?;
+                        let prompt: Vec<u32> = vec![0, 671, 6102, 294, 8760, 344, 11111, 16, 455, 6102, 294, 10322, 344];
+                        let next = dec.prefill(&prompt)?;
+                        dec.g.sync()?;
+                        dec.g.prof_start();
+                        let t0 = Instant::now();
+                        let r = dec.spec_loop(next, n, &mut |_| true);
+                        let p = dec.g.prof_end()?;
+                        let (sx, _) = r?;
+                        let tot: f32 = p.iter().map(|x| x.1).sum();
+                        println!("spec {n}: {} passes, {:.2} accepted per pass; {:.0} us wall per pass, {:.0} us in kernels per pass", sx.passes, sx.accepted as f64 / sx.passes as f64, t0.elapsed().as_secs_f64() * 1e6 / sx.passes as f64, tot / sx.passes as f32);
+                        for (nm, t, k) in p.iter().take(30) {
+                            println!("  {nm:<28} {:>10.0} us {:>6.1} launches per pass", t / sx.passes as f32, *k as f32 / sx.passes as f32);
+                        }
                     }
                     "vprof" => {
                         // kernel time of one verify pass of T tokens after a short prompt (state left as before)

@@ -76,6 +76,9 @@ pub struct PfBufs {
     sel: Buf,
     wts: Buf,
     counts: Buf,
+    /// device pointers of the layers' window rings (commit)
+    ringtab: Buf,
+    pin_in: *mut u8,
     off: Buf,
     fill: Buf,
     tok: Buf,
@@ -113,6 +116,8 @@ pub struct PfBufs {
 }
 
 const RING: usize = 192 << 20;
+/// pinned input staging of the graph-replayed passes: Engram rows, then token ids at this offset
+const PIN_TOKS: usize = 16 * 2 * ER;
 
 impl PfBufs {
     /// (main_hidden, FP8 codes, scales, f32 rows, kv rows, window rows) for the DSpark observe step
@@ -170,6 +175,8 @@ impl PfBufs {
             sel: f(t * 6)?,
             wts: f(t * 6)?,
             counts: f(NE)?,
+            ringtab: f(128)?,
+            pin_in: g.host_alloc(PIN_TOKS + 64 * 4)?,
             off: f(NE)?,
             fill: f(NE)?,
             tok: f(t * 6)?,
@@ -313,6 +320,8 @@ impl Decoder {
     pub fn prefill(&mut self, tokens: &[u32]) -> Result<u32> {
         if self.pf.is_none() {
             self.pf = Some(PfBufs::new(&self.g, self.max_ctx)?);
+            let rings: Vec<u64> = self.layers.iter().map(|l| l.ring.ptr).collect();
+            self.g.htod(self.pf.as_ref().unwrap().ringtab.ptr, &rings)?;
         }
         let mut next = 0;
         for chunk in tokens.chunks(TMAX) {
@@ -370,9 +379,34 @@ impl Decoder {
         let g = &self.g;
         let c = self.cfg.clone();
         let pf = self.pf.as_ref().unwrap();
-        g.htod(pf.erows.ptr, &rows)?;
         let ti: Vec<i32> = tk.iter().map(|&x| x as i32).collect();
-        g.htod(pf.toks.ptr, &ti)?;
+        // verify / draft passes replay a HIP graph per (tokens, draft, 16K-position bucket): inputs through pinned
+        // memory, position-dependent kernels read the position from the decode state (p0 = -1)
+        let gmode = (verify || draft) && t <= 16 && self.head.sc.is_none() && std::env::var_os("DSXA_VPLAIN").is_none() && std::env::var("DSXA_VGRAPH").map(|v| v != "0").unwrap_or(true) && !g.profiling();
+        let bucket = (p0 + t).div_ceil(16384);
+        let key = (t, draft, bucket);
+        let cached = gmode && self.vgraphs.borrow().contains_key(&key);
+        let p0a: i32 = if gmode { -1 } else { p0 as i32 };
+        if gmode {
+            unsafe {
+                std::ptr::copy_nonoverlapping(rows.as_ptr(), pf.pin_in, rows.len());
+                std::ptr::copy_nonoverlapping(ti.as_ptr() as *const u8, pf.pin_in.add(PIN_TOKS), t * 4);
+            }
+            if !cached {
+                g.begin_capture()?;
+            }
+        }
+        'body: {
+        if cached {
+            break 'body;
+        }
+        if gmode {
+            g.htod_async(pf.erows.ptr, pf.pin_in, t * 2 * ER)?;
+            g.htod_async(pf.toks.ptr, unsafe { pf.pin_in.add(PIN_TOKS) }, t * 4)?;
+        } else {
+            g.htod(pf.erows.ptr, &rows)?;
+            g.htod(pf.toks.ptr, &ti)?;
+        }
         g.launch("embed_t", (20, t as u32, 1), 256, 0, &[Arg::P(self.embed.ptr), Arg::P(pf.toks.ptr), Arg::P(pf.h.ptr)])?;
         let none = HcArgs::default();
         let wscale = (c.idx_dim as f32).powf(-0.5) * (c.idx_heads as f32).powf(-0.5);
@@ -451,13 +485,13 @@ impl Decoder {
             }
             self.gm(vk, &plain, "mm q_b", &jobs)?;
             let rf = if l.ratio > 0 { self.rope_fc.ptr } else { self.rope_f.ptr };
-            g.launch("rope_t", (t as u32, NH as u32, 1), 32, 0, &[Arg::P(pf.q.ptr), Arg::I(NH as i32), Arg::I(HD as i32), Arg::P(rf), Arg::I(p0 as i32), Arg::I(0)])?;
+            g.launch("rope_t", (t as u32, NH as u32, 1), 32, 0, &[Arg::P(pf.q.ptr), Arg::I(NH as i32), Arg::I(HD as i32), Arg::P(rf), Arg::I(p0a), Arg::I(0)])?;
             if l.idx_wq_b.is_some() {
-                g.launch("rope_t", (t as u32, IH as u32, 1), 32, 0, &[Arg::P(pf.iq.ptr), Arg::I(IH as i32), Arg::I(ID as i32), Arg::P(self.rope_fc.ptr), Arg::I(p0 as i32), Arg::I(0)])?;
+                g.launch("rope_t", (t as u32, IH as u32, 1), 32, 0, &[Arg::P(pf.iq.ptr), Arg::I(IH as i32), Arg::I(ID as i32), Arg::P(self.rope_fc.ptr), Arg::I(p0a), Arg::I(0)])?;
             }
             // window rows: previous 128 positions from the ring, then this chunk's
-            g.launch("ring_to_lin", (WIN as u32, 1, 1), 256, 0, &[Arg::P(l.ring.ptr), Arg::I(p0 as i32), Arg::P(pf.lin.ptr)])?;
-            g.launch("kv_t", (t as u32, 1, 1), 512, 0, &[Arg::P(pf.kvraw.ptr), Arg::P(l.kv_norm.ptr), Arg::P(rf), Arg::I(p0 as i32), Arg::P(pf.lin.ptr), Arg::I(WIN as i32)])?;
+            g.launch("ring_to_lin", (WIN as u32, 1, 1), 256, 0, &[Arg::P(l.ring.ptr), Arg::I(p0a), Arg::P(pf.lin.ptr)])?;
+            g.launch("kv_t", (t as u32, 1, 1), 512, 0, &[Arg::P(pf.kvraw.ptr), Arg::P(l.kv_norm.ptr), Arg::P(rf), Arg::I(p0a), Arg::P(pf.lin.ptr), Arg::I(WIN as i32)])?;
             // compressor + indexer keys
             if l.kv_src {
                 let opt = |b: &Option<Buf>| b.as_ref().map(|x| x.ptr).unwrap_or(0);
@@ -466,7 +500,7 @@ impl Decoder {
                     (t as u32, 1, 1),
                     512,
                     0,
-                    &[Arg::I(p0 as i32), Arg::I(t as i32), Arg::I(l.ratio as i32), Arg::P(pf.ckv.ptr), Arg::P(pf.cg.ptr), Arg::P(opt(&l.cstate)), Arg::P(opt(&l.comp_norm)), Arg::P(opt(&l.idx_wk)), Arg::P(opt(&l.idx_knorm)), Arg::P(opt(&l.comp_cache)), Arg::P(opt(&l.idx_cache)), Arg::P(self.rope_fc.ptr), Arg::F(c.eps)],
+                    &[Arg::I(p0a), Arg::I(t as i32), Arg::I(l.ratio as i32), Arg::P(pf.ckv.ptr), Arg::P(pf.cg.ptr), Arg::P(opt(&l.cstate)), Arg::P(opt(&l.comp_norm)), Arg::P(opt(&l.idx_wk)), Arg::P(opt(&l.idx_knorm)), Arg::P(opt(&l.comp_cache)), Arg::P(opt(&l.idx_cache)), Arg::P(self.rope_fc.ptr), Arg::F(c.eps)],
                 )?;
             }
             // indexer + top-k per query
@@ -476,17 +510,18 @@ impl Decoder {
                 let lds = pf.max_end + 64;
                 for q0 in (0..t).step_by(QB) {
                     let nq = QB.min(t - q0);
-                    let chunks = (((p0 + q0 + nq) / l.ratio.max(1)).max(16384)).div_ceil(1024) as u32;
+                    let pend = if gmode { bucket * 16384 } else { p0 + q0 + nq };
+                    let chunks = ((pend / l.ratio.max(1)).max(16384)).div_ceil(1024) as u32;
                     let (rows, nrows) = if after { (pf.keep.ptr, pf.nkeep.ptr) } else { (0, 0) };
-                    g.launch("iscore_t", (chunks, nq as u32, 1), 256, 0, &[Arg::I(p0 as i32), Arg::I(q0 as i32), Arg::I(l.ratio as i32), Arg::P(pf.iq.ptr), Arg::P(pf.iw.ptr), Arg::F(wscale), Arg::P(kc), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::P(pf.score.ptr), Arg::I(lds as i32)])?;
+                    g.launch("iscore_t", (chunks, nq as u32, 1), 256, 0, &[Arg::I(p0a), Arg::I(q0 as i32), Arg::I(l.ratio as i32), Arg::P(pf.iq.ptr), Arg::P(pf.iw.ptr), Arg::F(wscale), Arg::P(kc), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::P(pf.score.ptr), Arg::I(lds as i32)])?;
                     if li == c.cand_layer {
-                        g.launch("icand_t", (nq as u32, 1, 1), 1024, 0, &[Arg::I(p0 as i32), Arg::I(q0 as i32), Arg::I(l.ratio as i32), Arg::I(c.cand_block as i32), Arg::I(c.cand_blocks as i32), Arg::P(pf.score.ptr), Arg::I(lds as i32), Arg::P(pf.bsc.ptr), Arg::P(pf.kb.ptr), Arg::P(pf.keep.ptr), Arg::P(pf.nkeep.ptr)])?;
+                        g.launch("icand_t", (nq as u32, 1, 1), 1024, 0, &[Arg::I(p0a), Arg::I(q0 as i32), Arg::I(l.ratio as i32), Arg::I(c.cand_block as i32), Arg::I(c.cand_blocks as i32), Arg::P(pf.score.ptr), Arg::I(lds as i32), Arg::P(pf.bsc.ptr), Arg::P(pf.kb.ptr), Arg::P(pf.keep.ptr), Arg::P(pf.nkeep.ptr)])?;
                         // the layer's own top-512 over its kept positions: rescore on the keep list
-                        g.launch("iscore_t", (16, nq as u32, 1), 256, 0, &[Arg::I(p0 as i32), Arg::I(q0 as i32), Arg::I(l.ratio as i32), Arg::P(pf.iq.ptr), Arg::P(pf.iw.ptr), Arg::F(wscale), Arg::P(kc), Arg::P(pf.keep.ptr), Arg::P(pf.nkeep.ptr), Arg::I(16384), Arg::P(pf.score.ptr), Arg::I(lds as i32)])?;
+                        g.launch("iscore_t", (16, nq as u32, 1), 256, 0, &[Arg::I(p0a), Arg::I(q0 as i32), Arg::I(l.ratio as i32), Arg::P(pf.iq.ptr), Arg::P(pf.iw.ptr), Arg::F(wscale), Arg::P(kc), Arg::P(pf.keep.ptr), Arg::P(pf.nkeep.ptr), Arg::I(16384), Arg::P(pf.score.ptr), Arg::I(lds as i32)])?;
                     }
                     let use_keep = after || li == c.cand_layer;
                     let (rows, nrows) = if use_keep { (pf.keep.ptr, pf.nkeep.ptr) } else { (0, 0) };
-                    g.launch("itopk_t", (nq as u32, 1, 1), 1024, 0, &[Arg::I(p0 as i32), Arg::I(q0 as i32), Arg::I(l.ratio as i32), Arg::P(pf.score.ptr), Arg::I(lds as i32), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::I(c.idx_topk as i32), Arg::I(WIN as i32), Arg::P(pf.cidx.ptr), Arg::I(512), Arg::P(pf.ncomp.ptr), Arg::I(0)])?;
+                    g.launch("itopk_t", (nq as u32, 1, 1), 1024, 0, &[Arg::I(p0a), Arg::I(q0 as i32), Arg::I(l.ratio as i32), Arg::P(pf.score.ptr), Arg::I(lds as i32), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::I(c.idx_topk as i32), Arg::I(WIN as i32), Arg::P(pf.cidx.ptr), Arg::I(512), Arg::P(pf.ncomp.ptr), Arg::I(0)])?;
                 }
             }
             // sparse attention per query
@@ -497,7 +532,7 @@ impl Decoder {
                 (t as u32, 4, 1),
                 256,
                 0,
-                &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)],
+                &[Arg::I(p0a), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)],
             )?;
             } else {
                 g.launch(
@@ -505,9 +540,9 @@ impl Decoder {
                     (t as u32, 1, 1),
                     1024,
                     0,
-                    &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::I(if draft { t as i32 } else { 0 })],
+                    &[Arg::I(p0a), Arg::P(pf.q.ptr), Arg::P(pf.lin.ptr), Arg::P(comp), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::I(if draft { t as i32 } else { 0 })],
                 )?;
-                g.launch("attn_m_out", (t as u32, 1, 1), 256, 0, &[Arg::I(p0 as i32), Arg::P(pf.q.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])?;
+                g.launch("attn_m_out", (t as u32, (NH / 8) as u32, 1), 256, 0, &[Arg::I(p0a), Arg::P(pf.q.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])?;
             }
             if let (true, Ok(dir)) = (li == 0, std::env::var("DSXA_DUMPQ")) {
                 let w = |n: &str, v: Vec<u8>| std::fs::write(format!("{dir}/pf_{n}_p{p0}.bin"), v);
@@ -527,7 +562,7 @@ impl Decoder {
             } else if verify {
                 g.dtod(pf.vlin.at(li * 16 * HD * 2), pf.lin.at(WIN * HD * 2), t * HD * 2)?;
             } else {
-                g.launch("lin_to_ring", (t.min(WIN) as u32, 1, 1), 256, 0, &[Arg::P(pf.lin.ptr), Arg::I(p0 as i32), Arg::I(t as i32), Arg::P(l.ring.ptr)])?;
+                g.launch("lin_to_ring", (t.min(WIN) as u32, 1, 1), 256, 0, &[Arg::P(pf.lin.ptr), Arg::I(p0a), Arg::I(t as i32), Arg::P(l.ring.ptr)])?;
             }
             // wo_a per group, wo_b
             let k_a = l.wo_a.k;
@@ -558,24 +593,29 @@ impl Decoder {
                 j.ntok = t as i32;
             }
             self.gm(vk, &plain, "mm router+shared", &jobs)?;
-            g.memset(pf.counts.ptr, 0, NE * 4)?;
             let (kk, ebase) = if draft { (dsx.unwrap().top_k, dsx.unwrap().arena.ptr) } else { (6, self.arena.ptr) };
             if draft {
                 g.launch("route_k_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::I(ne_l as i32), Arg::I(kk as i32), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr)])?;
-            } else {
+            } else if vk && !plain("mm experts") {
+                // verify: no expert counts needed (device grouping)
+                g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
+            }
+            if !(draft || (vk && !plain("mm experts"))) {
+                g.memset(pf.counts.ptr, 0, NE * 4)?;
                 g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
             }
             if draft || (vk && !plain("mm experts")) {
                 // device grouping: one job per distinct expert and matrix, tokens as MFMA columns
-                g.launch("vgroup", (1, 1, 1), 256, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(pf.dyn_.ptr), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr)])?;
-                let ej = |m: usize, n: usize, k: usize, xq: u64, xs: u64, ldx: usize, y: u64, ldy: usize, atomic: i32| crate::verify::VJob {
-                    w: ebase, n: n as i32, k: k as i32, xq, xs, ldx: ldx as i32, y, ldy: ldy as i32, atomic, ndyn: 48, dyn_: pf.dyn_.at(m * 48 * 40 * 4), fmt: 1, ..Default::default()
+                g.launch("vgroup", (64, 1, 1), 256, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(pf.dyn_.ptr), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.y.ptr)])?;
+                // outputs zeroed by vgroup: all expert jobs add, so k can be split (gate/up 4 ways, down 2)
+                let esplit = |m: usize| std::env::var(if m < 2 { "DSXA_ESPLIT_GU" } else { "DSXA_ESPLIT_D" }).ok().and_then(|v| v.parse().ok()).unwrap_or(if m < 2 { 4 } else { 2 });
+                let ej = |m: usize, n: usize, k: usize, xq: u64, xs: u64, ldx: usize, y: u64, ldy: usize, _atomic: i32| crate::verify::VJob {
+                    w: ebase, n: n as i32, k: k as i32, xq, xs, ldx: ldx as i32, y, ldy: ldy as i32, atomic: 1, split: esplit(m), ndyn: 48, dyn_: pf.dyn_.at(m * 48 * 40 * 4), fmt: 1, ..Default::default()
                 };
                 self.vlaunch("verify experts gu", vec![ej(0, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.gg.ptr, INTER, 0), ej(1, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.uu.ptr, INTER, 0)], self.st.ptr)?;
                 let rtot = t * kk;
                 self.prep(3, pf.gg.ptr, pf.uu.ptr, INTER, 0, 0, pf.wrow.ptr, INTER, rtot, pf.hq.ptr, pf.hs.ptr, 0, pf.hqb.ptr)?;
                 self.prep(3, pf.sg.ptr, pf.su.ptr, INTER, 0, 0, 0, INTER, t, pf.shq.ptr, pf.shs.ptr, 0, pf.shqb.ptr)?;
-                g.memset(pf.y.ptr, 0, t * D * 4)?;
                 let mut sj = MmJob::dense(&l.sh_w2, 0, pf.shq.ptr, pf.shs.ptr, INTER, pf.y.ptr, D);
                 sj.ntok = t as i32;
                 sj.yatomic = 1;
@@ -664,14 +704,16 @@ impl Decoder {
         let onorm = if draft { dsx.unwrap().norm.ptr } else { self.out_norm.ptr };
         hc(pf.y.ptr, true, pf.mix_f.ptr, &last.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
         if verify {
-            let mut out = vec![];
             let pm = self.accp(nl - 1, A_HMIX_F);
             let batched = self.head.sc.is_none();
             for lt in 0..t {
-                g.dtod(self.h.ptr, pf.h.at(lt * HC * D * 4), HC * D * 4)?;
-                g.dtod(pm, pf.mix_f.at(lt * 80 * 32 * 4), 80 * 32 * 4)?;
+                let (hrow, mrow) = (pf.h.at(lt * HC * D * 4), pf.mix_f.at(lt * 80 * 32 * 4));
+                if !batched {
+                    g.dtod(self.h.ptr, hrow, HC * D * 4)?;
+                    g.dtod(pm, mrow, 80 * 32 * 4)?;
+                }
                 let (oh, ol) = if batched { (pf.vhh.at(lt * D * 2), pf.vhl.at(lt * D * 2)) } else { (0, 0) };
-                g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(pm), Arg::B(bytes(&last.hc_ffn)), Arg::P(onorm), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(oh), Arg::P(ol)])?;
+                g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(hrow), Arg::P(mrow), Arg::B(bytes(&last.hc_ffn)), Arg::P(onorm), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(oh), Arg::P(ol)])?;
                 if !batched {
                     self.head_logits()?;
                     g.dtod(pf.vnext.at(lt * 4), self.next.ptr, 4)?;
@@ -681,7 +723,7 @@ impl Decoder {
                 // head for all block positions, then in order: + Markov bias from the previous token, argmax
                 let ds = dsx.unwrap();
                 anyhow::ensure!(batched, "DSpark needs the bf16 head");
-                g.htod(pf.vnext.ptr, &[tk[0] as i32])?;
+                g.dtod(pf.vnext.ptr, pf.toks.ptr, 4)?;
                 let hj = crate::verify::VJob { w: self.head.w.ptr, n: VOCAB as i32, k: D as i32, fmt: 4, xb: pf.vhh.ptr, xl: pf.vhl.ptr, ldx: D as i32, ntok: t as i32, y: pf.vlog.ptr, ldy: VOCAB as i32, split: 1, mul: 1.0, ..Default::default() };
                 self.vlaunch("dspark head", vec![hj], self.st.ptr)?;
                 for i in 0..t {
@@ -690,8 +732,7 @@ impl Decoder {
                     g.launch("argmax_part", (128, 1, 1), 256, 0, &[Arg::P(pf.vlog.at(i * VOCAB * 4)), Arg::I(VOCAB as i32), Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr)])?;
                     g.launch("argmax", (1, 1, 1), 64, 0, &[Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::I(128), Arg::P(pf.vnext.at((i + 1) * 4))])?;
                 }
-                let v: Vec<i32> = g.dtoh(pf.vnext.ptr, t + 1)?;
-                return Ok(v[1..].iter().map(|&x| x as u32).collect());
+                break 'body;
             }
             if batched {
                 // one pass over the head for all positions (bf16 hi + lo activations, as decode)
@@ -702,9 +743,7 @@ impl Decoder {
                     g.launch("argmax", (1, 1, 1), 64, 0, &[Arg::P(self.cand.ptr), Arg::P(self.ckey.ptr), Arg::I(128), Arg::P(pf.vnext.at(lt * 4))])?;
                 }
             }
-            let v: Vec<i32> = g.dtoh(pf.vnext.ptr, t)?;
-            out.extend(v.iter().map(|&x| x as u32));
-            return Ok(out);
+            break 'body;
         }
         let lt = t - 1;
         g.dtod(self.h.ptr, pf.h.at(lt * HC * D * 4), HC * D * 4)?;
@@ -715,13 +754,30 @@ impl Decoder {
         self.pos = p0 + t;
         g.htod(self.st.ptr, &[self.pos as i32])?;
         let next: Vec<i32> = g.dtoh(self.next.ptr, 1)?;
-        Ok(vec![next[0] as u32])
+        return Ok(vec![next[0] as u32]);
+        }
+        // verify / draft: finish the capture, replay
+        if gmode {
+            if !cached {
+                let gr = g.end_capture()?;
+                self.vgraphs.borrow_mut().insert(key, gr);
+            }
+            g.graph_launch(&self.vgraphs.borrow()[&key])?;
+        }
+        if draft {
+            let v: Vec<i32> = g.dtoh(pf.vnext.ptr, t + 1)?;
+            return Ok(v[1..].iter().map(|&x| x as u32).collect());
+        }
+        let v: Vec<i32> = g.dtoh(pf.vnext.ptr, t)?;
+        Ok(v.iter().map(|&x| x as u32).collect())
     }
 
     /// Verify `tokens` (the newest token and drafts) at the current position: the greedy next token after each.
     pub fn verify(&mut self, tokens: &[u32]) -> Result<Vec<u32>> {
         if self.pf.is_none() {
             self.pf = Some(PfBufs::new(&self.g, self.max_ctx)?);
+            let rings: Vec<u64> = self.layers.iter().map(|l| l.ring.ptr).collect();
+            self.g.htod(self.pf.as_ref().unwrap().ringtab.ptr, &rings)?;
         }
         anyhow::ensure!(tokens.len() <= 16);
         self.run_chunk(tokens, true)
@@ -732,12 +788,9 @@ impl Decoder {
         let p0 = self.pos;
         let g = &self.g;
         let pf = self.pf.as_ref().unwrap();
-        for (li, l) in self.layers.iter().enumerate() {
-            // window rows of the kept positions into the ring
-            for j in 0..keep {
-                let p = p0 + j;
-                g.dtod(l.ring.at((p % WIN) * HD * 2), pf.vlin.at((li * 16 + j) * HD * 2), HD * 2)?;
-            }
+        // window rows of the kept positions into every layer's ring
+        g.launch("commit_rings", (self.layers.len() as u32, keep as u32, 1), 256, 0, &[Arg::P(pf.ringtab.ptr), Arg::P(pf.vlin.ptr), Arg::I(p0 as i32)])?;
+        for l in self.layers.iter() {
             // ratio-2 compressor state: slot 0 must hold the newest kept even position
             if l.kv_src && l.ratio == 2 {
                 let p = p0 + keep - 1;

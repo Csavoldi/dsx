@@ -92,7 +92,8 @@ DSXA_WEIGHTS=../dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf
 ```
 
 `--model` is the official checkpoint directory (config, tokenizer, Engram shards and `dsx-engram.json` from the quant
-repo). Same server and web UI as above. Measurements and design notes: [FINDINGS-AMD.md](FINDINGS-AMD.md).
+repo). Same server and web UI as above. `DSXA_DSPARK=3` adds the checkpoint's DSpark draft layers (read from the
+official `mtp.*` tensors) for greedy requests: 1.4-1.7x on code, ~1.0x on prose. Measurements and design notes: [FINDINGS-AMD.md](FINDINGS-AMD.md).
 
 ## How it works
 

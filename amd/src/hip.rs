@@ -192,19 +192,7 @@ impl Gpu {
         if shmem > 65536 {
             bail!("{name}: {shmem} bytes of LDS");
         }
-        let mut prof = self.prof.lock().unwrap();
-        let ev = if let Some(p) = prof.as_mut() {
-            let (mut a, mut b) = (std::ptr::null_mut(), std::ptr::null_mut());
-            unsafe {
-                ck(hipEventCreate(&mut a), "hipEventCreate")?;
-                ck(hipEventCreate(&mut b), "hipEventCreate")?;
-                ck(hipEventRecord(a, self.stream), "hipEventRecord")?;
-            }
-            p.push((self.label.lock().unwrap().clone().unwrap_or_else(|| name.to_string()), a, b));
-            Some(b)
-        } else {
-            None
-        };
+        let ev = self.prof_begin(name)?;
         ck(
             unsafe {
                 hipModuleLaunchKernel(f, grid.0, grid.1, grid.2, block, 1, 1, shmem, self.stream, ptrs.as_mut_ptr(), std::ptr::null_mut())
@@ -215,6 +203,34 @@ impl Gpu {
             ck(unsafe { hipEventRecord(b, self.stream) }, "hipEventRecord")?;
         }
         Ok(())
+    }
+
+    /// profiling: a start event for the next stream operation, and its end event to record after it
+    fn prof_begin(&self, name: &str) -> Result<Option<hipEvent_t>> {
+        let mut prof = self.prof.lock().unwrap();
+        Ok(if let Some(p) = prof.as_mut() {
+            let (mut a, mut b) = (std::ptr::null_mut(), std::ptr::null_mut());
+            unsafe {
+                ck(hipEventCreate(&mut a), "hipEventCreate")?;
+                ck(hipEventCreate(&mut b), "hipEventCreate")?;
+                ck(hipEventRecord(a, self.stream), "hipEventRecord")?;
+            }
+            p.push((self.label.lock().unwrap().clone().unwrap_or_else(|| name.to_string()), a, b));
+            Some(b)
+        } else {
+            None
+        })
+    }
+
+    fn prof_finish(&self, ev: Option<hipEvent_t>) -> Result<()> {
+        if let Some(b) = ev {
+            ck(unsafe { hipEventRecord(b, self.stream) }, "hipEventRecord")?;
+        }
+        Ok(())
+    }
+
+    pub fn profiling(&self) -> bool {
+        self.prof.lock().unwrap().is_some()
     }
 
     /// Start collecting per-launch timings (eager execution only).
@@ -282,11 +298,15 @@ impl Gpu {
     }
 
     pub fn dtod(&self, dst: u64, src: u64, n: usize) -> Result<()> {
-        ck(unsafe { hipMemcpyAsync(dst as *mut c_void, src as *const c_void, n, D2D, self.stream) }, "hipMemcpy dtod")
+        let ev = self.prof_begin("(copy dtod)")?;
+        ck(unsafe { hipMemcpyAsync(dst as *mut c_void, src as *const c_void, n, D2D, self.stream) }, "hipMemcpy dtod")?;
+        self.prof_finish(ev)
     }
 
     pub fn memset(&self, dst: u64, v: u8, n: usize) -> Result<()> {
-        ck(unsafe { hipMemsetAsync(dst as *mut c_void, v as c_int, n, self.stream) }, "hipMemset")
+        let ev = self.prof_begin("(memset)")?;
+        ck(unsafe { hipMemsetAsync(dst as *mut c_void, v as c_int, n, self.stream) }, "hipMemset")?;
+        self.prof_finish(ev)
     }
 
     pub fn sync(&self) -> Result<()> {

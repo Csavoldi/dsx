@@ -3,6 +3,12 @@
 // activation row and scales the lane reads itself, so every per-k-block scale is per lane (token) and per row.
 #pragma once
 #include "gemv.h"
+#ifndef VDU
+#define VDU 2  // dense FP8 k-pairs in flight per wave (verify)
+#endif
+#ifndef VXU
+#define VXU 1  // expert k-units in flight per wave (verify)
+#endif
 
 struct VJob {
     const void* w;      // tiles
@@ -11,6 +17,7 @@ struct VJob {
     float mul;
     int fmt;            // 0 FP8 dense, 1 MXFP4, 2 CB3, 3 CB2, 4 BF16
     int n, k, split;
+    int zero;           // vzero: clear this job's output rows first (k-split partial sums into a stored output)
     const uint8_t* xq;  // FP8 codes [row][ldx]
     const float* xs;    // scales [row][ldx/32]
     const uint16_t* xb; // bf16 rows [row][ldx] (fmt 4)
@@ -46,7 +53,7 @@ DEV f4 vwave(const VJob& J, int rt, int u0, int u1, int lane, uint32_t cb3lo, ui
         const int KP = J.k / 64, KB = J.k / 32;
         const u4v* wp = (const u4v*)J.w + (size_t)rt * KP * 64 + lane;
         const uint8_t* sp = (const uint8_t*)J.sc + (size_t)(rt >> 1) * KB;
-        constexpr int U = 4;
+        constexpr int U = VDU;
         u4v cw[U], nw[U];
         uint64_t cx[U][2], nx[U][2];
         float cs[U][2], ns[U][2];
@@ -108,7 +115,7 @@ DEV f4 vwave(const VJob& J, int rt, int u0, int u1, int lane, uint32_t cb3lo, ui
     const int NDW = J.fmt == 1 ? 4 : (J.fmt == 2 ? 3 : 2);
     const u4v* sp = (const u4v*)(base + J.soff) + (size_t)rt * KU * 4 + (lane >> 4);
     const uint32_t* wp = (const uint32_t*)(base + J.woff) + (size_t)rt * KU * 64 * NDW + lane * NDW;
-    constexpr int U = 2;
+    constexpr int U = VXU;
     struct Unit { uint32_t w[4]; u4v s; uint64_t x[4]; float xs[4]; };
     Unit cu[U], nu[U];
     auto ld = [&](int u, Unit& o) {
@@ -226,11 +233,31 @@ extern "C" __global__ void __launch_bounds__(256) vgemv_x(VJobs js, const int* p
     vgemv_impl<2>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2, pos0p, rope_f, rope_fc);
 }
 
+// Zero the outputs [ntok][n] (stride ldy) of the jobs flagged `zero`, before their vgemv launch
+extern "C" __global__ void __launch_bounds__(256) vzero(VJobs js) {
+    for (int ji = 0; ji < js.n; ji++) {
+        if (!js.j[ji].zero) continue;
+        float* y = js.j[ji].y;
+        const int n = js.j[ji].n, ldy = js.j[ji].ldy, tot = js.j[ji].ntok * n;
+        for (int i = blockIdx.x * 256 + threadIdx.x; i < tot; i += gridDim.x * 256) y[(size_t)(i / n) * ldy + i % n] = 0.f;
+    }
+}
+
+// Commit of a verify pass: window rows of the kept positions p0 .. p0+keep into each layer's ring
+extern "C" __global__ void commit_rings(const unsigned long long* rings, const uint16_t* vlin, int p0) {
+    const int li = blockIdx.x, j = blockIdx.y;
+    uint16_t* ring = reinterpret_cast<uint16_t*>(rings[li]);
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(vlin + ((size_t)li * 16 + j) * HD);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(ring + (size_t)((p0 + j) % WIN) * HD);
+    for (int i = threadIdx.x; i < HD / 2; i += blockDim.x) dst[i] = src[i];
+}
+
 // Expert grouping for a verify batch (one block): picks sel[t][6] -> one job per distinct expert with its tokens.
 // dyn layout per job: [fmt, ntok, woff lo, hi, soff lo, hi, mul bits, pad, rows[16] (activation rows = token),
 // orows[16] (output rows = compact pair index t*6+slot)], for gate/up mats 0/1 and down mat 2 (3 job arrays of 36).
 // Also writes the pair weights wrow[t*6+slot].
-extern "C" __global__ void vgroup(int T, int K, const int* sel, const float* wts, const ExpertMat* tab, int* dyn, float* wrow, int* npairs) {
+extern "C" __global__ void vgroup(int T, int K, const int* sel, const float* wts, const ExpertMat* tab, int* dyn, float* wrow, int* npairs,
+                                  float* gg, float* uu, float* y) {
     __shared__ int ex[96], cnt[96], nex;
     __shared__ int members[96][16];
     __shared__ int ss[96], lead[96], gidx[96];
@@ -239,6 +266,14 @@ extern "C" __global__ void vgroup(int T, int K, const int* sel, const float* wts
         ss[i] = sel[i];
         wrow[i] = wts[i];
     }
+    // the k-split expert GEMVs add into gate/up rows [N][INTER] and the down output y [T][D]: all blocks zero them,
+    // block 0 also groups
+    {
+        const int gi = blockIdx.x * blockDim.x + i, gs = gridDim.x * blockDim.x;
+        for (int q = gi; q < N * INTER; q += gs) { gg[q] = 0.f; uu[q] = 0.f; }
+        for (int q = gi; q < T * D; q += gs) y[q] = 0.f;
+    }
+    if (blockIdx.x != 0) return;
     if (i == 0) *npairs = N;
     __syncthreads();
     if (i < N) {
