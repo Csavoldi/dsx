@@ -269,6 +269,66 @@ h1{font-size:54px;margin-top:14px}
 <div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
 </div>"""
 
+OVERTHINK = {  # reasoning tokens per run, temperature 1.0 unless noted; every run correct unless noted
+    "builds": [("hosted", "Full model, hosted", "#5b7cff"), ("v2", "v2 2-bit", "#ff6b7a"), ("v3a", "v3a 2-bit", "#7df0d4")],
+    "problems": [
+        ("Problem A", "olympiad math, answer 480/49", {
+            "hosted": [17426, 11069, 10465, 6371, 6799, 5665, 8426, 13485],
+            "v2": [10126, 39479, 12159, 31487], "v3a": [10469, 10263, 15311]}, None),
+        ("Problem B", "olympiad math, answer 500", {
+            "hosted": [12523, 7507, 11651, 9523, 8879, 13870, 9741, 12147],
+            "v2": [26462, 22645], "v3a": [21489, 20180]}, "v2"),  # v2 at temperature 0: looped past 55K, no answer
+    ],
+    "xmax": 60000,
+}
+
+def post_overthink():
+    """16:9 social card: reasoning tokens per run, v2 vs v3a vs the hosted full model, on two hard math problems."""
+    W, L, R, rowh = 1448, 250, 56, 49
+    xmax = OVERTHINK["xmax"]; builds = OVERTHINK["builds"]
+    x = lambda v: L + min(v, xmax) / xmax * (W - L - R)
+    panels = ""
+    for name, sub, runs, loop in OVERTHINK["problems"]:
+        H = 40 + rowh * len(builds) + (56 if name == OVERTHINK["problems"][-1][0] else 30)
+        top = 40
+        s = [f'<text x="0" y="22" class="pt">{name}</text><text x="{len(name) * 15 + 18}" y="22" class="ps">{sub}</text>']
+        lo, hi = min(runs["hosted"]), max(runs["hosted"])
+        s.append(f'<rect x="{x(lo):.1f}" y="{top}" width="{x(hi) - x(lo):.1f}" height="{rowh * len(builds)}" rx="6" fill="rgba(91,124,255,.16)"/>')
+        for t in range(0, xmax + 1, 10000):
+            s.append(f'<line x1="{x(t):.1f}" x2="{x(t):.1f}" y1="{top}" y2="{top + rowh * len(builds)}" stroke="rgba(228,241,244,.10)"/>')
+            s.append(f'<text x="{x(t):.1f}" y="{top + rowh * len(builds) + 24}" class="ax" text-anchor="middle">{"0" if t == 0 else f"{t // 1000}K"}</text>')
+        for i, (k, label, col) in enumerate(builds):
+            cy = top + rowh * i + rowh / 2
+            s.append(f'<text x="0" y="{cy + 7}" class="rl" style="fill:{col}">{label}</text>')
+            for j, v in enumerate(sorted(runs[k])):
+                s.append(f'<circle cx="{x(v):.1f}" cy="{cy}" r="12.5" fill="{col}" stroke="#0d1318" stroke-width="2.5"/>')
+            if loop == k:
+                ax = x(xmax)
+                s.append(f'<path d="M {ax - 22} {cy - 11} L {ax} {cy} L {ax - 22} {cy + 11} Z" fill="{col}"/>')
+                s.append(f'<text x="{ax - 32}" y="{cy + 7}" class="lp" text-anchor="end">temperature 0: looped past 55K, no answer</text>')
+        if name == OVERTHINK["problems"][-1][0]:
+            s.append(f'<text x="{W - R}" y="{top + rowh * len(builds) + 52}" class="ax" text-anchor="end">reasoning tokens per run</text>')
+        panels += f'<div class=panel><svg width="{W}" height="{H}">{"".join(s)}</svg></div>'
+    css = BRAND_CSS + """
+.card{padding-top:52px}
+h1{font-size:56px;margin-top:14px}
+.panels{margin-top:30px;display:flex;flex-direction:column;gap:18px}
+.panel{background:rgba(255,255,255,.045);border:1px solid rgba(228,241,244,.14);border-radius:18px;padding:18px 26px 8px}
+svg{display:block;overflow:visible}
+svg text{font-family:Num,Iosevka,ui-monospace,Menlo,monospace;fill:#f0f6f7}
+.pt{font-size:26px;font-weight:700} .ps{font-size:21px;fill:#a9b8bd} .rl{font-size:22px;font-weight:700}
+.ax{font-size:17px;fill:#8a9a9f} .lp{font-size:19px;fill:#ffb3bc}
+.foot{flex-direction:column;gap:6px;bottom:28px;font-size:18px}
+.foot .r{display:flex;justify-content:space-between} .foot .note{color:#a9b8bd}
+"""
+    return f"""<!doctype html><meta charset=utf-8><style>{css}</style><div class=card>
+<div class=eyebrow>dsx · 2-bit DeepSeek-V4.1-Flash for 2x RTX 3090 · now with image input</div>
+<h1>v3a stops the runaway reasoning<br><em>same size, speed and KL as v2</em></h1>
+<div class=panels>{panels}</div>
+<div class=foot><div class=note>Each dot is one run at temperature 1.0, all correct. Blue band: the full model's range. v3a still thinks about 2× as long as the full model on problem B.</div>
+<div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
+</div>"""
+
 # ---------------------------------------------------------------- render
 def chromium():
     if os.environ.get("PW_CHROMIUM"): return os.environ["PW_CHROMIUM"]
@@ -276,7 +336,7 @@ def chromium():
     return found[-1] if found else None
 
 if __name__ == "__main__":
-    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality(), "post.png": post(), "post-eval.png": post_eval()}
+    charts = {"speed.png": speed(), "quality.png": quality(), "size.png": size(), "size-vs-quality.png": size_quality(), "post.png": post(), "post-eval.png": post_eval(), "post-overthink.png": post_overthink()}
     with sync_playwright() as p:
         b = p.chromium.launch(executable_path=chromium(), args=["--allow-file-access-from-files"])
         pg = b.new_page(viewport={"width": 840, "height": 900}, device_scale_factor=2)
