@@ -571,11 +571,11 @@ def cmd_layer(a):
                 log(f"layer {L}: experts {ex + 1}/{NE} ({time.time() - t2:.0f} s)")
         if bhook is not None:
             flush()
-        routed_energy = float(Y.square().sum())
+        routed_energy = sum(float(Y[c:c + 65536].square().sum()) for c in range(0, T, 65536))   # chunked: Y is ~8 GB at 192 x 2048
         if getattr(a, "moe_done_hook", None) is not None:   # v41_quant: experts no token reached, write the layer
             a.moe_done_hook(L, blk, stats)
-        for c in range(0, T, 65536):
-            Y[c:c + 65536] += blk.ffn.shared_experts(X[c:c + 65536])
+        for c in range(0, T, 16384):   # 16K rows: X and Y already hold ~16 GB at 192 x 2048
+            Y[c:c + 16384] += blk.ffn.shared_experts(X[c:c + 16384])
         log(f"layer {L}: MoE{'' if a.no_gptq else ' + GPTQ screening'} in {time.time() - t2:.0f} s")
 
         if a.screen_only:               # sweep run: stats only, the h chain is left alone
