@@ -6,7 +6,7 @@ an NVMe drive. A Rust + CUDA engine built for this one model, with its own 2-bit
 
 - 30-37 tok/s decode, 334-508 tok/s prefill on 2x RTX 3090
 - Exact routing: no expert pruning, no router bias
-- OpenAI and Anthropic compatible server with tool calls, streaming and a built-in web UI
+- OpenAI and Anthropic compatible server with tool calls, streaming, image input and a built-in web UI
 - Quality vs the FP8 model: KL 0.395, top-1 74.1%
 
 ![dsx speed on 2x RTX 3090 and RTX 5090](cards/dsx-2bit/assets/speed.png)
@@ -33,7 +33,8 @@ hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 ./target/release/dsx-server --model dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
   --engram v41-1017 --tokenizer v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
-  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank dsx-2bit/expert-rank.json
+  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank dsx-2bit/expert-rank.json \
+  --vision dsx-2bit/vision.safetensors
 ```
 
 Open `http://localhost:8090/` for the web UI, or use any OpenAI client with base URL `http://localhost:8090/v1`:
@@ -64,6 +65,7 @@ Experts are spread across VRAM, a RAM arena and the file, hottest first.
 | `--gpu0-gb`, `--gpu1-gb` | GB of experts per GPU; negative = all free VRAM minus that much; `--gpu1-gb 0` for one GPU |
 | `--arena-gb` | RAM for experts the CPU computes |
 | `--rank` | expert hotness order (`expert-rank.json` from the quant repo) |
+| `--vision` | the vision tower (`vision.safetensors` from the quant repo): image input; leave it out for text only |
 | `DSX_ADAPT=N` | GPU0 expert swaps per token to follow the conversation (default 8; 0 = static) |
 
 | Machine | Flags |

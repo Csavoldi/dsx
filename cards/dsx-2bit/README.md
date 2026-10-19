@@ -31,7 +31,7 @@ MI325X (256 GiB HBM) there is a near-lossless build: [lxe/DeepSeek-V4.1-Flash-10
 | Routing | exact: no expert pruning, no router bias |
 | Quality vs FP8 | KL 0.395 · top-1 74.1% · perplexity 10.93 (FP8: 8.56) |
 | Speed, 2x RTX 3090 | 30-37 tok/s decode · 334-508 tok/s prefill |
-| Runtime | [dsx](https://github.com/lxe/dsx) (OpenAI / Anthropic API, web UI) |
+| Runtime | [dsx](https://github.com/lxe/dsx) (OpenAI / Anthropic API, image input, web UI) |
 
 ## Quality
 
@@ -83,7 +83,8 @@ CUDA_ARCHS=86 cargo build --release -p dsx --features cuda      # 86 = RTX 30xx,
 
 ./target/release/dsx-server --model ../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
   --engram ../v41-1017 --tokenizer ../v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
-  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../dsx-2bit/expert-rank.json
+  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../dsx-2bit/expert-rank.json \
+  --vision ../dsx-2bit/vision.safetensors
 ```
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI-compatible client at `http://localhost:8090/v1`:
@@ -96,7 +97,8 @@ r = client.chat.completions.create(model="deepseek-v4.1-flash", reasoning_effort
 print(r.choices[0].message.content)
 ```
 
-Thinking is on by default; `"reasoning_effort": "none"` turns it off.
+Thinking is on by default; `"reasoning_effort": "none"` turns it off. Images go in as data URLs (`image_url`), or as
+base64 `image` blocks on the Anthropic endpoint; the web UI takes uploads.
 
 ## Hardware sizing
 
@@ -128,6 +130,7 @@ Pipeline: [github.com/lxe/dsx/tree/main/quant](https://github.com/lxe/dsx/tree/m
 | `DeepSeek-V4.1-Flash-1017-dsx-2bit-0000N-of-00004.gguf` | the model in 4 GGUF shards; dsx loads them from the first |
 | `SHA256SUMS` | checksums of the shards |
 | `expert-rank.json` | expert hotness, used to place experts in VRAM |
+| `vision.safetensors` | the vision tower, aligner and image embeddings from the official checkpoint (bf16, 0.97 GB), for `--vision` |
 | `config.json` | build metadata: base model, quant tiers, files |
 | `results/` | raw quality and speed logs |
 | `assets/` | charts and the script that draws them |
