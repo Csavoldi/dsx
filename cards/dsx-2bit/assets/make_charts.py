@@ -355,14 +355,15 @@ svg text{font-family:Num,Iosevka,ui-monospace,Menlo,monospace;fill:#f0f6f7}
 <div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
 </div>"""
 
-UNSLOTH = {  # dsx 2-bit v3a vs Unsloth's 1-bit GGUFs; reasoning tokens per run at temperature 1.0, effort low; every run correct
+UNSLOTH = {  # dsx 2-bit v3a vs Unsloth's 1-bit GGUFs; reasoning tokens per run at temperature 1.0, effort low, one prompt template; every run correct
+    # baseline: dsx MXFP4 (near-lossless, KL 0.049), run on an MI325X; the hosted model is left out (its provider template is unverified)
     "builds": [  # key, label, colour
-        ("hosted", "Full model", "#5b7cff"), ("v3a", "dsx v3a 2-bit", "#7df0d4"),
+        ("mxfp4", "dsx MXFP4", "#c79bff"), ("v3a", "dsx v3a 2-bit", "#7df0d4"),
         ("iq1s", "Unsloth IQ1_S", "#ffc95c"), ("iq1m", "Unsloth IQ1_M", "#ff9a5c")],
     "problems": [
-        ("Problem A", {"hosted": [17426, 11069, 10465, 6371, 6799, 5665, 8426, 13485], "v3a": [10469, 10263, 15311],
+        ("Problem A", {"mxfp4": [5239, 7956, 10955], "v3a": [10469, 10263, 15311],
                        "iq1s": [10565, 19855, 13080], "iq1m": [10955, 13289]}),
-        ("Problem B", {"hosted": [12523, 7507, 11651, 9523, 8879, 13870, 9741, 12147], "v3a": [21489, 20180],
+        ("Problem B", {"mxfp4": [17866, 16374, 22216], "v3a": [21489, 20180],
                        "iq1s": [33922, 29765, 21215], "iq1m": [20319, 20270]}),
     ],
     "xmax": 36000,
@@ -370,6 +371,7 @@ UNSLOTH = {  # dsx 2-bit v3a vs Unsloth's 1-bit GGUFs; reasoning tokens per run 
     # same machine, 2x RTX 3090 + 128 GB DDR4, each build in its own runtime; IQ1_S wasn't run there
     "speed": {"v3a": ("dsx", "~30", 30, 334), "iq1m": ("llama.cpp PR #30817", "12.3", 12.3, 109), "iq1s": None},
     "quality": [  # label, colour, weights GB, KL, top-1 %, perplexity
+        ("dsx MXFP4", "#c79bff", "270", 0.049, 90.6, 8.71),
         ("dsx v3a 2-bit", "#7df0d4", "148", 0.397, 74.1, 10.81),
         ("Unsloth IQ1_S", "#ffc95c", "~122", 0.361, 75.1, 10.76),
     ],
@@ -380,11 +382,11 @@ def post_unsloth():
     import statistics
     builds = UNSLOTH["builds"]; col = {k: c for k, _, c in builds}; lab = {k: l for k, l, _ in builds}
     total = {k: sum(statistics.median(p[1][k]) for p in UNSLOTH["problems"]) for k, _, _ in builds}
-    order = ["hosted", "v3a", "iq1m", "iq1s"]
+    order = ["mxfp4", "v3a", "iq1m", "iq1s"]
     mx = max(total.values())
     reason = "".join(
         f"<div class=hb><div class=hn style='color:{col[k]}'>{lab[k]}</div><div class=ht><b style='width:{total[k] / mx * 100:.1f}%;background:{col[k]}'></b></div>"
-        f"<div class=hv><b style='color:{col[k]}'>{total[k] / 1000:.1f}K</b><span>{'baseline' if k == 'hosted' else f'{total[k] / total['hosted']:.2f}×'}</span></div></div>"
+        f"<div class=hv><b style='color:{col[k]}'>{total[k] / 1000:.1f}K</b><span>{'baseline' if k == 'mxfp4' else f'{total[k] / total['mxfp4']:.2f}×'}</span></div></div>"
         for k in order)
     def speed_rows(i, mxv):
         out = ""
@@ -424,13 +426,13 @@ table.q td:first-child{text-align:left;font-size:19px;padding-left:0} table.q td
 <div class=eyebrow>DeepSeek-V4.1-Flash-1017 · dsx 2-bit v3a and Unsloth 1-bit GGUFs</div>
 <h1>Reasoning, speed and quality at 1–2 bits</h1>
 <div class=panels>
- <div class='panel rs'><div class=ptitle>Reasoning tokens</div><div class=psub>median on problem A + median on problem B, two olympiad math problems, every answer correct</div>{reason}</div>
+ <div class='panel rs'><div class=ptitle>Reasoning tokens</div><div class=psub>median on problem A + median on problem B, two olympiad math problems, every answer correct. Baseline: dsx MXFP4, near-lossless (KL 0.049), same template</div>{reason}</div>
  <div class=panel><div class=ptitle>Speed</div><div class=psub>2x RTX 3090 + 128 GB DDR4; v3a in dsx, IQ1_M in llama.cpp PR #30817</div>
   <div class=sec>Decode</div>{speed_rows(0, 30)}<div class=sec>Prefill, 3K-token prompt</div>{speed_rows(1, 334)}<div class=qnote style='margin-top:22px'>IQ1_S wasn't run on this machine.</div></div>
  <div class=panel><div class=ptitle>Per-token quality vs FP8</div><div class=psub>same eval, 8 × 1,024 tokens</div>
   <table class=q><tr><th></th><th>KL ↓</th><th>top-1 ↑</th><th>ppl ↓</th></tr>{qrows}</table><div class=qnote>IQ1_M wasn't measured on this eval.</div></div>
 </div>
-<div class=foot><div class=note>Reasoning at temperature 1.0, effort low; 8 runs for the full model, 2–3 per quant. Engram tables not in the sizes: dsx 203 GB, Unsloth 110 GB.</div>
+<div class=foot><div class=note>Reasoning at temperature 1.0, effort low, 2–3 runs per build. MXFP4 ran on an AMD MI325X; token counts don't depend on the hardware. Engram tables not in the sizes: dsx 203 GB, Unsloth 110 GB.</div>
 <div class=r><span>github.com/lxe/dsx</span><span>huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit</span></div></div>
 </div>"""
 
