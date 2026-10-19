@@ -30,7 +30,7 @@ MI325X with exact routing. Most routed experts keep the checkpoint's own MXFP4 w
 | Format | dense weights FP8 as in the checkpoint; 57% of routed experts MXFP4 (unchanged), 43% 3-bit codebook + e4m3 scale per 32 |
 | Routing | exact: no expert pruning, no router bias |
 | Quality vs FP8 | KL 0.049 · top-1 90.6% · perplexity 8.71 (FP8: 8.56) |
-| Speed, 1x MI325X | 108-111 tok/s decode at 4K-256K context · 1,150-1,660 tok/s prefill |
+| Speed, 1x MI325X | 110-114 tok/s decode at 4K-256K context · 1,160-1,640 tok/s prefill |
 | Runtime | dsx `amd/` (OpenAI / Anthropic API, web UI) |
 
 ## Quality
@@ -59,14 +59,15 @@ One MI325X (256 GiB HBM3E), greedy, exact routing.
 
 | Context | Decode |
 |---|---:|
-| 4K | 110.7 tok/s |
-| 128K | 109.0 tok/s (108.3 after a real 128K prompt) |
-| 256K | 107.9 tok/s (107.4 after a real 256K prompt) |
+| 4K | 114.1 tok/s |
+| 128K | 111.5 tok/s |
+| 256K | 110.4 tok/s |
 
 | Prompt | Prefill |
 |---|---:|
-| 4K tokens | 1,658 tok/s |
-| 16K tokens | 1,154 tok/s |
+| 4K tokens | 1,640 tok/s |
+| 16K tokens | 1,640 tok/s |
+| 128K tokens | 1,160 tok/s |
 
 Long prompts slow down with length because the attention indexer scores every earlier compressed position.
 

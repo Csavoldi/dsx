@@ -72,6 +72,28 @@ Experts are spread across VRAM, a RAM arena and the file, hottest first.
 | 2x 24 GB GPU, 128 GB RAM | `--gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110` |
 | 1x 32 GB GPU, 128 GB RAM | `--gpu0-gb=-2.0 --gpu1-gb 0 --arena-gb 80`, `DSX_ADAPT=0` |
 
+## One AMD MI325X
+
+[`amd/`](amd/) is a second runner, Rust + HIP for gfx942, that keeps the whole model (minus the Engram tables) in
+the 256 GiB of HBM of one AMD Instinct MI325X. Its build keeps 57% of the routed experts in the checkpoint's own MXFP4
+and gives the rest a fitted 3-bit codebook
+([lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4), 270 GB).
+
+| 1x MI325X | |
+|---|---:|
+| Decode at 4K / 128K / 256K context | 114 / 112 / 110 tok/s |
+| Prefill, 16K / 128K-token prompt | 1,640 / 1,160 tok/s |
+| Quality vs FP8 (Lucebox eval) | KL 0.049, top-1 90.6% |
+
+```bash
+cd amd && cargo build --release      # ROCm 7, gfx942
+DSXA_WEIGHTS=../dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf \
+  ./target/release/dsx-amd serve --model ../v41-1017 --ctx 262144 --host 0.0.0.0 --port 8090
+```
+
+`--model` is the official checkpoint directory (config, tokenizer, Engram shards and `dsx-engram.json` from the quant
+repo). Same server and web UI as above. Measurements and design notes: [FINDINGS-AMD.md](FINDINGS-AMD.md).
+
 ## How it works
 
 | Part | Where it runs |
@@ -119,7 +141,9 @@ pi --provider dsx --model deepseek-v4.1-flash:off
 |---|---|
 | [`engine/`](engine/) | the engine and server ([engine/README.md](engine/README.md)) |
 | [`quant/`](quant/) | the quantization pipeline, with native CUDA GPTQ |
+| [`amd/`](amd/) | the single-MI325X runner (HIP), its build export and server |
 | [`FINDINGS.md`](FINDINGS.md) | research notes and measurements |
+| [`FINDINGS-AMD.md`](FINDINGS-AMD.md) | the MI325X runner's measurements |
 
 The quant uses dsx's per-expert formats (ternary, Q2_0, Q3_K per expert) and loads in dsx.
 

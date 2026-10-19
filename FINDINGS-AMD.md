@@ -4,10 +4,12 @@
 
 | | |
 |---|---|
-| Decode, single stream | 110.7 tok/s at 4K context, 109.0 at 128K, 107.9 at 256K (9.0-9.3 ms per token, one HIP graph); after real 128K / 256K prompts: 108.3 / 107.4 tok/s |
-| Prefill | 1,658 tok/s (4K prompt), 1,154 (16K); earlier build: 883 (128K), 1,091 (256K, 240 s) |
-| Quality vs FP8 (Lucebox 1017 eval, 8 x 1024 tokens) | KL 0.051, top-1 90.8%, perplexity 8.64 (FP8: 8.56) |
-| Model in HBM | 270.8 GB: dense FP8 as in the checkpoint (7.2 GB), 8,804 experts exact MXFP4 + 6,556 re-quantized to a 3-bit codebook (259.8 GB), bf16 embeddings and head |
+| Decode, single stream | 114.1 tok/s at 4K context, 111.5 at 128K, 110.4 at 256K (8.8-9.1 ms per token, one HIP graph) |
+| Prefill | 1,640 tok/s (4K and 16K prompts), 1,160 (128K) |
+| Quality vs FP8 (Lucebox 1017 eval, 8 x 1024 tokens) | KL 0.049, top-1 90.6%, perplexity 8.71 (FP8: 8.56), on the published shards; repeated runs 0.047-0.051 |
+| Model in HBM | 271.6 GB: dense FP8 as in the checkpoint (7.2 GB), 8,804 experts exact MXFP4 + 6,556 re-quantized to a 3-bit codebook (259.8 GB), bf16 embeddings and head |
+| Cost at $3.80/h, one stream | $9.3 per million generated tokens, $0.64 per million prompt tokens |
+| Published | [lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4), 6 GGUF shards, 270.5 GB |
 
 For comparison on the same eval: dsx's 2-bit quant (148 GB) KL 0.395; Lucebox ROCMFP2S (158 GiB) 0.265, ROCMFP23S
 (179 GiB) 0.194. With 256 GiB of HBM there is room to keep 57% of the experts in the checkpoint's own FP4 (the model
@@ -100,7 +102,36 @@ No runtime is known to run 1017 on a single MI300X/MI325X:
 For scale: V4-Flash-0731 (the older release) on one MI300X with vLLM nightly ran 67 tok/s single-stream (153 with
 DSpark-7). None of the 1017 quants that fit 256 GB has a gfx942 runtime, so the baseline here is our own runner.
 
-## 5. Plan
+## 5. Tuning notes
+
+- Decode GEMVs: the k-split is chosen per launch so it has ~2048 waves (at least 4 weight units per wave). 8192 waves
+  (the first default) cost 0.5 ms per token: 107 vs 114 tok/s.
+- Prompt top-k: the threshold bin of the 4096-bin histogram was found by one thread walking the bins through LDS,
+  ~150 µs per query block. A block-wide suffix scan takes it to ~7 µs, and prefill at 16K went from 1,154 to 1,640 tok/s.
+- Run-to-run differences: float atomics (k-split GEMVs, scatter-adds) sum in varying order, which flips a few
+  near-tied expert choices. The same build measures KL 0.047-0.051 across runs.
+
+## 6. Speculative decoding (in progress)
+
+The verify pass runs the main model over the newest token plus drafts (up to 16 positions) with decode-style weight
+streaming: each wave streams a 16-row tile once and multiplies it with all positions as MFMA columns
+(`kernels/verify.h`). Routed experts are grouped on the device (one job per distinct expert, its tokens as columns).
+The window cache, compressor state and position are committed only for the accepted prefix.
+
+Checked by replaying a greedy decode through verify: every draft is accepted (5 of 5 per pass at 6 positions).
+
+| Verify pass (main model only) | Time |
+|---|---:|
+| 4 positions | 19.9 ms |
+| 6 positions | 22.9 ms |
+
+Six positions cost 2.6 decode steps. Of that, routed experts are 9.4 ms (6 random tokens touch ~36 distinct experts
+per layer, 6x the bytes of one token; at ~55% of HBM bandwidth), dense GEMVs ~4.8 ms (~1.9 TB/s), and the rest is
+small per-token kernels from the prompt path (attention, hyper-connection mixes, norms) that do not fill the GPU at
+6 tokens. DSpark drafting (3 draft layers, 128 experts each) needs ~4-6 GB of HBM that the current build does not
+leave free.
+
+## 7. Plan
 
 1. Measure the box: HBM bandwidth for GEMV shapes, graph launch cost, MFMA throughput for 16-row tiles.
 2. Runner (`amd/`, Rust + HIP): everything in HBM; one HIP graph per decode step with all position-dependent values
