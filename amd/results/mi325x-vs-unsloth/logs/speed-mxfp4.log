@@ -1,0 +1,8 @@
+== pbench @/root/prompt3000.ids
+prefill 3000 tokens: 3.12 s = 961 tok/s (next 82511)
+  decode after it: 8646 us median (115.7 tok/s)
+== pbench @/root/prompt3000.ids
+prefill 3000 tokens: 2.02 s = 1488 tok/s (next 82511)
+  decode after it: 8650 us median (115.6 tok/s)
+== bench 4096
+ctx 4096: decode step 8624 us median (116.0 tok/s), min 8577 max 8712

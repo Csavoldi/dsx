@@ -400,9 +400,15 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         println!("verify T={t}: {passes} passes, {:.2} drafts accepted per pass (of {}), {:.0} us per pass", acc_tot as f64 / passes as f64, t - 1, us / passes as f64);
                     }
                     "pbench" => {
-                        // prompt throughput on synthetic tokens from an empty context, then decode at that context
-                        let n: usize = w[1].parse()?;
-                        let toks: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % 120000) as u32).collect();
+                        // prompt throughput from an empty context (synthetic tokens, or @FILE of comma-separated ids),
+                        // then decode at that context
+                        let toks: Vec<u32> = if let Some(f) = w[1].strip_prefix('@') {
+                            std::fs::read_to_string(f)?.split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).map(|x| x.parse().unwrap()).collect()
+                        } else {
+                            let n: usize = w[1].parse()?;
+                            (0..n).map(|i| ((i * 7919 + 13) % 120000) as u32).collect()
+                        };
+                        let n = toks.len();
                         dec.g.sync()?;
                         let t0 = Instant::now();
                         let next = dec.prefill(&toks)?;

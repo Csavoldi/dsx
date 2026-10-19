@@ -1,0 +1,67 @@
+=== Q2_K_XL eval 18:15:08
+seq 0: running ppl 9.716 kl 0.1020 top1 0.8847
+seq 1: running ppl 8.002 kl 0.1210 top1 0.8759
+seq 2: running ppl 7.765 kl 0.1143 top1 0.8684
+seq 3: running ppl 8.168 kl 0.1220 top1 0.8627
+seq 4: running ppl 8.246 kl 0.1168 top1 0.8667
+seq 5: running ppl 8.655 kl 0.1144 top1 0.8627
+seq 6: running ppl 8.804 kl 0.1143 top1 0.8599
+seq 7: running ppl 9.040 kl 0.1143 top1 0.8574
+{"tokens": 8184, "nll": 2.201664, "ppl": 9.0400, "kl_top256": 0.114285, "top1_agree": 0.857405}
+=== Q2_K_XL server 20:22:33
+Q2 server failed
+0.00.024.190 I srv  llama_server: initializing ...
+0.00.024.207 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.025.341 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.027.417 I srv    load_model: loading model '/data/models/unsloth/UD-Q2_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q2_K_XL-00001-of-00007.gguf'
+GPU[0]		: VRAM Total Used Memory (B): 200422408192
+Traceback (most recent call last):
+  File "/root/speed_llama.py", line 8, in <module>
+    print("short", json.dumps(run("Explain how a hash map works, with a short Python example.")))
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/speed_llama.py", line 5, in run
+    d = json.load(urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8080/completion", data=json.dumps(body).encode(), headers={"content-type": "application/json"}), timeout=3600))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+Traceback (most recent call last):
+  File "/root/overthink_probe.py", line 77, in <module>
+    main()
+  File "/root/overthink_probe.py", line 60, in main
+    d = json.load(urllib.request.urlopen(req, timeout=7200))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+=== dsx-amd MXFP4 speed 20:37:45

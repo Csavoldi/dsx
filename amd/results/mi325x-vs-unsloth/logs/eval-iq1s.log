@@ -1,0 +1,9 @@
+seq 0: running ppl 11.070 kl 0.2980 top1 0.7791
+seq 1: running ppl 9.537 kl 0.3989 top1 0.7605
+seq 2: running ppl 9.392 kl 0.3961 top1 0.7468
+seq 3: running ppl 10.089 kl 0.4110 top1 0.7422
+seq 4: running ppl 10.033 kl 0.3876 top1 0.7509
+seq 5: running ppl 10.424 kl 0.3706 top1 0.7520
+seq 6: running ppl 10.506 kl 0.3666 top1 0.7496
+seq 7: running ppl 10.755 kl 0.3610 top1 0.7509
+{"tokens": 8184, "nll": 2.375380, "ppl": 10.7551, "kl_top256": 0.360991, "top1_agree": 0.750855}

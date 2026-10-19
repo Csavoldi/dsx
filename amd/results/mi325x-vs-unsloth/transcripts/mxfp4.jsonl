@@ -1,0 +1,6 @@
+{"case": "S01", "run": 0, "completion_tokens": 5239, "wall_s": 53.2, "boxed": "\\frac{480}{49}", "correct": true, "waits": 6, "finish": "stop", "reasoning_chars": 14869}
+{"case": "S01", "run": 1, "completion_tokens": 7956, "wall_s": 78.9, "boxed": "\\frac{480}{49}", "correct": true, "waits": 7, "finish": "stop", "reasoning_chars": 22360}
+{"case": "S01", "run": 2, "completion_tokens": 10955, "wall_s": 107.9, "boxed": "\\frac{480}{49}", "correct": true, "waits": 19, "finish": "stop", "reasoning_chars": 29401}
+{"case": "S02", "run": 0, "completion_tokens": 17866, "wall_s": 175.5, "boxed": "500", "correct": true, "waits": 27, "finish": "stop", "reasoning_chars": 46100}
+{"case": "S02", "run": 1, "completion_tokens": 16374, "wall_s": 160.0, "boxed": "500", "correct": true, "waits": 21, "finish": "stop", "reasoning_chars": 44450}
+{"case": "S02", "run": 2, "completion_tokens": 22216, "wall_s": 216.2, "boxed": "500", "correct": true, "waits": 29, "finish": "stop", "reasoning_chars": 56124}
