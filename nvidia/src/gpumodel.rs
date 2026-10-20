@@ -170,6 +170,9 @@ pub struct GpuModel<'m> {
     pregate: Option<Buf>,
     /// [picks, predicted in top-6, predicted in top-8, CPU picks, CPU picks predicted in top-8]
     pub pregate_stats: [u64; 5],
+    /// DSX_DEFER: each layer's ffn output mix (post, 4 f32) by layer parity, so its deferred experts can enter the
+    /// residual with their own layer's weights one layer later
+    dpost: Buf,
     /// image spans of the current prompt: (first position, span rows [len][dim] f32)
     pub images: Vec<(usize, Vec<f32>)>,
     /// image rows of the chunk being prefilled, chunk-local [lo, hi)
@@ -251,7 +254,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -409,6 +412,7 @@ impl<'m> GpuModel<'m> {
             vpass: None,
             pregate: if std::env::var_os("DSX_PREGATE").is_some() { Some(g.alloc_zeroed(c.n_layers * 16 * 4 + 4096)?) } else { None },
             pregate_stats: [0; 5],
+            dpost: g.alloc_zeroed(64)?,
             images: Vec::new(),
             img_rows: Vec::new(),
             skip_experts: std::env::var_os("DSX_SKIP_EXPERTS").is_some(),
@@ -702,9 +706,21 @@ impl<'m> GpuModel<'m> {
         if deferred {
             // deferred slots: even layers bit 1, odd layers bit 2
             let slot = |l: usize| if l % 2 == 0 { 2 } else { 4 };
+            // deferred experts enter the residual with their own layer's output weights (adding them to the next layer's
+            // expert output instead mixes them with the wrong weights: KL 0.395 vs 0.383 at DSX_DEFER=3)
+            let inject = true;
+            if inject {
+                // this layer's output weights, for its own deferred experts next layer
+                self.g.dtod(self.dpost.ptr + ((li % 2) * 16) as u64, self.mix_f.ptr + 16, 16)?;
+            }
             if li > 0 {
                 self.flag_wait(d0 + crate::handoff::CPUD as u64, seq - 1)?;
-                cpu_mask |= slot(li - 1);
+                if inject {
+                    let off = if (li - 1) % 2 == 0 { crate::handoff::y_cpu2(d) } else { crate::handoff::y_cpu3(d) };
+                    self.g.launch(self.k["hc_add_post"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(d0 + off as u64), Arg::P(self.dpost.ptr + (((li - 1) % 2) * 16) as u64), Arg::I(d as i32)])?;
+                } else {
+                    cpu_mask |= slot(li - 1);
+                }
             }
             if last {
                 self.flag_wait(d0 + crate::handoff::CPUD as u64, seq)?;

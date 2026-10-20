@@ -1595,6 +1595,16 @@ extern "C" __global__ void hc_post_mb(float *h, const float *x, const float *mix
   for (int k = 0; k < 4; k++) h[k * d + i] = bf16r(m[4 + k] * xv + m[8 + k] * r0 + m[12 + k] * r1 + m[16 + k] * r2 + m[20 + k] * r3);
 }
 
+// DSX_DEFER, residual injection: h[k][i] = bf16(h[k][i] + post[k] * y[i]) for the 4 streams (a deferred expert sum entering
+// the residual with the output weights of the layer it belongs to); grid ceil(d/256)
+extern "C" __global__ void hc_add_post(float *h, const float *y, const float *post, int d) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= d) return;
+  float v = y[i];
+#pragma unroll
+  for (int k = 0; k < 4; k++) h[k * d + i] = bf16r(h[k * d + i] + post[k] * v);
+}
+
 extern "C" __global__ void to_bf16(const float *x, __nv_bfloat16 *y, int n) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < n) y[i] = __float2bfloat16(x[i]);

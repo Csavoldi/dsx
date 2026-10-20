@@ -208,6 +208,11 @@ first. Outputs change. 2x RTX 3090, v4b, 3K agent prompt, decode-path eval (2 se
 Deferring more than ranks 2-5 is slower again: the CPU's deferred work for one layer then delays its immediate work for
 the next.
 
+Adding a layer's deferred experts straight into the residual streams with that layer's own output weights (instead of
+into the next layer's expert output, which mixes them with the next layer's weights) recovers about half the quality:
+ranks 3-5 deferred, KL 0.383 / top-1 75.7% at 35.9 tok/s; ranks 2-5, KL 0.394 / 75.7% at 36.3 tok/s. That is how
+`DSX_DEFER` works now.
+
 **Prefetch into L3** (exact): with the same 2 experts reused, the CPU kernels run 0.69 ms per 6-expert call (~87 GB/s)
 against 1.30 ms from RAM (~48 GB/s). Predicting a layer's picks one layer early (its router on the previous layer's
 expert input, `DSX_PREGATE=1`) finds 71% of the CPU's picks in a top-8; its router on its own attention input
