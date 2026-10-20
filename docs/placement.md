@@ -68,7 +68,8 @@ v4b):
 | `--chunk 2048`, `--ctx 131072` | 1,196 |
 | `--chunk 1024`, `--ctx 131072` | 1,267 |
 
-The vision tower takes ~0.5 GB (~50 experts); `--no-vision` returns it.
+Image input loads a vision tower onto the main GPU, which leaves room for ~50 fewer experts there (1,048 instead of
+1,099). A text-only server can start with `--no-vision` to keep that room for experts.
 
 ## Machines
 
