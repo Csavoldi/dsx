@@ -158,7 +158,7 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 | [`amd/`](amd/) | a separate runner for one AMD MI325X with a near-lossless MXFP4 build: [amd/README.md](amd/README.md) |
 | [`quant/`](quant/) | the 2-bit quantization pipeline, with native CUDA GPTQ |
 | [`cards/`](cards/) | the Hugging Face model cards |
-| [`docs/`](docs/), [`FINDINGS.md`](FINDINGS.md), [`DESIGN.md`](DESIGN.md) | detailed docs ([placement](docs/placement.md)), measurements, design notes |
+| [`docs/`](docs/), [`FINDINGS.md`](FINDINGS.md), [`DESIGN.md`](DESIGN.md) | detailed docs ([placement](docs/placement.md), [techniques](docs/techniques.md)), measurements, design notes |
 
 `cargo build --release` builds `core` and the NVIDIA runner (CPU-only without `--features cuda`); binaries land in
 `target/release/`.
