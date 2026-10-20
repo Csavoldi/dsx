@@ -156,7 +156,7 @@ impl PrefillBufs {
             ev_x: g.event()?,
             x_host: crate::gpu::HostBuf::new(tmax * c.dim * 2)?,
             out: f(tmax * c.dim)?,
-            logits: f(c.vocab)?,
+            logits: f(crate::handoff::MAXT * c.vocab)?, // [rows][vocab]: a verify pass's logits
             attn_tc: crate::attn::SparseAttnTc::new(g)?,
         })
     }
@@ -223,6 +223,10 @@ impl GpuModel<'_> {
 
     /// y[n][w.rows] = x[n][w.cols] . W^T through f16 tensor cores (W dequantized into pb.w16 first)
     fn gemm(&self, pb: &PrefillBufs, w: &DMat, x: u64, y: u64, n: usize) -> Result<()> {
+        if n <= crate::handoff::MAXT {
+            // a few rows (verify passes, tiny chunks): decode's GEMV with n columns reads the weight once, no f16 copy
+            return self.gemv_t(w, x, y, n);
+        }
         if w.q6.is_some() {
             return self.gemm_q6(pb, w, 0, w.rows, w.cols, x, w.cols, y, w.rows, n);
         }
@@ -405,15 +409,20 @@ impl GpuModel<'_> {
         let _ = all_logits;
         // logits of the final token (or of every token for a verify pass)
         let rows: Vec<usize> = if all_logits { (0..tn).collect() } else { vec![tn - 1] };
-        let mut out = vec![];
-        for t in rows {
+        for &t in &rows {
             let off = |base: u64, width: usize| base + (t * width * 4) as u64;
             self.g.launch(self.k["hc_pre"], (1, 1, 1), 256, 0, &[Arg::P(off(pb.h.ptr, hc * d)), Arg::P(off(pb.mix_f.ptr, 24)), Arg::I(0), Arg::P(off(pb.x.ptr, d)), Arg::I(d as i32)])?;
             self.rms_rows(off(pb.x.ptr, d), &self.out_norm, off(pb.x.ptr, d), d, 1, false)?;
-            self.gemv(&self.head, off(pb.x.ptr, d), pb.logits.ptr)?;
-            out.push(self.g.download(pb.logits.ptr, c.vocab)?);
         }
-        Ok(Some(out))
+        if rows.len() > 1 {
+            // every row of a verify pass (rows 0..tn, contiguous): one pass over the head
+            self.gemv_t(&self.head, pb.x.ptr, pb.logits.ptr, rows.len())?;
+            let all: Vec<f32> = self.g.download(pb.logits.ptr, rows.len() * c.vocab)?;
+            return Ok(Some(all.chunks(c.vocab).map(|r| r.to_vec()).collect()));
+        }
+        let off = (rows[0] * d * 4) as u64;
+        self.gemv(&self.head, pb.x.ptr + off, pb.logits.ptr)?;
+        Ok(Some(vec![self.g.download(pb.logits.ptr, c.vocab)?]))
     }
 
     fn prefill_engram(&mut self, pb: &PrefillBufs, li: usize, eidx: usize, tn: usize, p0: usize) -> Result<()> {

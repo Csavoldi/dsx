@@ -70,6 +70,10 @@ enum Cmd {
         /// after decoding, time verify passes of T tokens (speculative-decoding cost); state is not rolled back
         #[arg(long, default_value_t = 0)]
         bench_verify: usize,
+        /// rebuild the model, prefill the prompt again and verify the first N decoded tokens in one pass: its logits
+        /// against decode's (DSX_ADAPT=0 for a like-for-like placement)
+        #[arg(long, default_value_t = 0)]
+        check_verify: usize,
     },
     /// Quality on a held-out set against teacher top-k log-probs (Lucebox's 1017 eval: 8 x 1024 tokens, top-256):
     /// KL(teacher || model) over the teacher's top-k, top-1 agreement, perplexity.
@@ -302,7 +306,7 @@ fn main() -> Result<()> {
             println!("generated ids: {seq:?}");
         }
         #[cfg(feature = "cuda")]
-        Cmd::Gen { model, engram, ids, n, ctx, chunk, gpu0_gb, gpu1_gb, arena_gb, check, rank, bench_verify } => {
+        Cmd::Gen { model, engram, ids, n, ctx, chunk, gpu0_gb, gpu1_gb, arena_gb, check, rank, bench_verify, check_verify } => {
             let ids: Vec<u32> = if let Some(f) = ids.strip_prefix('@') {
                 std::fs::read_to_string(f)?.split(|ch: char| ch == ',' || ch.is_whitespace()).filter(|x| !x.is_empty()).map(|x| x.parse().unwrap()).collect()
             } else {
@@ -351,10 +355,14 @@ fn main() -> Result<()> {
             let ad0 = gm.adapt_s;
             let split0 = gm.cpu_split_s();
             let td = Instant::now();
+            let mut dec_logits: Vec<Vec<f32>> = vec![];
             for _ in 0..n {
                 let next = top(&logits, 1)[0].0;
                 out.push(next);
                 logits = gm.step(next)?;
+                if dec_logits.len() < check_verify {
+                    dec_logits.push(logits.clone());
+                }
             }
             let el = td.elapsed().as_secs_f64();
             let (p1, c1) = gm.cpu_picks();
@@ -388,6 +396,9 @@ fn main() -> Result<()> {
             if bench_verify > 0 {
                 // the same tokens again, T at a time: what one speculative verify pass costs next to a decode step
                 let mut times = vec![];
+                if let Some(p) = gm.prof.as_mut() {
+                    p.clear();
+                }
                 for i in 0..6 {
                     let toks: Vec<u32> = (0..bench_verify).map(|j| out[(i + j) % out.len()]).collect();
                     let t = Instant::now();
@@ -398,6 +409,25 @@ fn main() -> Result<()> {
                 times.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 println!("verify T={bench_verify}: median {:.1} ms per pass ({:.1} ms per token if all accepted) vs decode {:.1} ms per token",
                     times[3] * 1e3, times[3] * 1e3 / bench_verify as f64, el * 1e3 / n as f64);
+                if let Some(p) = &gm.prof {
+                    for (k, v) in p {
+                        println!("  verify {k:<34} {:.2} ms/pass", v * 1e3 / 6.0);
+                    }
+                }
+            }
+            if check_verify > 0 {
+                drop(gm);
+                let mut g2 = dsx::gpumodel::GpuModel::with_placement(&m, -1, ctx, dsx::gpumodel::Placement { gpu0_gb, aux_gb: gpu1_gb, arena_gb, prefill_chunk: chunk, rank: rank.clone() })?;
+                let pb2 = g2.pb.take().unwrap();
+                for (i, &(a, b)) in bounds.iter().enumerate() {
+                    g2.prefill_chunk(&pb2, &ids[a..b], i + 1 == bounds.len())?;
+                }
+                let lv = g2.verify(&pb2, &out[..check_verify])?;
+                for (j, (v, d)) in lv.iter().zip(&dec_logits).enumerate() {
+                    let maxd = v.iter().zip(d).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+                    println!("verify row {j}: top1 {} vs decode {}, max |logit diff| {maxd:.4}", top(v, 1)[0].0, top(d, 1)[0].0);
+                }
+                return Ok(());
             }
             if check {
                 drop(gm);

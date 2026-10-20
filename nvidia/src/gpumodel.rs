@@ -375,7 +375,7 @@ impl<'m> GpuModel<'m> {
             logits: fz(c.vocab)?,
             lat: fz(c.head_dim)?,
             actq: fz(8 * 32768)?,
-            out0: fz(c.dim)?,
+            out0: fz(crate::handoff::MAXT * c.dim)?, // [t][dim]: verify passes run up to MAXT tokens
             tokp: g.alloc_zeroed(4 * 256)?,
             tokp_host: crate::gpu::HostBuf::new(1 << 20)?,
             topk: crate::topk::TopK::new(&g)?,
