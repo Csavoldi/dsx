@@ -218,7 +218,9 @@ the next.
 Adding a layer's deferred experts straight into the residual streams with that layer's own output weights (instead of
 into the next layer's expert output, which mixes them with the next layer's weights) recovers about half the quality:
 ranks 3-5 deferred, KL 0.383 / top-1 75.7% at 35.9 tok/s; ranks 2-5, KL 0.394 / 75.7% at 36.3 tok/s. That is how
-`DSX_DEFER` works now.
+`DSX_DEFER` works now. A repeat on the 3K prompt (two alternating rounds) gave 29.8 / 29.9 tok/s without deferral,
+36.5 / 36.3 with ranks 3-5 and 37.2 / 35.8 with ranks 2-5: deferring rank 2 as well is no faster within run-to-run
+variance, so `--defer-rank 3` is the setting.
 
 **Prefetch into L3** (exact): with the same 2 experts reused, the CPU kernels run 0.69 ms per 6-expert call (~87 GB/s)
 against 1.30 ms from RAM (~48 GB/s). Predicting a layer's picks one layer early (its router on the previous layer's
