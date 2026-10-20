@@ -48,9 +48,9 @@ pub fn real_engine(args: &RealEngineArgs) -> Result<Box<dyn Engine>> {
     } else {
         Model::load(&args.model, args.engram.as_deref())?
     }));
-    let pl = Placement { gpu0_gb: args.gpu0_gb, gpu1_gb: args.gpu1_gb, arena_gb: args.arena_gb, prefill_chunk: args.chunk, rank: args.rank.clone() };
+    let pl = Placement { gpu0_gb: args.gpu0_gb, aux_gb: args.gpu1_gb, arena_gb: args.arena_gb, prefill_chunk: args.chunk, rank: args.rank.clone() };
     let vision = args.vision.as_deref().map(VisionWeights::load).transpose()?;
-    let gm = GpuModel::with_placement(m, 0, args.ctx, pl)?;
+    let gm = GpuModel::with_placement(m, -1, args.ctx, pl)?;
     Ok(Box::new(Real { gm, cached: vec![], snap: None, stats: GenStats::default(), vision }))
 }
 

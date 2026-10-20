@@ -58,7 +58,7 @@ enum Cmd {
         chunk: usize,
         #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
         gpu0_gb: f64,
-        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long, visible_alias = "aux-gb", default_value_t = 0.0, allow_negative_numbers = true)]
         gpu1_gb: f64,
         #[arg(long, default_value_t = 0.0)]
         arena_gb: f64,
@@ -90,7 +90,7 @@ enum Cmd {
         topk: usize,
         #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
         gpu0_gb: f64,
-        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long, visible_alias = "aux-gb", default_value_t = 0.0, allow_negative_numbers = true)]
         gpu1_gb: f64,
         #[arg(long, default_value_t = 0.0)]
         arena_gb: f64,
@@ -121,7 +121,7 @@ enum Cmd {
         continuation: PathBuf,
         #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
         gpu0_gb: f64,
-        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long, visible_alias = "aux-gb", default_value_t = 0.0, allow_negative_numbers = true)]
         gpu1_gb: f64,
         #[arg(long, default_value_t = 0.0)]
         arena_gb: f64,
@@ -181,10 +181,11 @@ enum Cmd {
         no_ref: bool,
         #[arg(short, default_value_t = 0)]
         n: usize,
-        /// GB of routed experts to keep on GPU0 / on GPU1 (negative = all free memory minus that headroom)
+        /// GB of routed experts to keep on the main GPU / on each other GPU (negative = all free memory minus that
+        /// headroom; the main GPU is the best-linked one)
         #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
         gpu0_gb: f64,
-        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long, visible_alias = "aux-gb", default_value_t = 0.0, allow_negative_numbers = true)]
         gpu1_gb: f64,
         #[arg(long, default_value_t = 0.0)]
         arena_gb: f64,
@@ -308,7 +309,7 @@ fn main() -> Result<()> {
                 ids.split(',').map(|x| x.trim().parse().unwrap()).collect()
             };
             let m = load(&model, engram.as_deref())?;
-            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, 0, ctx, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: chunk, rank: rank.clone() })?;
+            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, -1, ctx, dsx::gpumodel::Placement { gpu0_gb, aux_gb: gpu1_gb, arena_gb, prefill_chunk: chunk, rank: rank.clone() })?;
             let pb = gm.pb.take().unwrap();
             // chunk plan: the final chunk must hold the decoder cone (19 x 128 tokens) or the whole prompt
             let cone = (m.cfg.n_layers - 1 - m.cfg.cand_layer) * m.cfg.window;
@@ -400,7 +401,7 @@ fn main() -> Result<()> {
             }
             if check {
                 drop(gm);
-                let mut g2 = dsx::gpumodel::GpuModel::with_placement(&m, 0, ctx, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: 0, rank: rank.clone() })?;
+                let mut g2 = dsx::gpumodel::GpuModel::with_placement(&m, -1, ctx, dsx::gpumodel::Placement { gpu0_gb, aux_gb: gpu1_gb, arena_gb, prefill_chunk: 0, rank: rank.clone() })?;
                 let mut l2 = vec![];
                 for &t in &ids { l2 = g2.step(t)?; }
                 let maxd = l2.iter().zip(&logits).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
@@ -423,7 +424,7 @@ fn main() -> Result<()> {
             let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
             let tlp: Vec<f32> = rd("teacher_lp.f32")?.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
             let m = load(&model, engram.as_deref())?;
-            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, 0, len + 64, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: len, rank })?;
+            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, -1, len + 64, dsx::gpumodel::Placement { gpu0_gb, aux_gb: gpu1_gb, arena_gb, prefill_chunk: len, rank })?;
             let (mut nll, mut kl, mut agree, mut cnt) = (0f64, 0f64, 0usize, 0usize);
             let t0 = Instant::now();
             for sq in 0..seqs {
@@ -555,7 +556,7 @@ fn main() -> Result<()> {
             eprintln!("{np} prompt + {} continuation tokens; </think> = {end_think}", ids.len() - np);
             let m = load(&model, engram.as_deref())?;
             let chunk = prefill_check.max(4096);
-            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, 0, ids.len() + 64, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: chunk, rank })?;
+            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, -1, ids.len() + 64, dsx::gpumodel::Placement { gpu0_gb, aux_gb: gpu1_gb, arena_gb, prefill_chunk: chunk, rank })?;
             let lsm = |l: &[f32]| {
                 let mx = l.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
                 let lse = mx + l.iter().map(|&v| (v as f64 - mx).exp()).sum::<f64>().ln();
@@ -592,7 +593,7 @@ fn main() -> Result<()> {
         #[cfg(feature = "cuda")]
         Cmd::Cmp { model, engram, ids, ctx, no_ref, n, gpu0_gb, gpu1_gb, arena_gb } => {
             let m = load(&model, engram.as_deref())?;
-            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, 0, ctx, dsx::gpumodel::Placement { gpu0_gb, gpu1_gb, arena_gb, prefill_chunk: 0, rank: None })?;
+            let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, -1, ctx, dsx::gpumodel::Placement { gpu0_gb, aux_gb: gpu1_gb, arena_gb, prefill_chunk: 0, rank: None })?;
             let t_all = Instant::now();
             let mut st = RefState::new(&m);
             let mut toks = ids.clone();
@@ -625,7 +626,7 @@ fn main() -> Result<()> {
                     println!("  {k:<10} {:.1} ms/token", v * 1e3 / toks.len() as f64);
                 }
             }
-            println!("{} tokens in {el:.1} s ({:.2} tok/s); CPU experts {:.1} s; routed evals GPU0/GPU1/CPU {:?}", toks.len(), toks.len() as f64 / el, gm.t_experts, gm.n_routed);
+            println!("{} tokens in {el:.1} s ({:.2} tok/s); CPU experts {:.1} s; routed evals main GPU/aux GPUs/CPU {:?}", toks.len(), toks.len() as f64 / el, gm.t_experts, gm.n_routed);
         }
     }
     Ok(())

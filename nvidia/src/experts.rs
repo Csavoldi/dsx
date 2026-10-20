@@ -1,4 +1,4 @@
-//! Routed experts resident in a GPU's memory (GPU0's spare VRAM, or GPU1 as a pure expert store), computed there
+//! Routed experts resident in a GPU's memory (the main GPU's spare VRAM, or an aux GPU as a pure expert store), computed there
 //! for one token: out = sum_e w_e * down(silu(min(gate x, L)) * clamp(up x, -L, L)).
 //! By default the weights are repacked at upload (same bytes) for the fast kernels (expert_fast.cuh: int8 tensor-core
 //! mma, int8 activations, up to 8 tokens per weight read); DSX_OLD_MOE=1 keeps the GGUF blocks and moe_gu / moe_down.
@@ -475,9 +475,11 @@ impl GpuExperts {
     }
 }
 
-/// Spread experts over the stores: layer-major round robin from expert 0, `cap0` bytes on GPU0 and `cap1` on GPU1
-/// (or a ranking from routing statistics when given: hottest first).
-pub fn place(m: &Model, rank: Option<&[(usize, usize)]>, cap0: usize, cap1: usize) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+/// Spread experts over the stores (`caps[i]` bytes each), hottest first (a ranking from routing statistics when
+/// given, else layer-major round robin from expert 0). Stores with a lower `group` fill first (static stores before
+/// adaptive ones, which reshuffle at run time anyway); within a group each expert goes to the least-filled store
+/// that has room, so the hot experts, and the decode work, spread evenly over GPUs that run in parallel.
+pub fn place(m: &Model, rank: Option<&[(usize, usize)]>, caps: &[usize], group: &[u8]) -> Vec<Vec<(usize, usize)>> {
     let c = &m.cfg;
     let order: Vec<(usize, usize)> = match rank {
         Some(r) => r.to_vec(),
@@ -487,18 +489,45 @@ pub fn place(m: &Model, rank: Option<&[(usize, usize)]>, cap0: usize, cap1: usiz
         let x = &m.layers[l].experts[e];
         x.gate.bytes().len() + x.up.bytes().len() + x.down.bytes().len()
     };
-    let (mut a, mut b, mut ua, mut ub) = (vec![], vec![], 0usize, 0usize);
-    for (l, e) in order {
-        let s = size(l, e);
-        if ub + s <= cap1 {
-            b.push((l, e));
-            ub += s;
-        } else if ua + s <= cap0 {
-            a.push((l, e));
-            ua += s;
+    let mut out = vec![vec![]; caps.len()];
+    for ((l, e), st) in order.iter().zip(assign(order.iter().map(|&(l, e)| size(l, e)), caps, group)) {
+        if let Some(i) = st {
+            out[i].push((*l, *e));
         }
     }
-    (a, b)
+    out
+}
+
+/// place's fill rule on sizes: the store each item goes to (None = no room anywhere)
+fn assign(sizes: impl Iterator<Item = usize>, caps: &[usize], group: &[u8]) -> Vec<Option<usize>> {
+    let mut used = vec![0usize; caps.len()];
+    sizes
+        .map(|s| {
+            let fill = |i: usize| used[i] as f64 / caps[i] as f64;
+            let pick = (0..caps.len()).filter(|&i| used[i] + s <= caps[i]).min_by(|&i, &j| group[i].cmp(&group[j]).then(fill(i).total_cmp(&fill(j))));
+            if let Some(i) = pick {
+                used[i] += s;
+            }
+            pick
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod place_tests {
+    #[test]
+    fn static_first_then_balanced() {
+        // two static aux stores of 2 and one adaptive main store of 3; 8 unit experts, the last one has no room
+        let o = super::assign([1usize; 8].into_iter(), &[2, 2, 3], &[0, 0, 1]);
+        assert_eq!(o, vec![Some(0), Some(1), Some(0), Some(1), Some(2), Some(2), Some(2), None]);
+    }
+
+    #[test]
+    fn two_store_order_unchanged() {
+        // the old two-store rule: GPU1 (static) first, GPU0 takes what does not fit, smaller ones still go to GPU1
+        let o = super::assign([3usize, 3, 1].into_iter(), &[4, 10], &[0, 1]);
+        assert_eq!(o, vec![Some(0), Some(1), Some(0)]);
+    }
 }
 
 /// Experts copied out of the mmapped file into one hugepage-backed, CUDA-registered host buffer: the CPU reads them

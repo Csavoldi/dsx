@@ -106,6 +106,30 @@ impl Gpu {
         }
     }
 
+    /// visible CUDA devices
+    pub fn count() -> Result<i32> {
+        let mut n = 0;
+        unsafe {
+            check(cu::cuInit(0), "cuInit")?;
+            check(cu::cuDeviceGetCount(&mut n), "cuDeviceGetCount")?;
+        }
+        Ok(n)
+    }
+
+    /// host -> device bandwidth from pinned memory in GB/s (best of 3 copies of `stage`), which tells the link
+    /// width apart (x16 vs x4)
+    pub fn h2d_gbs(&self, stage: &HostBuf) -> Result<f64> {
+        let d = self.alloc(stage.bytes)?;
+        let mut best = 0f64;
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            self.htod(d.ptr, stage.as_slice::<u8>())?;
+            self.sync()?;
+            best = best.max(stage.bytes as f64 / t.elapsed().as_secs_f64() / 1e9);
+        }
+        Ok(best)
+    }
+
     pub fn bind(&self) {
         unsafe { cu::cuCtxSetCurrent(self.ctx) };
     }

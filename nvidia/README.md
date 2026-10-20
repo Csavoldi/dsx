@@ -35,7 +35,7 @@ Debug: `DSX_DUMP=dir` (per-layer residual streams, ref vs GPU), `DSX_ROUTES=1` (
 | `cpu/` | AVX2 expert kernels (with AVX-VNNI or AVX-512 VNNI where the CPU has it), pinned thread pool, per-layer CPU MoE |
 | `gpu.rs` | CUDA boundary: contexts, buffers, hugepage host memory, launches, cuBLAS, stream flag ops |
 | `kernels/` | `dsx.cu` (dense path, attention, compressor, indexer, router, prefill helpers), `moe.cuh`, `expert_fast.cuh` (repacked VRAM experts, int8 mma, T tokens), `topk.cuh` |
-| `gpumodel.rs` | GPU decode: dense half on GPU0, experts on GPU0 / GPU1 / CPU, sync-free per-layer handoff |
+| `gpumodel.rs` | GPU decode: GPU roles by measured link, dense half on the main GPU, experts on every GPU and the CPU, sync-free per-layer handoff |
 | `gpumodel/prefill.rs` | prefill: encoder for every token, decoder dependency cone, grouped expert GEMMs |
 | `experts.rs` | VRAM expert stores (residency table) and the hugepage RAM arena |
 | `handoff.rs` | mapped-memory exchange + CPU expert worker thread |

@@ -54,16 +54,17 @@ pub struct PrefillBufs {
     estage: [Buf; NSTAGE],
     ev_ready: [crate::gpu::Event; NSTAGE],
     ev_free: [crate::gpu::Event; NSTAGE],
-    /// x shipped to GPU1 (prefill_moe_gpu1)
+    /// x shipped to the aux GPUs (prefill_moe_aux): the copy's event and pinned f16 staging
     ev_x: crate::gpu::Event,
+    x_host: crate::gpu::HostBuf,
     out: Buf,
     logits: Buf,
     attn_tc: crate::attn::SparseAttnTc,
 }
 
-/// GPU1's share of prefill: its resident experts run there on activations shipped over its x4 link
-/// (moving ~42 MB of activations per layer beats moving its ~0.6 GB of weights per layer).
-pub struct Gpu1Prefill {
+/// An aux GPU's share of prefill: its resident experts run there on activations shipped over its link
+/// (moving ~42 MB of activations per layer beats moving its ~0.6 GB of weights per layer over an x4 link).
+pub struct AuxPrefill {
     x16: Buf,
     rows: Buf,
     wrow: Buf,
@@ -74,20 +75,19 @@ pub struct Gpu1Prefill {
     go: Buf,
     w16: Buf,
     out: Buf,
-    x_host: crate::gpu::HostBuf,
     out_host: crate::gpu::HostBuf,
     k: std::collections::HashMap<&'static str, crate::gpu::Kernel>,
 }
 
-impl Gpu1Prefill {
-    pub fn new(g1: &Gpu, m: &Model, tmax: usize) -> Result<Gpu1Prefill> {
+impl AuxPrefill {
+    pub fn new(g1: &Gpu, m: &Model, tmax: usize) -> Result<AuxPrefill> {
         let c = &m.cfg;
         let (d, inter) = (c.dim, c.inter);
         let mut k = std::collections::HashMap::new();
         for n in ["gather_h", "dequant_f16", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16"] {
             k.insert(n, g1.kernel(n)?);
         }
-        Ok(Gpu1Prefill {
+        Ok(AuxPrefill {
             x16: g1.alloc(tmax * d * 2)?,
             rows: g1.alloc(tmax * 8 * 4)?,
             wrow: g1.alloc(tmax * 8 * 4)?,
@@ -98,7 +98,6 @@ impl Gpu1Prefill {
             go: g1.alloc(tmax * d * 4)?,
             w16: g1.alloc(inter * d * 2)?,
             out: g1.alloc(tmax * d * 4)?,
-            x_host: crate::gpu::HostBuf::new(tmax * d * 2)?,
             out_host: crate::gpu::HostBuf::new(tmax * d * 4)?,
             k,
         })
@@ -155,6 +154,7 @@ impl PrefillBufs {
             ev_ready: (0..NSTAGE).map(|_| g.event()).collect::<Result<Vec<_>>>()?.try_into().map_err(|_| anyhow::anyhow!("ev_ready"))?,
             ev_free: (0..NSTAGE).map(|_| g.event()).collect::<Result<Vec<_>>>()?.try_into().map_err(|_| anyhow::anyhow!("ev_free"))?,
             ev_x: g.event()?,
+            x_host: crate::gpu::HostBuf::new(tmax * c.dim * 2)?,
             out: f(tmax * c.dim)?,
             logits: f(c.vocab)?,
             attn_tc: crate::attn::SparseAttnTc::new(g)?,
@@ -170,46 +170,52 @@ fn type_id(t: GType) -> i32 {
 }
 
 impl GpuModel<'_> {
-    /// Enqueue GPU1's experts for this layer (returns without waiting; prefill_moe syncs GPU1 before adding).
+    /// Enqueue the aux GPUs' experts for this layer (`spans[i]`: aux i's share; returns without waiting,
+    /// prefill_moe syncs each before adding).
     #[allow(clippy::too_many_arguments)]
-    fn prefill_moe_gpu1(&self, pb: &PrefillBufs, li: usize, x: u64, n: usize, spans: &[(usize, usize, usize)], all_rows: &[i32], all_w: &[f32]) -> Result<()> {
+    fn prefill_moe_aux(&self, pb: &PrefillBufs, li: usize, x: u64, n: usize, spans: &[Vec<(usize, usize, usize)>], all_rows: &[i32], all_w: &[f32]) -> Result<()> {
         let rot = self.m.cfg.expert_rot[li];
         let c = &self.m.cfg;
         let (d, inter) = (c.dim, c.inter);
-        let (g1, gp, s1) = (self.g1.as_ref().unwrap(), self.g1p.as_ref().unwrap(), self.exp1.as_ref().unwrap());
-        // x -> f16 on GPU0 -> pinned host -> GPU1; the host waits for this copy only (an event), not for the rest of
-        // GPU0's queue: a full sync here stalled every layer behind the shared expert while no weights were copying
+        // x -> f16 on GPU0 -> pinned host -> each aux GPU; the host waits for this copy only (an event), not for the
+        // rest of GPU0's queue: a full sync here stalled every layer behind the shared expert while no weights were copying
         self.g.launch(self.k["to_f16"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(x), Arg::P(pb.act16.ptr), Arg::I((n * d) as i32)])?;
-        let xh = unsafe { std::slice::from_raw_parts_mut(gp.x_host.host_ptr() as *mut u16, n * d) };
+        let xh = unsafe { std::slice::from_raw_parts_mut(pb.x_host.host_ptr() as *mut u16, n * d) };
         self.g.dtoh(xh, pb.act16.ptr)?;
         self.g.record(pb.ev_x, false)?;
         self.g.event_sync(pb.ev_x)?;
-        g1.htod(gp.x16.ptr, &xh[..])?;
-        g1.htod_sync(gp.rows.ptr, all_rows)?;
-        g1.htod_sync(gp.wrow.ptr, all_w)?;
-        g1.memset(gp.out.ptr, n * d * 4)?;
-        for &(e, off, nt) in spans {
-            let (wg, wu, wd, gt, dt) = s1.slot_ptrs(li, e).unwrap();
-            let rows_p = gp.rows.ptr + (off * 4) as u64;
-            let w_p = gp.wrow.ptr + (off * 4) as u64;
-            g1.launch(gp.k["gather_h"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.x16.ptr), Arg::P(rows_p), Arg::P(gp.gx16.ptr), Arg::I(d as i32)])?;
-            for (wp, yp) in [(wg, gp.gg.ptr), (wu, gp.gu.ptr)] {
-                g1.launch(gp.k["dequant_f16"], ((d as u32).div_ceil(256), inter as u32, 1), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
-                if rot {
-                    g1.launch(gp.k["fwht_rows_f16"], ((d / 128) as u32, inter as u32, 1), 128, 0, &[Arg::P(gp.w16.ptr), Arg::I(d as i32)])?;
+        for (a, spans) in self.aux.iter().zip(spans) {
+            if spans.is_empty() {
+                continue;
+            }
+            let (g1, gp, s1) = (&a.g, a.pre.as_ref().unwrap(), &a.exp);
+            g1.htod(gp.x16.ptr, &xh[..])?;
+            g1.htod_sync(gp.rows.ptr, all_rows)?;
+            g1.htod_sync(gp.wrow.ptr, all_w)?;
+            g1.memset(gp.out.ptr, n * d * 4)?;
+            for &(e, off, nt) in spans {
+                let (wg, wu, wd, gt, dt) = s1.slot_ptrs(li, e).unwrap();
+                let rows_p = gp.rows.ptr + (off * 4) as u64;
+                let w_p = gp.wrow.ptr + (off * 4) as u64;
+                g1.launch(gp.k["gather_h"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.x16.ptr), Arg::P(rows_p), Arg::P(gp.gx16.ptr), Arg::I(d as i32)])?;
+                for (wp, yp) in [(wg, gp.gg.ptr), (wu, gp.gu.ptr)] {
+                    g1.launch(gp.k["dequant_f16"], ((d as u32).div_ceil(256), inter as u32, 1), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
+                    if rot {
+                        g1.launch(gp.k["fwht_rows_f16"], ((d / 128) as u32, inter as u32, 1), 128, 0, &[Arg::P(gp.w16.ptr), Arg::I(d as i32)])?;
+                    }
+                    g1.gemm_f16(gp.gx16.ptr, gp.w16.ptr, yp, nt, d, inter, inter)?;
                 }
-                g1.gemm_f16(gp.gx16.ptr, gp.w16.ptr, yp, nt, d, inter, inter)?;
+                g1.launch(gp.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.gg.ptr), Arg::P(gp.gu.ptr), Arg::P(w_p), Arg::P(gp.h16.ptr), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
+                g1.launch(gp.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
+                if rot {
+                    g1.launch(gp.k["fwht_rows_f16"], ((inter / 128) as u32, d as u32, 1), 128, 0, &[Arg::P(gp.w16.ptr), Arg::I(inter as i32)])?;
+                }
+                g1.gemm_f16(gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d, d)?;
+                g1.launch(gp.k["scatter_add"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.go.ptr), Arg::P(rows_p), Arg::P(gp.out.ptr), Arg::I(d as i32)])?;
             }
-            g1.launch(gp.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.gg.ptr), Arg::P(gp.gu.ptr), Arg::P(w_p), Arg::P(gp.h16.ptr), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
-            g1.launch(gp.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
-            if rot {
-                g1.launch(gp.k["fwht_rows_f16"], ((inter / 128) as u32, d as u32, 1), 128, 0, &[Arg::P(gp.w16.ptr), Arg::I(inter as i32)])?;
-            }
-            g1.gemm_f16(gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d, d)?;
-            g1.launch(gp.k["scatter_add"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.go.ptr), Arg::P(rows_p), Arg::P(gp.out.ptr), Arg::I(d as i32)])?;
+            let oh = unsafe { std::slice::from_raw_parts_mut(gp.out_host.host_ptr() as *mut f32, n * d) };
+            g1.dtoh(oh, gp.out.ptr)?;
         }
-        let oh = unsafe { std::slice::from_raw_parts_mut(gp.out_host.host_ptr() as *mut f32, n * d) };
-        g1.dtoh(oh, gp.out.ptr)?;
         self.g.bind();
         Ok(())
     }
@@ -259,11 +265,11 @@ impl GpuModel<'_> {
     }
 
     /// Feed up to 8 tokens in one pass (speculative-decoding verify) and return the logits after each of them.
-    /// Attention runs batched as in prefill; the experts go through the decode handoff (GPU0 / GPU1 / CPU).
+    /// Attention runs batched as in prefill; the experts go through the decode handoff (main GPU / aux GPUs / CPU).
     pub fn verify(&mut self, pb: &PrefillBufs, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
         anyhow::ensure!(!tokens.is_empty() && tokens.len() <= crate::handoff::MAXT && self.worker.is_some(), "verify: 1..=8 tokens, handoff path");
         self.verify_t = tokens.len();
-        self.enqueue_gpu1(tokens.len())?;
+        self.enqueue_aux(tokens.len())?;
         self.g.bind();
         let r = self.prefill_pass(pb, tokens, true, true);
         self.verify_t = 0;
@@ -684,7 +690,7 @@ impl GpuModel<'_> {
         let (d, inter) = (c.dim, c.inter);
         let x = pb.x.ptr + (r0 * d * 4) as u64;
         if self.verify_t > 0 {
-            // a verify pass (<= 8 tokens): experts through the decode handoff (GPU0 / GPU1 / CPU), no weight streaming
+            // a verify pass (<= 8 tokens): experts through the decode handoff (main GPU / aux GPUs / CPU), no weight streaming
             let a = pb.a.ptr + (r0 * d * 4) as u64;
             return self.moe_fast_t(li, x, a, n);
         }
@@ -731,18 +737,17 @@ impl GpuModel<'_> {
         }
         self.g.htod_sync(pb.rows.ptr, &all_rows)?;
         self.g.htod_sync(pb.wrow.ptr, &all_w)?;
-        // GPU1's resident experts: ship x there, run them concurrently, add their sum at the end
-        let g1_spans: Vec<(usize, usize, usize)> =
-            spans.iter().cloned().filter(|&(e, _, _)| self.exp1.as_ref().is_some_and(|s1| s1.has(li, e))).collect();
-        let use_g1 = !g1_spans.is_empty() && self.g1p.is_some() && !self.skip_experts;
-        if use_g1 {
-            self.prefill_moe_gpu1(pb, li, x, n, &g1_spans, &all_rows, &all_w)?;
+        // the aux GPUs' resident experts: ship x there, run them concurrently, add their sums at the end
+        let aux_spans: Vec<Vec<(usize, usize, usize)>> = self
+            .aux
+            .iter()
+            .map(|a| if a.pre.is_some() && !self.skip_experts { spans.iter().cloned().filter(|&(e, _, _)| a.exp.has(li, e)).collect() } else { vec![] })
+            .collect();
+        let use_aux = aux_spans.iter().any(|v| !v.is_empty());
+        if use_aux {
+            self.prefill_moe_aux(pb, li, x, n, &aux_spans, &all_rows, &all_w)?;
         }
-        let spans: Vec<(usize, usize, usize)> = if use_g1 {
-            spans.into_iter().filter(|&(e, _, _)| !self.exp1.as_ref().unwrap().has(li, e)).collect()
-        } else {
-            spans
-        };
+        let spans: Vec<(usize, usize, usize)> = spans.into_iter().filter(|&(e, _, _)| !aux_spans.iter().any(|v| v.iter().any(|s| s.0 == e))).collect();
         let tp1 = std::time::Instant::now();
         // shared expert over all rows -> out
         self.gemm(pb, &l.sh_gate, x, pb.gg.ptr, n)?;
@@ -770,7 +775,7 @@ impl GpuModel<'_> {
             self.g.dtod(a, pb.out.ptr, n * d * 4)?;
             return Ok(());
         }
-        self.prof_mark("prefill moe . router+shared+gpu1 ship", tp0)?;
+        self.prof_mark("prefill moe . router+shared+aux ship", tp0)?;
         let mut nstaged = 0usize;
         // the side stream must not start copying before the main stream reaches this layer's experts
         for e in pb.ev_free.iter() {
@@ -824,14 +829,16 @@ impl GpuModel<'_> {
         }
         self.prof_mark("prefill moe . GPU0 expert loop", tp1)?;
         let tp2 = std::time::Instant::now();
-        if use_g1 {
-            let (g1, gp) = (self.g1.as_ref().unwrap(), self.g1p.as_ref().unwrap());
-            g1.sync()?;
+        for (a, sp) in self.aux.iter().zip(&aux_spans) {
+            if sp.is_empty() {
+                continue;
+            }
+            a.g.sync()?;
             self.g.bind();
-            self.g.htod(pb.go.ptr, &gp.out_host.as_slice::<f32>()[..n * d])?;
+            self.g.htod(pb.go.ptr, &a.pre.as_ref().unwrap().out_host.as_slice::<f32>()[..n * d])?;
             self.g.launch(self.k["add_inplace"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(pb.out.ptr), Arg::P(pb.go.ptr), Arg::I((n * d) as i32)])?;
         }
-        self.prof_mark("prefill moe . wait GPU1 + add", tp2)?;
+        self.prof_mark("prefill moe . wait aux GPUs + add", tp2)?;
         // a = bf16(out)
         let a = pb.a.ptr + (r0 * d * 4) as u64;
         self.g.dtod(a, pb.out.ptr, n * d * 4)?;

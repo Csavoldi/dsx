@@ -1045,7 +1045,8 @@ extern "C" __global__ void swiglu_s(const float *g, const float *u, float *h, in
 
 // ---------------------------------------------------------------- cross-device expert handoff (mapped host memory)
 // xch layout (bytes): route_flag @0, cpu_flag @64, gpu1_flag @128, ntok @192, sel[8][8] i32 @256, wts[8][8] f32 @512,
-// x[T][dim] f32 @1024, y_cpu[T][dim] @1024 + 32*dim, y_gpu1[T][dim] @1024 + 64*dim (room for T <= 8)
+// x[T][dim] f32 @1024, y_cpu[T][dim] @1024 + 32*dim, y_aux[i][T][dim] @1024 + (64 + 32i)*dim (room for T <= 8);
+// aux flags: 128 for aux 0, 768 + 64 (i - 1) for the rest
 #define XCH_T 192
 #define XCH_SEL 256
 #define XCH_WTS 512
@@ -1093,15 +1094,15 @@ extern "C" __global__ void spin_wait(const volatile uint32_t *flag, uint32_t seq
   }
 }
 
-// a[t] = bf16(a[t] + out0[t] + y_cpu[t] + y_gpu1[t]) for T tokens; grid ceil(T*dim/256)
-extern "C" __global__ void combine_experts(float *a, const float *out0, const uint8_t *xch, int dim, int use_cpu, int use_gpu1, int T) {
+// a[t] = bf16(a[t] + out0[t] + y_cpu[t] + sum over aux GPUs of y_aux[i][t]) for T tokens; grid ceil(T*dim/256)
+// (aux i's slot: XCH_X + (64 + 32 i) * dim, handoff::aux_y)
+extern "C" __global__ void combine_experts(float *a, const float *out0, const uint8_t *xch, int dim, int use_cpu, int n_aux, int T) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= T * dim) return;
   const volatile float *yc = (const volatile float *)(xch + XCH_X + 32 * dim);
-  const volatile float *y1 = (const volatile float *)(xch + XCH_X + 64 * dim);
   float v = a[i] + out0[i];
   if (use_cpu) v += yc[i];
-  if (use_gpu1) v += y1[i];
+  for (int j = 0; j < n_aux; j++) v += ((const volatile float *)(xch + XCH_X + (64 + 32 * j) * dim))[i];
   a[i] = bf16r(v);
 }
 

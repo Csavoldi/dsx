@@ -132,10 +132,9 @@ pub struct GpuModel<'m> {
     cpu_moe: Option<crate::cpu::moe::CpuMoe>,
     /// seconds spent in CPU experts / everything else, for profiling
     pub t_experts: f64,
-    /// experts resident on GPU0 / on GPU1 (its own context)
+    /// experts resident on the main GPU / on the aux GPUs (each in its own context)
     exp0: Option<crate::experts::GpuExperts>,
-    g1: Option<Gpu>,
-    exp1: Option<crate::experts::GpuExperts>,
+    aux: Vec<Aux>,
     out0: Buf,
     /// per-token constants (window slots, visible compressed rows per ratio), uploaded once per token
     tokp: Buf,
@@ -148,7 +147,8 @@ pub struct GpuModel<'m> {
     xch: Option<&'static crate::handoff::Xch>,
     worker: Option<crate::handoff::CpuWorker>,
     arena: Option<&'static crate::experts::Arena>,
-    /// adaptive GPU0 residency: replacements started per token (DSX_ADAPT, default 8; 0 = static placement)
+    /// adaptive residency (the main GPU's store and fast-linked aux stores): replacements started per token per store
+    /// (DSX_ADAPT, default 8; 0 = static placement)
     adapt: usize,
     pub adapt_swaps: usize,
     pub adapt_s: f64,
@@ -166,25 +166,68 @@ pub struct GpuModel<'m> {
     img_rows: Vec<(usize, usize)>,
     skip_experts: bool,
     prof_host: bool,
-    g1p: Option<prefill::Gpu1Prefill>,
-    xch_dev: (u64, u64),
+    /// the exchange's address in the main GPU's context
+    xch_dev: u64,
     seq_base: u32,
-    pub n_routed: [usize; 3], // routed expert evaluations served by GPU0, GPU1, CPU
-    /// DSX_EVPROF=1: timed events per decode layer on GPU0 ([layer][EV_N]) and GPU1 ([layer][4]); ms sums per stage
+    pub n_routed: [usize; 3], // routed expert evaluations served by the main GPU, the aux GPUs, the CPU
+    /// DSX_EVPROF=1: timed events per decode layer on the main GPU ([layer][EV_N]) and each aux GPU; ms sums per stage
     ev0: Vec<crate::gpu::Event>,
-    ev1: Vec<crate::gpu::Event>,
     pub evprof: Option<std::collections::BTreeMap<&'static str, f64>>,
     spin_wait: bool,
     /// DSX_PROF=1: seconds per section (synchronizing after each), summed over steps
     pub prof: Option<std::collections::BTreeMap<&'static str, f64>>,
 }
 
+/// A GPU besides the main one, holding routed experts only: decode experts through the exchange, its share of
+/// prefill on shipped activations.
+struct Aux {
+    g: Gpu,
+    exp: crate::experts::GpuExperts,
+    pre: Option<prefill::AuxPrefill>,
+    /// the exchange's address in this GPU's context
+    xdev: u64,
+    /// replacements at run time like the main GPU's store (its host link is at least half as fast as the main one's;
+    /// slower links keep a static hot set)
+    adaptive: bool,
+    /// DSX_EVPROF: [layer][4] timed events
+    ev: Vec<crate::gpu::Event>,
+}
+
+/// A visible GPU as placement sees it.
+#[derive(Clone, Debug)]
+pub struct GpuInfo {
+    pub ordinal: i32,
+    pub name: String,
+    pub total: usize,
+    /// host -> device GB/s from pinned memory (the link: x16 vs x4)
+    pub h2d_gbs: f64,
+}
+
+/// Every visible GPU (DSX_GPUS="0,2" limits them): memory and measured host -> device bandwidth.
+pub fn probe_gpus() -> Result<Vec<GpuInfo>> {
+    let only: Option<Vec<i32>> = std::env::var("DSX_GPUS").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect());
+    let gs: Vec<Gpu> = (0..Gpu::count()?).filter(|i| only.as_ref().is_none_or(|o| o.contains(i))).map(Gpu::new).collect::<Result<_>>()?;
+    let Some(g0) = gs.first() else { bail!("no CUDA devices") };
+    g0.bind();
+    let stage = crate::gpu::HostBuf::new(64 << 20)?;
+    gs.iter().map(|g| Ok(GpuInfo { ordinal: g.ordinal, name: g.name.clone(), total: g.mem_info()?.1, h2d_gbs: g.h2d_gbs(&stage)? })).collect()
+}
+
+/// The main GPU (dense weights, KV, prefill, the expert cache that swaps): the best host link, within 15%, then
+/// the most memory.
+pub fn pick_main(gpus: &[GpuInfo]) -> i32 {
+    let best = gpus.iter().map(|g| g.h2d_gbs).fold(0.0, f64::max);
+    gpus.iter().filter(|g| g.h2d_gbs >= 0.85 * best).max_by_key(|g| g.total).map_or(0, |g| g.ordinal)
+}
+
 /// Where routed experts live besides the CPU.
 #[derive(Clone, Debug)]
 pub struct Placement {
-    /// < 0: everything GPU0 has free after the dense half, caches and prefill buffers, minus `-gpu0_gb` GB of headroom
+    /// < 0: everything the main GPU has free after the dense half, caches and prefill buffers, minus `-gpu0_gb` GB
+    /// of headroom
     pub gpu0_gb: f64,
-    pub gpu1_gb: f64,
+    /// per aux GPU (every visible GPU but the main one); < 0: its free memory minus that headroom; 0 = no aux GPUs
+    pub aux_gb: f64,
     /// CPU experts copied into a hugepage RAM arena (the rest stay in the mmapped file)
     pub arena_gb: f64,
     /// prefill chunk (tokens per pass); 0 = no prefill buffers
@@ -207,10 +250,19 @@ fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
 
 impl<'m> GpuModel<'m> {
     pub fn new(m: &'m Model, ordinal: i32, max_ctx: usize) -> Result<GpuModel<'m>> {
-        Self::with_placement(m, ordinal, max_ctx, Placement { gpu0_gb: 0.0, gpu1_gb: 0.0, arena_gb: 0.0, prefill_chunk: 0, rank: None })
+        Self::with_placement(m, ordinal, max_ctx, Placement { gpu0_gb: 0.0, aux_gb: 0.0, arena_gb: 0.0, prefill_chunk: 0, rank: None })
     }
 
+    /// `ordinal` < 0: pick the main GPU by measurement (pick_main); every other GPU becomes an aux expert store
+    /// unless `pl.aux_gb` is 0.
     pub fn with_placement(m: &'m Model, ordinal: i32, max_ctx: usize, pl: Placement) -> Result<GpuModel<'m>> {
+        let probe = if ordinal < 0 || pl.aux_gb != 0.0 { probe_gpus()? } else { vec![] };
+        let ordinal = if ordinal >= 0 { ordinal } else { pick_main(&probe) };
+        if probe.len() > 1 {
+            for p in &probe {
+                eprintln!("GPU{} {}: {:.1} GB, host link {:.1} GB/s{}", p.ordinal, p.name, p.total as f64 / 1e9, p.h2d_gbs, if p.ordinal == ordinal { " (main)" } else { "" });
+            }
+        }
         let g = Gpu::new(ordinal)?;
         let mut k = HashMap::new();
         for &n in KERNELS {
@@ -346,8 +398,7 @@ impl<'m> GpuModel<'m> {
             img_rows: Vec::new(),
             skip_experts: std::env::var_os("DSX_SKIP_EXPERTS").is_some(),
             prof_host: std::env::var("DSX_PROF").is_ok_and(|v| v == "host"),
-            g1p: None,
-            xch_dev: (0, 0),
+            xch_dev: 0,
             seq_base: 0,
             layers,
             k,
@@ -371,11 +422,9 @@ impl<'m> GpuModel<'m> {
             },
             t_experts: 0.0,
             exp0: None,
-            g1: None,
-            exp1: None,
+            aux: vec![],
             n_routed: [0; 3],
             ev0: vec![],
-            ev1: vec![],
             evprof: None,
             spin_wait: std::env::var_os("DSX_SPIN_WAIT").is_some(),
             prof: std::env::var_os("DSX_PROF").map(|_| Default::default()),
@@ -389,17 +438,25 @@ impl<'m> GpuModel<'m> {
         } else {
             (pl.gpu0_gb * 1e9) as usize
         };
-        let gpu1_bytes = if pl.gpu1_gb < 0.0 {
-            // GPU1 holds nothing else: its free memory minus headroom and the kernels' scratch
-            let g1 = Gpu::new(ordinal + 1)?;
-            let (free, _) = g1.mem_info()?;
-            gm.g.bind();
-            // leave room for GPU1's prefill buffers
+        // aux GPUs: every other probed GPU, each with its free memory minus headroom and its prefill buffers
+        let mut aux_g: Vec<(Gpu, usize, bool, f64)> = vec![]; // GPU, expert bytes, adaptive, link GB/s
+        if pl.aux_gb != 0.0 {
+            let main_bw = probe.iter().find(|p| p.ordinal == ordinal).map_or(0.0, |p| p.h2d_gbs);
             let pre1 = if pl.prefill_chunk > 0 { pl.prefill_chunk * (c.dim * 16 + c.inter * 10 + 64) + c.inter * c.dim * 2 + (256 << 20) } else { 0 };
-            free.saturating_sub((-pl.gpu1_gb * 1e9) as usize + pre1)
-        } else {
-            (pl.gpu1_gb * 1e9) as usize
-        };
+            for p in probe.iter().filter(|p| p.ordinal != ordinal).take(crate::handoff::MAX_AUX) {
+                let ga = Gpu::new(p.ordinal)?;
+                let bytes = if pl.aux_gb < 0.0 {
+                    let (free, _) = ga.mem_info()?;
+                    free.saturating_sub((-pl.aux_gb * 1e9) as usize + pre1)
+                } else {
+                    (pl.aux_gb * 1e9) as usize
+                };
+                // DSX_AUX_ADAPTIVE=1/0 overrides the link rule
+                let fast = std::env::var("DSX_AUX_ADAPTIVE").map_or(p.h2d_gbs >= 0.5 * main_bw, |v| v == "1");
+                aux_g.push((ga, bytes, gm.adapt > 0 && fast, p.h2d_gbs));
+            }
+            gm.g.bind();
+        }
         let mut prior: Vec<(usize, usize, u64)> = vec![];
         let rank: Option<Vec<(usize, usize)>> = match &pl.rank {
             None => None,
@@ -419,35 +476,44 @@ impl<'m> GpuModel<'m> {
                 Some(r)
             }
         };
-        if gpu0_bytes > 0 || gpu1_bytes > 0 {
-            let (a, b) = crate::experts::place(m, rank.as_deref(), gpu0_bytes, gpu1_bytes);
-            if !a.is_empty() {
-                let mut s0 = crate::experts::GpuExperts::new(&gm.g, m, &a)?;
-                // staging for in-flight replacements: the largest expert's raw bytes
-                let max_raw = (0..c.n_layers)
-                    .flat_map(|l| (0..c.n_experts).map(move |e| (l, e)))
-                    .map(|(l, e)| { let x = &m.layers[l].experts[e]; x.gate.bytes().len() + x.up.bytes().len() + x.down.bytes().len() })
-                    .max()
-                    .unwrap_or(0);
+        // static stores take the hottest experts first; the adaptive ones (the main GPU, fast-linked aux GPUs) the next
+        let caps: Vec<usize> = std::iter::once(gpu0_bytes).chain(aux_g.iter().map(|a| a.1)).collect();
+        let group: Vec<u8> = std::iter::once(1).chain(aux_g.iter().map(|a| a.2 as u8)).collect();
+        if caps.iter().any(|&b| b > 0) {
+            let sets = crate::experts::place(m, rank.as_deref(), &caps, &group);
+            // staging for in-flight replacements: the largest expert's raw bytes
+            let max_raw = (0..c.n_layers)
+                .flat_map(|l| (0..c.n_experts).map(move |e| (l, e)))
+                .map(|(l, e)| { let x = &m.layers[l].experts[e]; x.gate.bytes().len() + x.up.bytes().len() + x.down.bytes().len() })
+                .max()
+                .unwrap_or(0);
+            if !sets[0].is_empty() {
+                let mut s0 = crate::experts::GpuExperts::new(&gm.g, m, &sets[0])?;
                 s0.enable_swaps(&gm.g, gm.adapt, max_raw)?;
                 gm.exp0 = Some(s0);
             }
-            if !b.is_empty() {
-                let g1 = Gpu::new(ordinal + 1)?;
-                gm.exp1 = Some(crate::experts::GpuExperts::new(&g1, m, &b)?);
-                if pl.prefill_chunk > 0 {
-                    gm.g1p = Some(prefill::Gpu1Prefill::new(&g1, m, pl.prefill_chunk)?);
+            let mut msg = format!("experts resident: GPU{ordinal} {} ({:.1} GB)", sets[0].len(), gm.exp0.as_ref().map_or(0, |x| x.bytes) as f64 / 1e9);
+            for ((ga, _, adaptive, bw), set) in aux_g.into_iter().zip(sets.iter().skip(1)) {
+                if set.is_empty() {
+                    continue;
                 }
-                gm.g1 = Some(g1);
+                let mut exp = crate::experts::GpuExperts::new(&ga, m, set)?;
+                let adaptive = adaptive && exp.is_fast();
+                if adaptive {
+                    exp.enable_swaps(&ga, gm.adapt, max_raw)?;
+                }
+                let pre = if pl.prefill_chunk > 0 { Some(prefill::AuxPrefill::new(&ga, m, pl.prefill_chunk)?) } else { None };
+                msg += &format!(", GPU{} {} ({:.1} GB, {}, {bw:.1} GB/s link)", ga.ordinal, set.len(), exp.bytes as f64 / 1e9, if adaptive { "adaptive" } else { "static" });
+                gm.aux.push(Aux { g: ga, exp, pre, xdev: 0, adaptive, ev: vec![] });
             }
             gm.g.bind();
-            eprintln!("experts resident: GPU0 {} ({:.1} GB), GPU1 {} ({:.1} GB)", a.len(), gm.exp0.as_ref().map_or(0, |x| x.bytes) as f64 / 1e9, b.len(), gm.exp1.as_ref().map_or(0, |x| x.bytes) as f64 / 1e9);
+            eprintln!("{msg}");
         }
         if let Some(x) = std::env::var("DSX_ROUTE_BIAS").ok().and_then(|v| v.parse::<f32>().ok()) {
             let mut b = vec![0f32; c.n_layers * c.n_experts];
             for l in 0..c.n_layers {
                 for e in 0..c.n_experts {
-                    if gm.exp0.as_ref().is_some_and(|s| s.has(l, e)) || gm.exp1.as_ref().is_some_and(|s| s.has(l, e)) {
+                    if gm.resident(l, e) {
                         b[l * c.n_experts + e] = x;
                     }
                 }
@@ -462,17 +528,20 @@ impl<'m> GpuModel<'m> {
             let on_cpu: Vec<Vec<bool>> = (0..c.n_layers)
                 .map(|l| {
                     (0..c.n_experts)
-                        .map(|e| !gm.exp0.as_ref().is_some_and(|s| s.has(l, e)) && !gm.exp1.as_ref().is_some_and(|s| s.has(l, e)))
+                        .map(|e| !gm.resident(l, e))
                         .collect()
                 })
                 .collect();
             let ms: &'static Model = unsafe { std::mem::transmute::<&Model, &'static Model>(m) };
             let arena: Option<&'static crate::experts::Arena> = if pl.arena_gb > 0.0 {
                 let order: Vec<(usize, usize)> = rank.clone().unwrap_or_else(|| (0..c.n_experts).flat_map(|e| (0..c.n_layers).map(move |l| (l, e))).collect());
-                let adaptive = gm.adapt > 0 && gm.exp0.as_ref().is_some_and(|s| s.is_fast());
+                // the CPU's experts, and those an adaptive store may evict back to it
+                let adaptive0 = gm.adapt > 0 && gm.exp0.as_ref().is_some_and(|s| s.is_fast());
                 let cpu: Vec<(usize, usize)> = order
                     .into_iter()
-                    .filter(|&(l, e)| on_cpu[l][e] || (adaptive && !gm.exp1.as_ref().is_some_and(|s| s.has(l, e))))
+                    .filter(|&(l, e)| {
+                        on_cpu[l][e] || (adaptive0 && gm.exp0.as_ref().unwrap().has(l, e)) || gm.aux.iter().any(|a| a.adaptive && a.exp.has(l, e))
+                    })
                     .collect();
                 let t = std::time::Instant::now();
                 let (a, rest) = crate::experts::Arena::new(m, &cpu, (pl.arena_gb * 1e9) as usize)?;
@@ -493,56 +562,65 @@ impl<'m> GpuModel<'m> {
                     w.score[l * c.n_experts + e].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
                 }
             }
-            let d0 = xch.buf.dev_ptr(&gm.g)?;
-            let d1 = match gm.g1.as_ref() { Some(g1) => xch.buf.dev_ptr(g1)?, None => 0 };
+            gm.xch_dev = xch.buf.dev_ptr(&gm.g)?;
+            for a in gm.aux.iter_mut() {
+                a.xdev = xch.buf.dev_ptr(&a.g)?;
+            }
             gm.g.bind();
             gm.xch = Some(xch);
-            gm.xch_dev = (d0, d1);
         }
         if std::env::var_os("DSX_EVPROF").is_some() {
             for _ in 0..c.n_layers * EV_N {
                 gm.ev0.push(gm.g.timed_event()?);
             }
-            if let Some(g1) = gm.g1.as_ref() {
+            for a in gm.aux.iter_mut() {
                 for _ in 0..c.n_layers * 4 {
-                    gm.ev1.push(g1.timed_event()?);
+                    a.ev.push(a.g.timed_event()?);
                 }
-                gm.g.bind();
             }
+            gm.g.bind();
             gm.evprof = Some(Default::default());
         }
         Ok(gm)
     }
 
-    /// GPU1's part of one pass over all layers (T tokens): per layer wait for GPU0's picks, run the resident ones,
-    /// hand the sum back.
-    fn enqueue_gpu1(&self, t: usize) -> Result<()> {
-        let (Some(g1), Some(s1), Some(xch)) = (self.g1.as_ref(), self.exp1.as_ref(), self.xch) else { return Ok(()) };
+    /// true when a GPU store (main or aux) holds expert e of layer l
+    fn resident(&self, l: usize, e: usize) -> bool {
+        self.exp0.as_ref().is_some_and(|s| s.has(l, e)) || self.aux.iter().any(|a| a.exp.has(l, e))
+    }
+
+    /// The aux GPUs' part of one pass over all layers (T tokens): per layer each waits for the main GPU's picks, runs
+    /// its resident ones and hands its sum back in its own slot.
+    fn enqueue_aux(&self, t: usize) -> Result<()> {
+        let Some(xch) = self.xch else { return Ok(()) };
         let c = &self.m.cfg;
-        let d1 = self.xch_dev.1;
-        for li in 0..c.n_layers {
-            let seq = self.seq_base + li as u32 + 1;
-            g1.wait_value(d1 + crate::handoff::ROUTE as u64, seq)?;
-            let ev = |k: usize| if self.ev1.is_empty() { Ok(()) } else { g1.record(self.ev1[li * 4 + k], false) };
-            ev(0)?;
-            g1.htod(s1.sel.ptr, xch.sel(t * c.top_k))?;
-            g1.htod(s1.wts.ptr, xch.wts(t * c.top_k))?;
-            g1.htod(s1.x.ptr, xch.x(t))?;
-            ev(1)?;
-            if t == 1 {
-                s1.run_device(g1, li, s1.sel.ptr, s1.wts.ptr, c.top_k, s1.x.ptr, s1.out.ptr)?;
-            } else {
-                s1.run_device_fast(g1, li, s1.sel.ptr, s1.wts.ptr, c.top_k, t, s1.x.ptr, s1.out.ptr)?;
+        for (i, a) in self.aux.iter().enumerate() {
+            let (g1, s1) = (&a.g, &a.exp);
+            for li in 0..c.n_layers {
+                let seq = self.seq_base + li as u32 + 1;
+                g1.wait_value(a.xdev + crate::handoff::ROUTE as u64, seq)?;
+                let ev = |k: usize| if a.ev.is_empty() { Ok(()) } else { g1.record(a.ev[li * 4 + k], false) };
+                ev(0)?;
+                g1.htod(s1.sel.ptr, xch.sel(t * c.top_k))?;
+                g1.htod(s1.wts.ptr, xch.wts(t * c.top_k))?;
+                g1.htod(s1.x.ptr, xch.x(t))?;
+                ev(1)?;
+                if t == 1 {
+                    s1.run_device(g1, li, s1.sel.ptr, s1.wts.ptr, c.top_k, s1.x.ptr, s1.out.ptr)?;
+                } else {
+                    s1.run_device_fast(g1, li, s1.sel.ptr, s1.wts.ptr, c.top_k, t, s1.x.ptr, s1.out.ptr)?;
+                }
+                ev(2)?;
+                g1.dtoh(xch.y_aux(i, t), s1.out.ptr)?;
+                ev(3)?;
+                g1.write_value(a.xdev + crate::handoff::aux_flag(i) as u64, seq)?;
             }
-            ev(2)?;
-            g1.dtoh(xch.y_gpu1(t), s1.out.ptr)?;
-            ev(3)?;
-            g1.write_value(d1 + crate::handoff::GPU1 as u64, seq)?;
         }
         Ok(())
     }
 
-    /// Router, shared expert and GPU0's resident experts here; CPU and GPU1 through the exchange; no host sync.
+    /// Router, shared expert and the main GPU's resident experts here; CPU and aux GPUs through the exchange; no host
+    /// sync.
     /// `x` [t][dim] in, `a` [t][dim] out (t <= 8).
     fn moe_fast_t(&mut self, li: usize, x: u64, a: u64, t: usize) -> Result<()> {
         let m = self.m;
@@ -555,7 +633,7 @@ impl<'m> GpuModel<'m> {
         let idx_buf = self.tmp2.ptr; // [t][k] i32 then [t][k] f32 at +256
         self.g.launch(self.k["router_topk"], (t as u32, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
         self.ev(li, 2)?;
-        let d0 = self.xch_dev.0;
+        let d0 = self.xch_dev;
         if self.skip_experts {
             // profiling only (DSX_SKIP_EXPERTS=1): the dense half without routed experts (wrong output)
             let l = &self.layers[li];
@@ -583,12 +661,11 @@ impl<'m> GpuModel<'m> {
         self.ev(li, 4)?;
         self.flag_wait(d0 + crate::handoff::CPU as u64, seq)?;
         self.ev(li, 5)?;
-        let use1 = self.exp1.is_some();
-        if use1 {
-            self.flag_wait(d0 + crate::handoff::GPU1 as u64, seq)?;
+        for i in 0..self.aux.len() {
+            self.flag_wait(d0 + crate::handoff::aux_flag(i) as u64, seq)?;
         }
         self.ev(li, 6)?;
-        self.g.launch(self.k["combine_experts"], (((t * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(1), Arg::I(use1 as i32), Arg::I(t as i32)])?;
+        self.g.launch(self.k["combine_experts"], (((t * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(1), Arg::I(self.aux.len() as i32), Arg::I(t as i32)])?;
         self.ev(li, 7)
     }
 
@@ -608,23 +685,27 @@ impl<'m> GpuModel<'m> {
         self.g.launch(self.k["sparse_attn_merge"], (t as u32, nh as u32, 1), 256, 0, &[Arg::P(self.attn_part.ptr), Arg::I(s as i32), Arg::P(sinks), Arg::P(o), Arg::I(nh as i32), Arg::I(hd as i32)])
     }
 
-    /// Between tokens: make finished GPU0 replacements resident, then start up to `adapt` more: non-resident experts
-    /// with the highest decayed usage take the slot of the lowest-scoring resident of the same quant types.
-    /// Both GPUs and the CPU worker are idle here (step downloaded the logits). An expert is computed by exactly one
+    /// Between tokens, on every adaptive store (the main GPU's, fast-linked aux GPUs'): make finished replacements
+    /// resident, then start up to `adapt` more per store: non-resident experts with the highest decayed usage take the
+    /// slot of the coldest same-typed resident across the stores with room.
+    /// The GPUs and the CPU worker are idle here (step downloaded the logits). An expert is computed by exactly one
     /// side in every token: the CPU stops at commit, starts again at eviction.
     fn adapt_step(&mut self) -> Result<()> {
         let ne = self.m.cfg.n_experts;
         let (Some(w), Some(arena)) = (self.worker.as_ref(), self.arena) else { return Ok(()) };
-        let Some(s0) = self.exp0.as_mut() else { return Ok(()) };
-        for (l, e) in s0.commit_ready(&self.g, false)? {
-            w.on_cpu[l * ne + e].store(false, std::sync::atomic::Ordering::Relaxed);
+        let mut stores: Vec<(&Gpu, &mut crate::experts::GpuExperts)> =
+            self.exp0.as_mut().map(|s| (&self.g, s)).into_iter().chain(self.aux.iter_mut().filter(|a| a.adaptive).map(|a| (&a.g, &mut a.exp))).collect();
+        for (g, s) in stores.iter_mut() {
+            for (l, e) in s.commit_ready(g, false)? {
+                w.on_cpu[l * ne + e].store(false, std::sync::atomic::Ordering::Relaxed);
+            }
         }
-        let room = s0.swap_room();
+        let room: usize = stores.iter().map(|(_, s)| s.swap_room()).sum();
         if room == 0 {
             return Ok(());
         }
         let sc = |l: usize, e: usize| f32::from_bits(w.score[l * ne + e].load(std::sync::atomic::Ordering::Relaxed));
-        let pending: std::collections::HashSet<(usize, usize)> = s0.pending().collect();
+        let pending: std::collections::HashSet<(usize, usize)> = stores.iter().flat_map(|(_, s)| s.pending()).collect();
         let mut cand: Vec<(f32, usize, usize)> = (0..w.score.len())
             .filter_map(|i| {
                 let (l, e) = (i / ne, i % ne);
@@ -634,29 +715,41 @@ impl<'m> GpuModel<'m> {
             .collect();
         cand.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         cand.truncate(room * 4);
-        // residents by quant types, coldest last (popped first)
-        let mut victims: std::collections::HashMap<(crate::gguf::GType, crate::gguf::GType), Vec<(f32, usize, usize)>> = Default::default();
-        for (vl, ve) in s0.residents() {
-            victims.entry(s0.types(vl, ve).unwrap()).or_default().push((sc(vl, ve), vl, ve));
-        }
-        for v in victims.values_mut() {
-            v.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-        }
+        // per store: residents by quant types, coldest last (popped first)
+        type Victims = std::collections::HashMap<(crate::gguf::GType, crate::gguf::GType), Vec<(f32, usize, usize)>>;
+        let mut victims: Vec<Victims> = stores
+            .iter()
+            .map(|(_, s)| {
+                let mut v: Victims = Default::default();
+                for (vl, ve) in s.residents() {
+                    v.entry(s.types(vl, ve).unwrap()).or_default().push((sc(vl, ve), vl, ve));
+                }
+                for x in v.values_mut() {
+                    x.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+                }
+                v
+            })
+            .collect();
         let mut started = 0;
         for &(v, l, e) in cand.iter() {
             if started == room {
                 break;
             }
             let x = &self.m.layers[l].experts[e];
-            let Some(list) = victims.get_mut(&(x.gate.ty, x.down.ty)) else { continue };
-            let Some(&(vs, vl, ve)) = list.last() else { continue };
+            let key = (x.gate.ty, x.down.ty);
+            let best = (0..stores.len())
+                .filter(|&i| stores[i].1.swap_room() > 0)
+                .filter_map(|i| victims[i].get(&key).and_then(|list| list.last()).map(|&(vs, _, _)| (vs, i)))
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            let Some((vs, i)) = best else { continue };
             if vs >= v * 0.5 {
                 continue; // hysteresis: replace only clearly colder residents
             }
-            list.pop();
+            let (_, vl, ve) = victims[i].get_mut(&key).unwrap().pop().unwrap();
             let raw = arena.get(l, e).unwrap();
             w.on_cpu[vl * ne + ve].store(true, std::sync::atomic::Ordering::Relaxed);
-            if !s0.begin_swap(&self.g, (vl, ve), (l, e), raw)? {
+            let (g, s) = &mut stores[i];
+            if !s.begin_swap(g, (vl, ve), (l, e), raw)? {
                 w.on_cpu[vl * ne + ve].store(false, std::sync::atomic::Ordering::Relaxed);
                 break;
             }
@@ -669,10 +762,14 @@ impl<'m> GpuModel<'m> {
     /// Before a multi-token pass (prefill, verify, eval): finish and commit every in-flight replacement.
     pub(crate) fn adapt_flush(&mut self) -> Result<()> {
         let ne = self.m.cfg.n_experts;
-        let (Some(w), Some(s0)) = (self.worker.as_ref(), self.exp0.as_mut()) else { return Ok(()) };
-        for (l, e) in s0.commit_ready(&self.g, true)? {
-            w.on_cpu[l * ne + e].store(false, std::sync::atomic::Ordering::Relaxed);
+        let Some(w) = self.worker.as_ref() else { return Ok(()) };
+        let stores = self.exp0.as_mut().map(|s| (&self.g, s)).into_iter().chain(self.aux.iter_mut().filter(|a| a.adaptive).map(|a| (&a.g, &mut a.exp)));
+        for (g, s) in stores {
+            for (l, e) in s.commit_ready(g, true)? {
+                w.on_cpu[l * ne + e].store(false, std::sync::atomic::Ordering::Relaxed);
+            }
         }
+        self.g.bind();
         Ok(())
     }
 
@@ -696,7 +793,7 @@ impl<'m> GpuModel<'m> {
     fn flag_wait(&self, addr: u64, seq: u32) -> Result<()> {
         if self.spin_wait {
             // the CPU flag's spin records GPU-side handoff time per layer
-            let d0 = self.xch_dev.0;
+            let d0 = self.xch_dev;
             let diag = if addr == d0 + crate::handoff::CPU as u64 { d0 + (crate::handoff::DIAG + 16 * ((seq - 1) as usize % self.m.cfg.n_layers)) as u64 } else { 0 };
             self.g.launch(self.k["spin_wait"], (1, 1, 1), 1, 0, &[Arg::P(addr), Arg::I(seq as i32), Arg::P(diag)])
         } else {
@@ -714,7 +811,7 @@ impl<'m> GpuModel<'m> {
         if self.ev0.is_empty() {
             return Ok(());
         }
-        const N0: [&str; 7] = ["0 layer start -> moe (attn, engram, hc)", "1 router", "2 publish + GPU0 experts", "3 shared expert", "4 wait CPU experts", "5 wait GPU1", "6 combine"];
+        const N0: [&str; 7] = ["0 layer start -> moe (attn, engram, hc)", "1 router", "2 publish + GPU0 experts", "3 shared expert", "4 wait CPU experts", "5 wait aux GPUs", "6 combine"];
         // (from, to, name) inside stage 0; attention parts split encoder (0-19) / decoder
         const SUB: [(usize, usize, &str); 8] = [(0, 8, "0a engram"), (8, 9, "0b hc+norm"), (9, 11, "0c q"), (11, 12, "0d kv"), (12, 13, "0e compress+indexer"), (13, 14, "0f sparse_attn"), (14, 10, "0g o proj"), (10, 1, "0h hc post/pre+norm")];
         let mut acc = std::collections::BTreeMap::new();
@@ -738,18 +835,19 @@ impl<'m> GpuModel<'m> {
                 *acc.entry("7 combine -> next layer").or_insert(0f64) += self.g.elapsed_ms(self.ev0[li * EV_N + 7], self.ev0[(li + 1) * EV_N])? as f64;
             }
         }
-        if let Some(g1) = self.g1.as_ref() {
-            const N1: [&str; 3] = ["gpu1: htod", "gpu1: experts", "gpu1: dtoh"];
+        // aux GPUs: summed over all of them
+        for a in &self.aux {
+            const N1: [&str; 3] = ["aux: htod", "aux: experts", "aux: dtoh"];
             for li in 0..self.m.cfg.n_layers {
                 for k in 0..3 {
-                    *acc.entry(N1[k]).or_insert(0f64) += g1.elapsed_ms(self.ev1[li * 4 + k], self.ev1[li * 4 + k + 1])? as f64;
+                    *acc.entry(N1[k]).or_insert(0f64) += a.g.elapsed_ms(a.ev[li * 4 + k], a.ev[li * 4 + k + 1])? as f64;
                 }
                 if li + 1 < self.m.cfg.n_layers {
-                    *acc.entry("gpu1: dtoh -> next route").or_insert(0f64) += g1.elapsed_ms(self.ev1[li * 4 + 3], self.ev1[(li + 1) * 4])? as f64;
+                    *acc.entry("aux: dtoh -> next route").or_insert(0f64) += a.g.elapsed_ms(a.ev[li * 4 + 3], a.ev[(li + 1) * 4])? as f64;
                 }
             }
-            self.g.bind();
         }
+        self.g.bind();
         let p = self.evprof.as_mut().unwrap();
         for (k, v) in acc {
             *p.entry(k).or_default() += v;
@@ -1155,12 +1253,12 @@ impl<'m> GpuModel<'m> {
         let wts: Vec<f32> = self.g.download(idx_buf + 64, c.top_k)?;
         let x: Vec<f32> = self.g.download(self.x.ptr, d)?;
         let ml = &m.layers[li];
-        // split the picks: GPU1 store, GPU0 store, CPU
-        let (mut l0, mut l1, mut lc) = (vec![], vec![], vec![]);
+        // split the picks: aux stores, main GPU store, CPU
+        let (mut l0, mut l1, mut lc) = (vec![], vec![vec![]; self.aux.len()], vec![]);
         for (j, &e) in sel.iter().enumerate() {
             let e = e as usize;
-            if self.exp1.as_ref().is_some_and(|s| s.has(li, e)) {
-                l1.push((e, wts[j]));
+            if let Some(i) = self.aux.iter().position(|a| a.exp.has(li, e)) {
+                l1[i].push((e, wts[j]));
             } else if self.exp0.as_ref().is_some_and(|s| s.has(li, e)) {
                 l0.push((e, wts[j]));
             } else {
@@ -1168,14 +1266,15 @@ impl<'m> GpuModel<'m> {
             }
         }
         self.n_routed[0] += l0.len();
-        self.n_routed[1] += l1.len();
+        self.n_routed[1] += l1.iter().map(|v| v.len()).sum::<usize>();
         self.n_routed[2] += lc.len();
-        let mut out1 = vec![0f32; d];
-        if !l1.is_empty() {
-            let (g1, s1) = (self.g1.as_ref().unwrap(), self.exp1.as_ref().unwrap());
-            g1.htod(s1.x.ptr, &x)?;
-            s1.run(g1, li, &l1, s1.x.ptr, s1.out.ptr)?;
-            g1.dtoh(&mut out1, s1.out.ptr)?;
+        let mut out1 = vec![vec![0f32; d]; self.aux.len()];
+        for ((a, li1), o1) in self.aux.iter().zip(&l1).zip(out1.iter_mut()) {
+            if !li1.is_empty() {
+                a.g.htod(a.exp.x.ptr, &x)?;
+                a.exp.run(&a.g, li, li1, a.exp.x.ptr, a.exp.out.ptr)?;
+                a.g.dtoh(o1, a.exp.out.ptr)?;
+            }
         }
         if !l0.is_empty() {
             self.exp0.as_ref().unwrap().run(&self.g, li, &l0, self.x.ptr, self.out0.ptr)?;
@@ -1209,15 +1308,16 @@ impl<'m> GpuModel<'m> {
             }
         }
         self.t_experts += te.elapsed().as_secs_f64();
-        if let Some(g1) = self.g1.as_ref() {
-            if !l1.is_empty() {
-                g1.sync()?;
+        for (a, li1) in self.aux.iter().zip(&l1) {
+            if !li1.is_empty() {
+                a.g.sync()?;
             }
         }
+        self.g.bind();
         // shared + GPU0 experts are on the device; add the host parts, then bf16 like the reference
         let sh: Vec<f32> = self.g.download(self.a.ptr, d)?;
         let o0: Vec<f32> = if l0.is_empty() { vec![0f32; d] } else { self.g.download(self.out0.ptr, d)? };
-        let out: Vec<f32> = (0..d).map(|i| round_bf16(y[i] + sh[i] + o0[i] + out1[i])).collect();
+        let out: Vec<f32> = (0..d).map(|i| round_bf16(y[i] + sh[i] + o0[i] + out1.iter().map(|o| o[i]).sum::<f32>())).collect();
         self.g.htod_sync(self.a.ptr, &out)?;
         let _ = dot;
         Ok(())
@@ -1287,7 +1387,7 @@ impl<'m> GpuModel<'m> {
         pre[0] = 1.0;
         self.g.htod_sync(self.mix_f.ptr, &pre)?;
         if self.worker.is_some() && !self.skip_experts {
-            self.enqueue_gpu1(1)?;
+            self.enqueue_aux(1)?;
             self.g.bind();
         }
         // Engram rows on a helper thread while layer 0 (no engram) is enqueued and runs

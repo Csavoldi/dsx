@@ -1,9 +1,9 @@
 //! Per-layer expert handoff through mapped host memory, with no host round trips inside a token.
 //!
 //! GPU0 publishes each layer's picks and expert input (`publish_route`) and raises `route`. The CPU worker thread
-//! (spinning on core 16) computes the RAM-resident experts and raises `cpu`. GPU1's stream waits on `route`
-//! (cuStreamWaitValue32), runs its resident experts and raises `gpu1`. GPU0 waits on both and adds everything
-//! (`combine_experts`). Flags are sequence numbers: token k, layer l -> k * n_layers + l + 1.
+//! (spinning on core 16) computes the RAM-resident experts and raises `cpu`. Each aux GPU's stream waits on `route`
+//! (cuStreamWaitValue32), runs its resident experts and raises its own flag (`aux_flag`). GPU0 waits on all of them
+//! and adds everything (`combine_experts`). Flags are sequence numbers: token k, layer l -> k * n_layers + l + 1.
 
 use crate::cpu::moe::{CpuMoe, ExpertW};
 use crate::cpu::pool::{P_CORES, Pool, pin_to};
@@ -17,6 +17,7 @@ use std::time::Duration;
 
 pub const ROUTE: usize = 0;
 pub const CPU: usize = 64;
+/// aux GPU 0's flag; further aux GPUs use the free lines between WTS and X (`aux_flag`)
 pub const GPU1: usize = 128;
 pub const NTOK: usize = 192;
 pub const SEL: usize = 256;
@@ -24,6 +25,19 @@ pub const WTS: usize = 512;
 pub const X: usize = 1024;
 /// tokens per handoff (verify batches)
 pub const MAXT: usize = 8;
+/// aux GPUs the exchange has flags and result slots for
+pub const MAX_AUX: usize = 5;
+
+/// flag offset of aux GPU `i`
+pub fn aux_flag(i: usize) -> usize {
+    assert!(i < MAX_AUX);
+    if i == 0 { GPU1 } else { 768 + 64 * (i - 1) }
+}
+
+/// result slot offset of aux GPU `i` ([MAXT][dim] f32; combine_experts reads the same layout)
+pub fn aux_y(i: usize, dim: usize) -> usize {
+    X + (64 + 32 * i) * dim
+}
 
 pub struct Xch {
     pub buf: HostBuf,
@@ -32,7 +46,9 @@ pub struct Xch {
 
 impl Xch {
     pub fn new(dim: usize) -> Result<Xch> {
-        Ok(Xch { buf: HostBuf::new((X + 3 * MAXT * 4 * dim).max(DIAG + 16 * 64))?, dim })
+        let end = aux_y(MAX_AUX, dim);
+        anyhow::ensure!(end <= DIAG, "exchange: dim {dim} too large for {MAX_AUX} aux slots below DIAG");
+        Ok(Xch { buf: HostBuf::new(DIAG + 16 * 64)?, dim }) // 64 layers of diagnostics
     }
     pub fn at<T>(&self, off: usize) -> *mut T {
         unsafe { self.buf.host_ptr().add(off) as *mut T }
@@ -59,8 +75,8 @@ impl Xch {
         unsafe { std::slice::from_raw_parts_mut(self.at(X + 32 * self.dim), t * self.dim) }
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn y_gpu1(&self, t: usize) -> &mut [f32] {
-        unsafe { std::slice::from_raw_parts_mut(self.at(X + 64 * self.dim), t * self.dim) }
+    pub fn y_aux(&self, i: usize, t: usize) -> &mut [f32] {
+        unsafe { std::slice::from_raw_parts_mut(self.at(aux_y(i, self.dim)), t * self.dim) }
     }
 }
 
@@ -82,7 +98,7 @@ pub struct CpuWorker {
 
 /// u64 slots next to the flags: GPU publish time (ROUTE + 8), CPU store time (CPU + 8); per-layer GPU-side
 /// handoff sums at DIAG + 16 * layer
-pub const DIAG: usize = 1 << 20;
+pub const DIAG: usize = 2 << 20;
 
 pub fn wall_ns() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)

@@ -8,8 +8,11 @@ drive. The performance model behind these choices is in [FINDINGS.md](FINDINGS.m
 1. **No experts on disk.** A read from NVMe costs ~7× the same read from RAM; VRAM + RAM hold the whole expert pool.
 2. **The CPU computes RAM experts in place** during decode. GPUs take RAM experts only during prefill, where one copy
    serves a whole chunk.
-3. **VRAM holds the hottest experts**, ranked by measured routing frequency; GPU0's share adapts to the conversation.
-4. **GPU1 is a fixed expert store.** Its PCIe 3.0 x4 link carries only activations.
+3. **VRAM holds the hottest experts**, ranked by measured routing frequency; the main GPU's share adapts to the
+   conversation.
+4. **Roles follow the links.** At startup each GPU's host bandwidth is measured: the best-linked GPU (GPU0 here) is
+   the main one; other GPUs are expert stores, adaptive when their link is at least half as fast, otherwise fixed and
+   carrying only activations (GPU1's PCIe 3.0 x4).
 5. **Quant formats fit the kernels:** CPU unpacking keeps up with RAM bandwidth (AVX2 / AVX-VNNI), GPU experts run on
    int8 `mma.sync`.
 6. **Exact routing.** A routing bias exists for experiments, off by default.
@@ -31,19 +34,21 @@ Per layer, with no host synchronization inside a token:
    and raises a flag.
 2. The CPU worker (a coordinator on its own core, 14 compute threads on the P-cores) sees the flag, computes the
    RAM-resident experts, writes the partial sum and raises its flag.
-3. GPU1's stream waits on the same flag (`cuStreamWaitValue32`), runs its resident experts and writes its partial sum.
-4. GPU0 runs its own resident experts and the shared expert meanwhile, waits on both flags, adds the three sums and
+3. Each aux GPU's stream (GPU1 here) waits on the same flag (`cuStreamWaitValue32`), runs its resident experts and
+   writes its partial sum into its own slot.
+4. GPU0 runs its own resident experts and the shared expert meanwhile, waits on every flag, adds the sums and
    continues.
 
-A flag round trip costs ~6 µs. After each token, GPU0's expert cache commits finished copies and starts up to 8 new
-ones: the hottest experts by decayed usage replace the coldest resident expert of the same quant type, copied from the
+A flag round trip costs ~6 µs. After each token, each adaptive expert cache commits finished copies and starts up to
+8 new ones: the hottest experts by decayed usage replace the coldest resident expert of the same quant type, copied from the
 arena and repacked on a side stream.
 
 ## Prefill
 
 - Layers 0-20 run on every prompt token; layers 21-39 run only on the tokens later positions can still attend to.
 - Prompts are processed in chunks (4096 tokens by default). Each chunk streams the arena's experts to GPU0 through
-  four staging buffers while the previous expert computes; GPU1 computes its own experts on the shipped activations.
+  four staging buffers while the previous expert computes; each aux GPU computes its own experts on the shipped
+  activations.
 - Attention uses a tensor-core kernel for long chunks, and Engram rows are deduplicated per chunk.
 
 ## Server
