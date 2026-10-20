@@ -212,6 +212,10 @@ the next.
 against 1.30 ms from RAM (~48 GB/s). Predicting a layer's picks one layer early (its router on the previous layer's
 expert input, `DSX_PREGATE=1`) finds 71% of the CPU's picks in a top-8; its router on its own attention input
 (`DSX_PREGATE=2`) only 52-55%.
+Acting on the one-layer-early prediction did not pay: reading the next layer's 1, 2 or 3 predicted CPU experts into
+cache after each layer (one more pass over ~9 MB each, on the CPU worker) left decode at 29.3 tok/s with 1 and slowed it
+to 27.4 and 25.1 tok/s with 2 and 3. The prefetch pass costs ~6.5 ms per token per expert and often delays the next
+layer's real work; the code was dropped.
 
 ## 9. Negative results
 
