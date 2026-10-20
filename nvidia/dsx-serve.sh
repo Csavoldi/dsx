@@ -11,4 +11,4 @@ tmux has-session -t watchdog 2>/dev/null || tmux new-session -d -s watchdog ~/ai
 exec ~/ai/ds41/guard.sh serve 118 ./engine/target/release/dsx-server \
   --tokenizer fp8-1017/tokenizer.json --model "$MODEL" --engram fp8-1017 \
   --host 0.0.0.0 --port "$PORT" --ctx 131072 --chunk 4096 \
-  --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb ${ARENA_GB:-110} --rank calib/rank.json
+  --arena-gb ${ARENA_GB:-110} --rank calib/rank.json

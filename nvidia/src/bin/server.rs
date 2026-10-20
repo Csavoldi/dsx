@@ -59,10 +59,10 @@ struct Cli {
     #[arg(long, default_value_t = 4096)]
     chunk: usize,
     /// GB of routed experts on the main GPU (picked by host-link bandwidth); negative = its free memory minus that
-    #[arg(long, default_value_t = -1.5, allow_negative_numbers = true)]
+    #[arg(long = "main-gb", alias = "gpu0-gb", value_name = "GB", default_value_t = -1.5, allow_negative_numbers = true)]
     gpu0_gb: f64,
     /// GB of routed experts on each other GPU; negative = its free memory minus that; 0 = main GPU only
-    #[arg(long, visible_alias = "aux-gb", default_value_t = -1.0, allow_negative_numbers = true)]
+    #[arg(long = "aux-gb", alias = "gpu1-gb", value_name = "GB", default_value_t = -1.0, allow_negative_numbers = true)]
     gpu1_gb: f64,
     #[arg(long, default_value_t = 0.0)]
     arena_gb: f64,

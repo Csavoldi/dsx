@@ -443,6 +443,10 @@ impl<'m> GpuModel<'m> {
         if pl.aux_gb != 0.0 {
             let main_bw = probe.iter().find(|p| p.ordinal == ordinal).map_or(0.0, |p| p.h2d_gbs);
             let pre1 = if pl.prefill_chunk > 0 { pl.prefill_chunk * (c.dim * 16 + c.inter * 10 + 64) + c.inter * c.dim * 2 + (256 << 20) } else { 0 };
+            let others = probe.iter().filter(|p| p.ordinal != ordinal).count();
+            if others > crate::handoff::MAX_AUX {
+                eprintln!("{others} other GPUs: using the first {} (DSX_GPUS picks which)", crate::handoff::MAX_AUX);
+            }
             for p in probe.iter().filter(|p| p.ordinal != ordinal).take(crate::handoff::MAX_AUX) {
                 let ga = Gpu::new(p.ordinal)?;
                 let bytes = if pl.aux_gb < 0.0 {

@@ -18,7 +18,7 @@ cargo test --release -p dsx --features cuda     # + GPU kernel tests (gemv vs CP
 | | |
 |---|---|
 | `dsx ref --model DIR -ids ...` | CPU reference forward, token by token, exact model.py semantics (FP8/FP4 checkpoint dir, or a GGUF + `--engram DIR`) |
-| `dsx cmp --model M --ids ...` | GPU decode next to the CPU reference, per-token logit diff; `--no-ref -n N` decodes greedily; `--gpu0-gb/--gpu1-gb/--arena-gb` place experts |
+| `dsx cmp --model M --ids ...` | GPU decode next to the CPU reference, per-token logit diff; `--no-ref -n N` decodes greedily; `--main-gb/--aux-gb/--arena-gb` place experts |
 | `dsx gen --model GGUF --engram DIR --ids @file -n N` | chunked prefill, then decode; `--check` reruns the prompt token by token and compares; `--bench-verify T` / `--check-verify T` time / check T-token verify passes |
 | `dsx eval --model GGUF --engram DIR --eval DIR` | KL / top-1 / perplexity on Lucebox's eval set (`--decode`: token by token; `--from N`: positions N+) |
 | `dsx spec --model DIR --ids ...` | DSpark (the checkpoint's draft stack) acceptance on the CPU reference |

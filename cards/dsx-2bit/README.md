@@ -108,7 +108,7 @@ CUDA_ARCHS=86 cargo build --release -p dsx --features cuda      # 86 = RTX 30xx,
 
 ./target/release/dsx-server --model ../dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
   --engram ../v41-1017 --tokenizer ../v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
-  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank ../dsx-2bit/expert-rank.json
+  --ctx 131072 --arena-gb 110 --rank ../dsx-2bit/expert-rank.json
 ```
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI-compatible client at `http://localhost:8090/v1`:
@@ -130,8 +130,8 @@ VRAM + RAM should hold ~140 GB of experts.
 
 | Machine | Flags |
 |---|---|
-| 2x 24 GB GPU, 128 GB RAM | `--gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110` |
-| 1x 32 GB GPU, 128 GB RAM | `--gpu0-gb=-2.0 --gpu1-gb 0 --arena-gb 80`, env `DSX_ADAPT=0` |
+| 2x 24 GB GPU, 128 GB RAM | `--arena-gb 110` (GPUs are used automatically) |
+| 1x 32 GB GPU, 128 GB RAM | `--main-gb=-2.0 --arena-gb 80`, env `DSX_ADAPT=0` |
 
 Also needed: CUDA 13, Rust, an AVX2 CPU, ~350 GB of disk.
 

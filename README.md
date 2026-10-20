@@ -64,17 +64,17 @@ On a machine others can reach, add `--api-key` (see [Parameters](#parameters)).
 | `--model` | the quant's first GGUF shard (the others load from beside it) |
 | `--engram` | directory with the official checkpoint's Engram shards (`model-00047/00048-of-00048.safetensors`) |
 | `--tokenizer` | the official `tokenizer.json` |
-| `--rank` | expert hotness order (`expert-rank.json` in the quant repo); without it, experts are placed layer-major round robin |
-| `--vision` / `--no-vision` | image input: default `vision.safetensors` next to the model when present (~0.5 GB of the main GPU); `--no-vision` for text only |
+| `--rank` | expert hotness order (`expert-rank.json` in the quant repo) |
+| `--vision` / `--no-vision` | image input (default: `vision.safetensors` beside the model); `--no-vision` for text only |
 
 **Server**
 
 | | |
 |---|---|
 | `--host`, `--port` | listen address (default `127.0.0.1:8090`) |
-| `--api-key` | require this key on every API request (`Authorization: Bearer <key>` or `x-api-key: <key>`; also `DSX_API_KEY`). Health checks and the web UI's files stay open. One shared key, no TLS: put a TLS proxy in front of a public address |
+| `--api-key` | require this key (`Authorization: Bearer <key>` or `x-api-key`; env `DSX_API_KEY`); put a TLS proxy in front of a public address |
 | `--model-name` | model id reported by `/v1/models` (default `deepseek-v4.1-flash`) |
-| `--ctx` | context window, prompt + generated tokens (default 32768; 131072 costs ~0.5 GB more of the main GPU) |
+| `--ctx` | context window, prompt + generated tokens (default 32768) |
 | `--max-tokens` | generation cap when a request sets none (default 8192) |
 
 **Sampling defaults** (a request's own fields override them)
@@ -84,58 +84,25 @@ On a machine others can reach, add `--api-key` (see [Parameters](#parameters)).
 | `--temperature`, `--top-p` | default 1.0 and 1.0, the model's recommended sampling |
 | `--hesitation-penalty` | logit penalty on hesitation tokens ("Wait", "But", ...) while reasoning; 0 = off (default) |
 
-**Memory and placement**
+**Memory** (GPU placement is automatic; overrides in [docs/placement.md](docs/placement.md))
 
 | | |
 |---|---|
-| `--gpu0-gb` | GB of experts on the main GPU; negative = its free VRAM minus that much (default -1.5) |
-| `--gpu1-gb` (`--aux-gb`) | GB of experts on each other GPU; negative = free VRAM minus that much (default -1.0); 0 = main GPU only |
-| `--arena-gb` | RAM for the experts the CPU computes and copies of the cached ones (default 0: set it, ~110 on 128 GB) |
-| `--chunk` | prefill tokens per pass (default 4096); its buffers take main-GPU VRAM: 2048 fits ~150 more experts there, 1024 ~220, for slower prefill |
-| `DSX_GPUS=0,2` | use only these GPUs |
-| `DSX_ADAPT=N` | expert swaps per token per adaptive GPU (default 8; 0 = static placement) |
-| `DSX_AUX_ADAPTIVE=1` / `0` | force the other GPUs adaptive / fixed regardless of their link |
+| `--arena-gb` | RAM for experts the CPU computes (default 0; ~110 on 128 GB) |
+| `--chunk` | prefill tokens per pass (default 4096); smaller leaves more VRAM for experts |
+| `DSX_GPUS=0,2` | use only these GPUs (all by default) |
 
 | Machine | Flags |
 |---|---|
 | 2x 24 GB GPU, 128 GB RAM | `--arena-gb 110` |
-| 1x 32 GB GPU, 128 GB RAM | `--gpu0-gb=-2.0 --arena-gb 80`, `DSX_ADAPT=0` (the cache's RAM copies cost space this machine does not have) |
-
-`--mock` (with `--mock-echo`, `--mock-delay-ms`) runs a scripted engine without the model, for client testing.
+| 1x 32 GB GPU, 128 GB RAM | `--main-gb=-2.0 --arena-gb 80`, `DSX_ADAPT=0` |
 
 ## Placement
 
-Every routed expert (40 layers x 384) lives in exactly one place that computes it during decode:
-
-| Where | On 2x RTX 3090, 128 GB | Computes |
-|---|---|---|
-| Main GPU (best host link) | ~1,050 experts, 10.5 GB, next to the dense weights | itself, an adaptive cache |
-| Other GPUs | ~2,190 experts, 23 GB on a 24 GB card | themselves, on the activations shipped to them |
-| RAM arena (hugepages) | ~12,600 experts, 110 GB | 14 CPU threads |
-| The GGUF file | the ~550 coldest | the CPU, through the page cache |
-
-About 74% of decode's expert picks are served from VRAM on that machine; the CPU's share sets decode speed.
-
-**GPU roles.** At startup dsx measures each visible GPU's memory and host-to-device bandwidth. The best-linked one
-(within 15%, then the most memory) becomes the main GPU: dense weights, KV cache, prefill buffers, vision tower and
-its own expert cache. Every other GPU is an expert store. A store whose link is at least half as fast as the main
-GPU's swaps experts like the main GPU's cache; a slower one (a PCIe x4 slot) holds a fixed set, because copying
-experts over it would compete with the activations it needs every layer.
-
-**Which experts go where.** `--rank` orders experts by how often the router picked them on calibration text
-(`expert-rank.json` in the quant repo). Fixed stores take the hottest first, spread evenly across them; adaptive
-stores take the next; the arena takes the rest in the same order until `--arena-gb` is full; whatever is left stays
-in the file.
-
-**Following the conversation.** After each token, every adaptive store commits finished copies and starts up to
-`DSX_ADAPT` new ones (default 8): the experts with the highest decayed usage (x0.97 per token, seeded from the
-ranking) replace clearly colder residents of the same quant types, copied from the arena on a side stream. Experts an
-adaptive store may evict keep a copy in the arena, which is why the arena is sized for them too.
-
-**Prefill** streams the main GPU's missing experts from the arena over PCIe while the previous expert computes; other
-GPUs run their own experts on the chunk's activations in parallel.
-
-Flags: [Parameters](#parameters) (memory and placement).
+Automatic: dsx uses every visible GPU (up to six), makes the best-linked one the main GPU (dense weights, KV cache,
+prefill) and fills the rest of VRAM with the hottest experts; the CPU computes the others from a RAM arena
+(`--arena-gb`). The main GPU's experts follow the conversation. Details, tuning and measurements:
+[docs/placement.md](docs/placement.md).
 
 ## How it works
 
@@ -191,7 +158,7 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 | [`amd/`](amd/) | a separate runner for one AMD MI325X with a near-lossless MXFP4 build: [amd/README.md](amd/README.md) |
 | [`quant/`](quant/) | the 2-bit quantization pipeline, with native CUDA GPTQ |
 | [`cards/`](cards/) | the Hugging Face model cards |
-| [`FINDINGS.md`](FINDINGS.md), [`DESIGN.md`](DESIGN.md) | measurements and design notes |
+| [`docs/`](docs/), [`FINDINGS.md`](FINDINGS.md), [`DESIGN.md`](DESIGN.md) | detailed docs ([placement](docs/placement.md)), measurements, design notes |
 
 `cargo build --release` builds `core` and the NVIDIA runner (CPU-only without `--features cuda`); binaries land in
 `target/release/`.

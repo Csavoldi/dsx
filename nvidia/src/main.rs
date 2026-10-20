@@ -56,9 +56,9 @@ enum Cmd {
         ctx: usize,
         #[arg(long, default_value_t = 4096)]
         chunk: usize,
-        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long = "main-gb", alias = "gpu0-gb", value_name = "GB", default_value_t = -1.5, allow_negative_numbers = true)]
         gpu0_gb: f64,
-        #[arg(long, visible_alias = "aux-gb", default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long = "aux-gb", alias = "gpu1-gb", value_name = "GB", default_value_t = -1.0, allow_negative_numbers = true)]
         gpu1_gb: f64,
         #[arg(long, default_value_t = 0.0)]
         arena_gb: f64,
@@ -92,9 +92,9 @@ enum Cmd {
         len: usize,
         #[arg(long, default_value_t = 256)]
         topk: usize,
-        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long = "main-gb", alias = "gpu0-gb", value_name = "GB", default_value_t = -1.5, allow_negative_numbers = true)]
         gpu0_gb: f64,
-        #[arg(long, visible_alias = "aux-gb", default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long = "aux-gb", alias = "gpu1-gb", value_name = "GB", default_value_t = -1.0, allow_negative_numbers = true)]
         gpu1_gb: f64,
         #[arg(long, default_value_t = 0.0)]
         arena_gb: f64,
@@ -123,9 +123,9 @@ enum Cmd {
         /// text that follows the rendered prompt (reasoning, `</think>`, answer)
         #[arg(long)]
         continuation: PathBuf,
-        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long = "main-gb", alias = "gpu0-gb", value_name = "GB", default_value_t = -1.5, allow_negative_numbers = true)]
         gpu0_gb: f64,
-        #[arg(long, visible_alias = "aux-gb", default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long = "aux-gb", alias = "gpu1-gb", value_name = "GB", default_value_t = -1.0, allow_negative_numbers = true)]
         gpu1_gb: f64,
         #[arg(long, default_value_t = 0.0)]
         arena_gb: f64,
@@ -187,9 +187,9 @@ enum Cmd {
         n: usize,
         /// GB of routed experts to keep on the main GPU / on each other GPU (negative = all free memory minus that
         /// headroom; the main GPU is the best-linked one)
-        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long = "main-gb", alias = "gpu0-gb", value_name = "GB", default_value_t = -1.5, allow_negative_numbers = true)]
         gpu0_gb: f64,
-        #[arg(long, visible_alias = "aux-gb", default_value_t = 0.0, allow_negative_numbers = true)]
+        #[arg(long = "aux-gb", alias = "gpu1-gb", value_name = "GB", default_value_t = -1.0, allow_negative_numbers = true)]
         gpu1_gb: f64,
         #[arg(long, default_value_t = 0.0)]
         arena_gb: f64,
