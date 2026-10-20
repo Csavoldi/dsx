@@ -241,7 +241,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16",
-    "fwht_rows_f16", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -1051,8 +1051,7 @@ impl<'m> GpuModel<'m> {
         // dots split 8 ways for more blocks, then the per-token reduction
         let part = self.actq.ptr;
         self.g.launch(self.k["hc_part"], (25, 1, 8), 256, 0, &[Arg::P(fnw.0.buf.ptr), Arg::P(self.h.ptr), Arg::P(part), Arg::I((c.hc * c.dim) as i32), Arg::I(8)])?;
-        self.g.launch(self.k["hc_reduce"], (1, 1, 1), 32, 0, &[Arg::P(part), Arg::P(out.ptr), Arg::I((c.hc * c.dim) as i32), Arg::I(8), Arg::F(c.eps)])?;
-        self.g.launch(self.k["hc_finish_w"], (1, 1, 1), 32, 0, &[Arg::P(out.ptr), Arg::P(fnw.1.ptr), Arg::P(fnw.2.ptr), Arg::F(c.hc_eps), Arg::I(c.sinkhorn_iters as i32), Arg::I(1)])
+        self.g.launch(self.k["hc_reduce_finish"], (1, 1, 1), 32, 0, &[Arg::P(part), Arg::P(out.ptr), Arg::I((c.hc * c.dim) as i32), Arg::I(8), Arg::F(c.eps), Arg::P(fnw.1.ptr), Arg::P(fnw.2.ptr), Arg::F(c.hc_eps), Arg::I(c.sinkhorn_iters as i32)])
     }
 
     fn attention(&mut self, li: usize) -> Result<()> {
@@ -1069,11 +1068,10 @@ impl<'m> GpuModel<'m> {
         self.rope(self.q.ptr, nh, hd, compressed, t, false)?;
         self.ev(li, 11)?;
         self.gemv(&l.kv, self.x.ptr, self.kvv.ptr)?;
-        self.rmsnorm(self.kvv.ptr, &l.kv_norm, self.kvv.ptr, hd, false)?;
-        self.rope(self.kvv.ptr, 1, hd, compressed, t, false)?;
-        self.fake_fp8(self.kvv.ptr, hd)?;
         let w = c.window;
-        self.store_bf16(self.kvv.ptr, l.window.ptr + ((t % w) * hd * 2) as u64, hd)?;
+        // rmsnorm + rope + fake FP8 + bf16 into the window slot, one launch
+        let f = if compressed { &self.freqs.1 } else { &self.freqs.0 };
+        self.g.launch(self.k["kv_norm_rope_store"], (1, 1, 1), 1024, 0, &[Arg::P(self.kvv.ptr), Arg::P(l.kv_norm.ptr), Arg::I(hd as i32), Arg::F(c.eps), Arg::P(f.ptr), Arg::I(c.rope_dim as i32), Arg::I(t as i32), Arg::P(l.window.ptr + ((t % w) * hd * 2) as u64)])?;
         self.ev(li, 12)?;
         let mut n_comp_rows = 0usize;
         if compressed {

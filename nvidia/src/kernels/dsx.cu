@@ -203,6 +203,40 @@ extern "C" __global__ void fake_fp8(float *x, int n) {
   x[b * 32 + lane] = e4m3_round(fminf(fmaxf(v / s, -448.f), 448.f)) * s;
 }
 
+// decode KV head in one launch: rmsnorm in place (no rounding), RoPE on its last rd dims at `pos`, fake FP8 per 32, then
+// bf16 into the window slot `dst`. Same arithmetic as rmsnorm (block 1024) + rope + fake_fp8 + store_bf16. Grid 1,
+// block 1024 (n <= 1024).
+extern "C" __global__ void kv_norm_rope_store(float *x, const float *w, int n, float eps, const float *freqs, int rd, int pos,
+                                              __nv_bfloat16 *dst) {
+  __shared__ float sh[32];
+  float s = 0.f;
+  for (int i = threadIdx.x; i < n; i += blockDim.x) s += x[i] * x[i];
+  s = block_sum(s, sh);
+  float r = rsqrtf(s / n + eps);
+  for (int i = threadIdx.x; i < n; i += blockDim.x) x[i] = w[i] * (x[i] * r);
+  __syncthreads();
+  int half = rd / 2;
+  for (int p = threadIdx.x; p < half; p += blockDim.x) {
+    float ang = (float)pos * freqs[p];
+    float sn, cs;
+    sincosf(ang, &sn, &cs);
+    float *v = x + n - rd + 2 * p;
+    float a = v[0], b = v[1];
+    v[0] = a * cs - b * sn;
+    v[1] = a * sn + b * cs;
+  }
+  __syncthreads();
+  int i = threadIdx.x;
+  if (i < n) {
+    float v = x[i];
+    float amax = fmaxf(warp_max(fabsf(v)), 1e-4f);
+    float sc = pow2_ceil(amax / 448.f);
+    v = e4m3_round(fminf(fmaxf(v / sc, -448.f), 448.f)) * sc;
+    x[i] = v;
+    dst[i] = __float2bfloat16(v);
+  }
+}
+
 // FP4 E2M1 per block (16 or 32, one warp handles 32 values = 1 or 2 blocks); e4m3s: scale kind
 extern "C" __global__ void fake_fp4(float *x, int n, int block, int e4m3s) {
   int b = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5), lane = threadIdx.x & 31;
@@ -737,27 +771,36 @@ extern "C" __global__ void compress_pool(const float *kv_state, const float *sco
 // logits: [T][E]. out_idx [T][k], out_w [T][k]. grid T, block 32 (E = 384, k = 6).
 extern "C" __global__ void router_topk(const float *logits, const float *bias, int *out_idx, float *out_w, int E, int k,
                                        float route_scale, const float *sel_bonus) {
+  // one warp per token; lane holds the keys of experts lane, lane + 32, ... in registers (E <= 512)
   int t = blockIdx.x, lane = threadIdx.x;
   const float *lg = logits + (size_t)t * E;
-  __shared__ float sc[512], key[512];
-  for (int e = lane; e < E; e += 32) {
-    float x = lg[e];
-    float sp = x > 20.f ? x : log1pf(expf(x));
-    sc[e] = sqrtf(sp);
-    // sel_bonus (optional, off by default): a selection-only nudge toward GPU-resident experts; weights stay exact
-    key[e] = sc[e] + bias[e] + (sel_bonus ? sel_bonus[e] : 0.f);
-    // a NaN hidden state must not become an out-of-range expert index downstream
-    if (isnan(key[e])) key[e] = -INFINITY;
-    if (isnan(sc[e])) sc[e] = 0.f;
+  __shared__ float sc[512];
+  float key[16];
+#pragma unroll
+  for (int j = 0; j < 16; j++) {
+    int e = lane + 32 * j;
+    key[j] = -INFINITY;
+    if (e < E) {
+      float x = lg[e];
+      float sp = x > 20.f ? x : log1pf(expf(x));
+      float s = sqrtf(sp);
+      // sel_bonus (optional, off by default): a selection-only nudge toward GPU-resident experts; weights stay exact
+      float kk = s + bias[e] + (sel_bonus ? sel_bonus[e] : 0.f);
+      // a NaN hidden state must not become an out-of-range expert index downstream
+      key[j] = isnan(kk) ? -INFINITY : kk;
+      sc[e] = isnan(s) ? 0.f : s;
+    }
   }
   __syncwarp();
   float wsum = 0.f;
   int sel[8];
   for (int r = 0; r < k; r++) {
+    // lane-local best: ascending expert index, ties keep the lower index
     float best = -INFINITY;
     int bi = 0x7fffffff;
-    for (int e = lane; e < E; e += 32)
-      if (key[e] > best || (key[e] == best && e < bi)) { best = key[e]; bi = e; }
+#pragma unroll
+    for (int j = 0; j < 16; j++)
+      if (key[j] > best) { best = key[j]; bi = lane + 32 * j; }
     for (int o = 16; o; o >>= 1) {
       float ob = __shfl_xor_sync(0xffffffff, best, o);
       int oi = __shfl_xor_sync(0xffffffff, bi, o);
@@ -766,9 +809,9 @@ extern "C" __global__ void router_topk(const float *logits, const float *bias, i
     if (bi >= E) bi = r;  // every key -inf (NaN input): any valid expert, zero weight below
     sel[r] = bi;
     wsum += sc[bi];
-    __syncwarp();
-    if (lane == 0) key[bi] = -INFINITY;
-    __syncwarp();
+#pragma unroll
+    for (int j = 0; j < 16; j++)
+      if (lane + 32 * j == bi) key[j] = -INFINITY;
   }
   if (lane < k) {
     out_idx[t * k + lane] = sel[lane];
@@ -1390,13 +1433,9 @@ extern "C" __global__ void gemv_q8r4(const int8_t *__restrict__ qs, const float 
     }
 }
 
-// hc_finish with one warp per token: lane (j*4+k) owns comb[j][k]; row/col sums by shuffles
-extern "C" __global__ void hc_finish_w(float *mixes, const float *scale, const float *base, float hc_eps, int iters, int T) {
-  int t = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5), lane = threadIdx.x & 31;
-  if (t >= T) return;
-  float *o = mixes + t * 24;
-  float m = lane < 24 ? o[lane] : 0.f;
-  __syncwarp();
+// hc_finish for one token in one warp: lane (j*4+k) owns comb[j][k]; row/col sums by shuffles. m = this lane's raw mix
+// (lanes < 24), o = the token's 24 outputs.
+__device__ __forceinline__ void hc_finish_warp(float *o, float m, int lane, const float *scale, const float *base, float hc_eps, int iters) {
   if (lane < 4) o[lane] = 1.f / (1.f + expf(-(m * scale[0] + base[lane]))) + hc_eps;
   else if (lane < 8) o[lane] = 2.f / (1.f + expf(-(m * scale[1] + base[lane])));
   // comb lanes 8..23 -> index c = lane - 8 = j*4 + k; work in lanes 0..15 via a shuffle
@@ -1423,6 +1462,29 @@ extern "C" __global__ void hc_finish_w(float *mixes, const float *scale, const f
   }
   __syncwarp();
   if (lane < 16) o[8 + lane] = c;
+}
+
+// hc_finish with one warp per token, raw mixes read from (and results written to) mixes
+extern "C" __global__ void hc_finish_w(float *mixes, const float *scale, const float *base, float hc_eps, int iters, int T) {
+  int t = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+  if (t >= T) return;
+  float *o = mixes + t * 24;
+  float m = lane < 24 ? o[lane] : 0.f;
+  __syncwarp();
+  hc_finish_warp(o, m, lane, scale, base, hc_eps, iters);
+}
+
+// decode (one token): hc_reduce + hc_finish_w in one launch; grid 1, block 32
+extern "C" __global__ void hc_reduce_finish(const float *part, float *mixes, int hcd, int S, float eps, const float *scale,
+                                            const float *base, float hc_eps, int iters) {
+  int lane = threadIdx.x;
+  float ss = 0.f;
+  for (int s = 0; s < S; s++) ss += part[24 * S + s];
+  float r = rsqrtf(ss / hcd + eps);
+  float acc = 0.f;
+  if (lane < 24)
+    for (int s = 0; s < S; s++) acc += part[lane * S + s];
+  hc_finish_warp(mixes, lane < 24 ? acc * r : 0.f, lane, scale, base, hc_eps, iters);
 }
 
 // Q8_0 repacked, one row per warp, 4 independent 16-byte loads in flight per lane (latency hiding).
