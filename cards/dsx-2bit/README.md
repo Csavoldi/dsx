@@ -70,7 +70,8 @@ On harder problems it reasons longer than the FP8 model, up to about 2×. Sample
 
 ![dsx speed on 2x RTX 3090 and RTX 5090](assets/speed.png)
 
-Greedy, exact routing, 400 generated tokens. 2x RTX 3090: build v4 (same layout as v4b); RTX 5090: build v2.
+Greedy decoding, exact routing, 400 generated tokens. The RTX 3090 numbers come from build v4, which has the same
+expert layout as this build (v4b); the RTX 5090 numbers come from the older build v2.
 
 | | 2x RTX 3090, 128 GB DDR4 | RTX 5090, 128 GB DDR5 |
 |---|---:|---:|
