@@ -47,6 +47,10 @@ struct Cli {
     /// mock: sleep per generated token
     #[arg(long, default_value_t = 0)]
     mock_delay_ms: u64,
+    /// require this key on every API request (`Authorization: Bearer <key>` or `x-api-key: <key>`);
+    /// `openssl rand -hex 32` makes one. Health checks and the web UI's files stay open.
+    #[arg(long, env = "DSX_API_KEY")]
+    api_key: Option<String>,
     /// model: GGUF export or HF checkpoint dir
     #[arg(long)]
     model: Option<PathBuf>,
@@ -109,6 +113,7 @@ async fn main() -> Result<()> {
         default_top_p: cli.top_p,
         hesitation_penalty: cli.hesitation_penalty,
         vision: cli.vision.is_some() && !cli.mock,
+        api_key: cli.api_key.clone(),
         ..ServerConfig::default()
     };
     let st = AppState::new(engine, tok, cfg)?;

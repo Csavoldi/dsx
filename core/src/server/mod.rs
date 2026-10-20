@@ -2,6 +2,7 @@
 //! request -> Conversation -> V4.1 prompt -> token ids -> engine -> token ids -> StreamProcessor -> protocol events.
 //! Text only: image inputs are rejected.
 
+pub mod auth;
 pub mod engine;
 pub mod mock;
 pub mod sample;
@@ -15,6 +16,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use deepseek_recipe::anthropic::MessagesRequest;
@@ -52,6 +54,8 @@ pub struct ServerConfig {
     pub hesitation_penalty: f32,
     /// the engine has the vision tower loaded: image inputs are accepted
     pub vision: bool,
+    /// required from every API request, as `Authorization: Bearer <key>` or `x-api-key: <key>`; None = open
+    pub api_key: Option<String>,
     /// SSE comment interval while nothing else is sent (long prefills)
     pub keepalive: Duration,
 }
@@ -66,6 +70,7 @@ impl Default for ServerConfig {
             default_top_p: 1.0,
             hesitation_penalty: 0.0,
             vision: false,
+            api_key: None,
             keepalive: Duration::from_secs(10),
         }
     }
@@ -89,7 +94,24 @@ pub const HESITATION_WORDS: [&str; 16] = [
 ];
 
 impl AppState {
-    pub fn new(engine: EngineHandle, tok: Arc<Tokenizer>, cfg: ServerConfig) -> anyhow::Result<Arc<Self>> {
+    pub fn new(engine: EngineHandle, tok: Arc<Tokenizer>, mut cfg: ServerConfig) -> anyhow::Result<Arc<Self>> {
+        // an empty --api-key would be a lock whose key is the empty string; treat it as what it is, no lock
+        if cfg.api_key.as_deref().is_some_and(|k| k.trim().is_empty()) {
+            tracing::warn!("api key: empty, the API is unauthenticated");
+            cfg.api_key = None;
+        }
+        match &cfg.api_key {
+            Some(k) => {
+                tracing::info!("api key: required on the API routes ({} chars)", k.len());
+                if k.trim() != k {
+                    tracing::warn!("api key: leading or trailing whitespace, it is compared verbatim");
+                }
+                if k.len() < 16 {
+                    tracing::warn!("api key: {} chars is short; 32 random hex chars is better (openssl rand -hex 32)", k.len());
+                }
+            }
+            None => tracing::info!("api key: none, the API is open to anyone who can reach the port"),
+        }
         let stop_ids = STOP_TOKENS
             .iter()
             .map(|t| tok.token_to_id(t).ok_or_else(|| anyhow::anyhow!("tokenizer has no {t} token: not a DeepSeek V4.1 tokenizer?")))
@@ -115,24 +137,35 @@ impl AppState {
 }
 
 pub fn router(st: Arc<AppState>) -> Router {
-    Router::new()
+    // everything that runs the model or reports on it: behind the key when one is set
+    let api = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/messages", post(messages))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .route("/v1/responses", post(responses))
         .route("/v1/models", get(models))
-        .route("/health", get(health))
-        .route("/v1/health", get(health))
         .route("/props", get(webui::props))
         .route("/slots", get(webui::slots))
         .route("/tools", get(webui::no_tools).post(webui::no_tools))
         .route("/v1/streams/lookup", post(webui::no_streams))
-        .fallback(get(webui::asset))
-        .with_state(st)
+        .route_layer(middleware::from_fn_with_state(st.clone(), auth::require_key));
+    // open: health checks, and the UI shell and its assets, which load before the UI can ask for a key
+    // (a browser cannot put a header on a <script src>)
+    let open = Router::new()
+        .route("/health", get(health))
+        .route("/v1/health", get(health))
+        .fallback(get(webui::asset));
+    api.merge(open).with_state(st)
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, st: Arc<AppState>) -> std::io::Result<()> {
-    axum::serve(listener, router(st)).await
+    if st.cfg.api_key.is_none() {
+        if let Some(a) = listener.local_addr().ok().filter(|a| !a.ip().is_loopback()) {
+            tracing::warn!("{a} is not loopback and there is no api key: anyone who can reach this port can use the model");
+        }
+    }
+    // ConnectInfo hands auth::require_key the peer address for its rejection log
+    axum::serve(listener, router(st).into_make_service_with_connect_info::<std::net::SocketAddr>()).await
 }
 
 // ---- errors
@@ -141,6 +174,11 @@ pub async fn serve(listener: tokio::net::TcpListener, st: Arc<AppState>) -> std:
 enum Proto {
     OpenAi,
     Anthropic,
+}
+
+/// Which protocol's error envelope a path expects: Anthropic under /v1/messages, OpenAI everywhere else.
+fn proto_for(path: &str) -> Proto {
+    if path.starts_with("/v1/messages") { Proto::Anthropic } else { Proto::OpenAi }
 }
 
 struct ApiError(Proto, ConversionError);
