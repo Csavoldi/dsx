@@ -911,16 +911,27 @@ impl<'m> GpuModel<'m> {
     }
 
     fn gemv_rows_t(&self, w: &DMat, r0: usize, n: usize, x: u64, y: u64, t: usize) -> Result<()> {
-        if let Some((hi, sc, d)) = &w.q6 {
-            let k = w.cols;
-            return self.g.launch(
-                self.k["gemv_q6p"],
-                ((n as u32).div_ceil(4), 1, 1),
-                128,
-                0,
-                &[Arg::P(w.buf.ptr + (r0 * k / 2) as u64), Arg::P(x), Arg::P(y), Arg::I(n as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::I(k as i32), Arg::I(n as i32), Arg::P(hi.ptr + (r0 * k / 4) as u64), Arg::P(sc.ptr + (r0 * k / 16) as u64), Arg::P(d.ptr + (r0 * k / 256 * 2) as u64)],
-            );
+        if w.q6.is_some() {
+            return self.gemv_rows_q6(w, r0, n, x, y, t);
         }
+        self.gemv_rows_ld(w, r0, n, x, w.cols, y, n, t)
+    }
+
+    fn gemv_rows_q6(&self, w: &DMat, r0: usize, n: usize, x: u64, y: u64, t: usize) -> Result<()> {
+        let (hi, sc, d) = w.q6.as_ref().unwrap();
+        let k = w.cols;
+        self.g.launch(
+            self.k["gemv_q6p"],
+            ((n as u32).div_ceil(4), 1, 1),
+            128,
+            0,
+            &[Arg::P(w.buf.ptr + (r0 * k / 2) as u64), Arg::P(x), Arg::P(y), Arg::I(n as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::I(k as i32), Arg::I(n as i32), Arg::P(hi.ptr + (r0 * k / 4) as u64), Arg::P(sc.ptr + (r0 * k / 16) as u64), Arg::P(d.ptr + (r0 * k / 256 * 2) as u64)],
+        )
+    }
+
+    /// y[t][ldy] (rows r0..r0+n of W) = W x[t][ldx], t <= 8
+    #[allow(clippy::too_many_arguments)]
+    fn gemv_rows_ld(&self, w: &DMat, r0: usize, n: usize, x: u64, ldx: usize, y: u64, ldy: usize, t: usize) -> Result<()> {
         let kname = match w.ty {
             GType::Q8_0 if w.q8r => "gemv_q8r",
             GType::Q8_0 => "gemv_q8_0",
@@ -935,6 +946,7 @@ impl<'m> GpuModel<'m> {
         };
         let (wp, sp, _) = w.ptrs(r0);
         let x = if w.act_fp8 {
+            anyhow::ensure!(ldx == w.cols, "strided GEMV input with FP8 activations");
             self.g.launch(self.k["fake_fp8_copy"], ((((t * w.cols) / 32) as u32).div_ceil(8), 1, 1), 256, 0, &[Arg::P(x), Arg::P(self.actq.ptr), Arg::I((t * w.cols) as i32)])?;
             self.actq.ptr
         } else {
@@ -950,7 +962,7 @@ impl<'m> GpuModel<'m> {
             ((n as u32).div_ceil(per_block), 1, 1),
             128,
             0,
-            &[Arg::P(wp), Arg::P(x), Arg::P(y), Arg::I(n as i32), Arg::I(cols), Arg::I(t as i32), Arg::I(cols), Arg::I(n as i32), Arg::P(sp)],
+            &[Arg::P(wp), Arg::P(x), Arg::P(y), Arg::I(n as i32), Arg::I(cols), Arg::I(t as i32), Arg::I(ldx as i32), Arg::I(ldy as i32), Arg::P(sp)],
         )
     }
 
