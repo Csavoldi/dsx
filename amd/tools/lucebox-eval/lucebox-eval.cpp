@@ -1,7 +1,8 @@
 // Lucebox 1017 eval for llama.cpp models, the same metric as dsx's `eval`: 8 x 1024 held-out tokens teacher-forced,
 // per position KL(teacher || model) over the FP8 teacher's top-256 log-probs, top-1 agreement, perplexity.
 // Usage: lucebox-eval <llama.cpp common args: -m MODEL, -ngl, --load-mode, ...> ; env LUCEBOX_EVAL=DIR (heldout.i32,
-// teacher_idx.i32, teacher_lp.f32 from dsx's tools/eval_bins.py), LUCEBOX_SEQS (default 8).
+// teacher_idx.i32, teacher_lp.f32 from dsx's tools/eval_bins.py), LUCEBOX_SEQS (default 8), LUCEBOX_FROM (default 512:
+// a second line scores only predictions of positions >= FROM, like `dsx eval --from`).
 #include "arg.h"
 #include "common.h"
 #include "llama.h"
@@ -30,6 +31,7 @@ int main(int argc, char ** argv) {
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_PERPLEXITY)) return 1;
     const char * dir = getenv("LUCEBOX_EVAL");
     const int seqs = getenv("LUCEBOX_SEQS") ? atoi(getenv("LUCEBOX_SEQS")) : 8;
+    const int from = getenv("LUCEBOX_FROM") ? atoi(getenv("LUCEBOX_FROM")) : 512;
     const int len = 1024, topk = 256;
     auto toks = rd<int32_t>(std::string(dir) + "/heldout.i32");
     auto tidx = rd<int32_t>(std::string(dir) + "/teacher_idx.i32");
@@ -42,6 +44,8 @@ int main(int argc, char ** argv) {
     const int nv = llama_vocab_n_tokens(llama_model_get_vocab(model));
     double nll = 0, kl = 0;
     long agree = 0, cnt = 0;
+    double nll2 = 0, kl2 = 0; // predictions of positions >= from
+    long agree2 = 0, cnt2 = 0;
     std::vector<double> lq(nv);
     for (int s = 0; s < seqs; s++) {
         llama_memory_clear(llama_get_memory(ctx), true);
@@ -63,18 +67,28 @@ int main(int argc, char ** argv) {
             double se = 0;
             for (int i = 0; i < nv; i++) se += std::exp((double) l[i] - mx);
             const double lse = mx + std::log(se);
-            nll -= l[toks[s * len + p + 1]] - lse;
+            const double nl = -(l[toks[s * len + p + 1]] - lse);
             const size_t row = (size_t) s * (len - 1) + p;
+            double k = 0;
             for (int j = 0; j < topk; j++) {
                 const double lt = tlp[row * topk + j];
-                kl += std::exp(lt) * (lt - (l[tidx[row * topk + j]] - lse));
+                k += std::exp(lt) * (lt - (l[tidx[row * topk + j]] - lse));
             }
+            nll += nl;
+            kl += k;
             agree += am == tidx[row * topk];
             cnt++;
+            if (p + 1 >= from) {
+                nll2 += nl;
+                kl2 += k;
+                agree2 += am == tidx[row * topk];
+                cnt2++;
+            }
         }
         llama_batch_free(b);
         fprintf(stderr, "seq %d: running ppl %.3f kl %.4f top1 %.4f\n", s, std::exp(nll / cnt), kl / cnt, (double) agree / cnt);
     }
     printf("{\"tokens\": %ld, \"nll\": %.6f, \"ppl\": %.4f, \"kl_top256\": %.6f, \"top1_agree\": %.6f}\n", cnt, nll / cnt, std::exp(nll / cnt), kl / cnt, (double) agree / cnt);
+    if (cnt2) printf("{\"from\": %d, \"tokens\": %ld, \"nll\": %.6f, \"ppl\": %.4f, \"kl_top256\": %.6f, \"top1_agree\": %.6f}\n", from, cnt2, nll2 / cnt2, std::exp(nll2 / cnt2), kl2 / cnt2, (double) agree2 / cnt2);
     return 0;
 }
