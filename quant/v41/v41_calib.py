@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Derived from Xolotl tools/v41 (github.com/Indras-Mirror/Xolotl, commit 7375e305), MIT License,
+# Copyright (c) 2026 Niko1221 and the Strata contributors; see LICENSE-Xolotl. Modified for dsx.
 """v41_calib.py - layer-streaming calibration forward + per-expert GPTQ tier screening, DeepSeek-V4.1-Flash.
 
 Runs DeepSeek's own model.py (on tools/v41/torch_kernels) ONE LAYER AT A TIME straight from the HF safetensors, so a

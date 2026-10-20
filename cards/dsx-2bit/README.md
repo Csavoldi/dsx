@@ -152,7 +152,8 @@ Earlier builds: revision [`v2`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1
 ## Credits
 
 [DeepSeek](https://huggingface.co/deepseek-ai) for the model (MIT) ·
-[Xolotl / Strata](https://github.com/Indras-Mirror/Xolotl) for the GSQ tools and V4.1 GGUF format ·
+[Xolotl / Strata](https://github.com/Indras-Mirror/Xolotl) for the GSQ tools and V4.1 GGUF format (MIT) ·
+DeepSeek for the reference `model.py` the calibration runs · GPTQ ([Frantar et al.](https://arxiv.org/abs/2210.17323)) ·
 [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) for the eval set ·
 antirez for the calibration prompts ·
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (Georgi Gerganov and the ggml authors, MIT) for the web UI.

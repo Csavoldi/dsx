@@ -1,3 +1,5 @@
+# Derived from Xolotl tools/v41 (github.com/Indras-Mirror/Xolotl, commit 7375e305), MIT License,
+# Copyright (c) 2026 Niko1221 and the Strata contributors; see LICENSE-Xolotl. Modified for dsx.
 """v41_quant.py - the quantize pass: every routed expert of every layer at its chosen tier, written as the GGUF block
 bytes v41_gguf.py --experts reads.  A second layer-by-layer chain through DeepSeek's model.py (v41_calib's
 cmd_layer, with its expert hook), in its own work dir.

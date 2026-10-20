@@ -1,3 +1,5 @@
+# Derived from Xolotl tools/v41 (github.com/Indras-Mirror/Xolotl, commit 7375e305), MIT License,
+# Copyright (c) 2026 Niko1221 and the Strata contributors; see LICENSE-Xolotl. Modified for dsx.
 """v41_formats.py - the GGUF block encoders of the V4.1 export (numpy, CPU): integer codes + stored-format scales ->
 the exact block bytes the engine (and ggml / llama-tq) dequantizes.
 

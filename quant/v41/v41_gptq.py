@@ -1,3 +1,5 @@
+# Derived from Xolotl tools/v41 (github.com/Indras-Mirror/Xolotl, commit 7375e305), MIT License,
+# Copyright (c) 2026 Niko1221 and the Strata contributors; see LICENSE-Xolotl. Modified for dsx.
 """v41_gptq.py - GPTQ over the three expert tiers of the V4.1 mixed-tier plan (V41_PLAN.md), exact-format grids.
 
 Tiers (grid integers x one scale per group; the scale may be negative, which flips an asymmetric grid):

@@ -1,3 +1,5 @@
+# Derived from Xolotl tools/v41 (github.com/Indras-Mirror/Xolotl, commit 7375e305), MIT License,
+# Copyright (c) 2026 Niko1221 and the Strata contributors; see LICENSE-Xolotl. Modified for dsx.
 """v41_gptq_graph.py - v41_gptq.gptq with the 128-column inner loop captured once as a CUDA graph and replayed.
 
 Same kernels on the same inputs in the same order as v41_gptq.gptq (elementwise ops only inside the block; the
