@@ -57,6 +57,9 @@ pub struct PrefillBufs {
     /// x shipped to the aux GPUs (prefill_moe_aux): the copy's event and pinned f16 staging
     ev_x: crate::gpu::Event,
     x_host: crate::gpu::HostBuf,
+    /// pinned staging for small per-layer uploads (positions, index rows), bump-allocated within a pass
+    stage: crate::gpu::HostBuf,
+    stage_off: std::cell::Cell<usize>,
     out: Buf,
     logits: Buf,
     attn_tc: crate::attn::SparseAttnTc,
@@ -155,8 +158,10 @@ impl PrefillBufs {
             ev_free: (0..NSTAGE).map(|_| g.event()).collect::<Result<Vec<_>>>()?.try_into().map_err(|_| anyhow::anyhow!("ev_free"))?,
             ev_x: g.event()?,
             x_host: crate::gpu::HostBuf::new(tmax * c.dim * 2)?,
+            stage: crate::gpu::HostBuf::new(8 << 20)?,
+            stage_off: std::cell::Cell::new(0),
             out: f(tmax * c.dim)?,
-            logits: f(c.vocab)?,
+            logits: f(crate::handoff::MAXT * c.vocab)?, // [rows][vocab]: a verify pass's logits
             attn_tc: crate::attn::SparseAttnTc::new(g)?,
         })
     }
@@ -222,7 +227,28 @@ impl GpuModel<'_> {
     }
 
     /// y[n][w.rows] = x[n][w.cols] . W^T through f16 tensor cores (W dequantized into pb.w16 first)
+    /// upload `src` to `dst` in stream order without blocking the host: copied into the pass's pinned staging first
+    /// (blocking upload when the staging is full)
+    fn up<T: Copy>(&self, pb: &PrefillBufs, dst: u64, src: &[T]) -> Result<()> {
+        let bytes = std::mem::size_of_val(src);
+        let off = pb.stage_off.get();
+        if off + bytes > pb.stage.bytes {
+            return self.g.htod_sync(dst, src);
+        }
+        let host = unsafe {
+            let p = pb.stage.host_ptr().add(off);
+            std::ptr::copy_nonoverlapping(src.as_ptr() as *const u8, p, bytes);
+            std::slice::from_raw_parts(p as *const T, src.len())
+        };
+        pb.stage_off.set((off + bytes).div_ceil(256) * 256);
+        self.g.htod(dst, host)
+    }
+
     fn gemm(&self, pb: &PrefillBufs, w: &DMat, x: u64, y: u64, n: usize) -> Result<()> {
+        if n <= crate::handoff::MAXT {
+            // a few rows (verify passes, tiny chunks): decode's GEMV with n columns reads the weight once, no f16 copy
+            return self.gemv_t(w, x, y, n);
+        }
         if w.q6.is_some() {
             return self.gemm_q6(pb, w, 0, w.rows, w.cols, x, w.cols, y, w.rows, n);
         }
@@ -280,6 +306,11 @@ impl GpuModel<'_> {
 
     pub(super) fn prefill_pass(&mut self, pb: &PrefillBufs, tokens: &[u32], last: bool, all_logits: bool) -> Result<Option<Vec<Vec<f32>>>> {
         self.adapt_flush()?;
+        if pb.stage_off.get() > 0 {
+            // the previous pass's staged uploads may still be in flight
+            self.g.sync()?;
+            pb.stage_off.set(0);
+        }
         let m = self.m;
         let c = &m.cfg;
         let (d, hc, hd, nh, w) = (c.dim, c.hc, c.head_dim, c.n_heads, c.window);
@@ -405,15 +436,20 @@ impl GpuModel<'_> {
         let _ = all_logits;
         // logits of the final token (or of every token for a verify pass)
         let rows: Vec<usize> = if all_logits { (0..tn).collect() } else { vec![tn - 1] };
-        let mut out = vec![];
-        for t in rows {
+        for &t in &rows {
             let off = |base: u64, width: usize| base + (t * width * 4) as u64;
             self.g.launch(self.k["hc_pre"], (1, 1, 1), 256, 0, &[Arg::P(off(pb.h.ptr, hc * d)), Arg::P(off(pb.mix_f.ptr, 24)), Arg::I(0), Arg::P(off(pb.x.ptr, d)), Arg::I(d as i32)])?;
             self.rms_rows(off(pb.x.ptr, d), &self.out_norm, off(pb.x.ptr, d), d, 1, false)?;
-            self.gemv(&self.head, off(pb.x.ptr, d), pb.logits.ptr)?;
-            out.push(self.g.download(pb.logits.ptr, c.vocab)?);
         }
-        Ok(Some(out))
+        if rows.len() > 1 {
+            // every row of a verify pass (rows 0..tn, contiguous): one pass over the head
+            self.gemv_t(&self.head, pb.x.ptr, pb.logits.ptr, rows.len())?;
+            let all: Vec<f32> = self.g.download(pb.logits.ptr, rows.len() * c.vocab)?;
+            return Ok(Some(all.chunks(c.vocab).map(|r| r.to_vec()).collect()));
+        }
+        let off = (rows[0] * d * 4) as u64;
+        self.gemv(&self.head, pb.x.ptr + off, pb.logits.ptr)?;
+        Ok(Some(vec![self.g.download(pb.logits.ptr, c.vocab)?]))
     }
 
     fn prefill_engram(&mut self, pb: &PrefillBufs, li: usize, eidx: usize, tn: usize, p0: usize) -> Result<()> {
@@ -540,7 +576,7 @@ impl GpuModel<'_> {
             }
             if new_lat > 0 {
                 let l = &self.layers[li];
-                self.g.htod_sync(pb.ns.ptr, &lat_pos)?;
+                self.up(pb, pb.ns.ptr, &lat_pos)?;
                 self.rope_rows(pb.lat.ptr, 1, hd, true, pb.ns.ptr, new_lat, false)?;
                 self.fake_fp4(pb.lat.ptr, new_lat * hd, 16, true)?;
                 let nc = l.n_comp;
@@ -594,6 +630,10 @@ impl GpuModel<'_> {
     /// y[n][ldy] (cols y0..) = x[n][ldx] (cols x0..x0+k) . W[r0..r0+rows]^T  (strided operands for the grouped wo_a)
     #[allow(clippy::too_many_arguments)]
     fn gemm_group(&self, pb: &PrefillBufs, w: &DMat, r0: usize, rows: usize, k: usize, x: u64, ldx: usize, y: u64, ldy: usize, n: usize) -> Result<()> {
+        if n <= crate::handoff::MAXT && w.q6.is_none() && k == w.cols {
+            // a few rows: decode's GEMV reads the strided operands directly
+            return self.gemv_rows_ld(w, r0, rows, x, ldx, y, ldy, n);
+        }
         if w.q6.is_some() {
             return self.gemm_q6(pb, w, r0, rows, k, x, ldx, y, ldy, n);
         }
@@ -617,7 +657,7 @@ impl GpuModel<'_> {
                 // keys from the pre-RoPE latents
                 self.gemm(pb, l.idx_k.as_ref().unwrap(), pb.lat.ptr, pb.ckv.ptr, new_lat)?;
                 self.rms_rows(pb.ckv.ptr, l.idx_k_norm.as_ref().unwrap(), pb.ckv.ptr, id, new_lat, false)?;
-                self.g.htod_sync(pb.ns.ptr, lat_pos)?;
+                self.up(pb, pb.ns.ptr, lat_pos)?;
                 self.rope_rows(pb.ckv.ptr, 1, id, true, pb.ns.ptr, new_lat, false)?;
                 self.fake_fp4(pb.ckv.ptr, new_lat * id, 32, false)?;
                 let ni = l.n_idx;
@@ -647,10 +687,10 @@ impl GpuModel<'_> {
             if n_max == 0 {
                 // nothing visible yet: no compressed rows for these queries
                 let neg = vec![-1i32; rows * c.idx_topk];
-                self.g.htod_sync(pb.compidx.ptr + ((r0 + s0) * c.idx_topk * 4) as u64, &neg)?;
+                self.up(pb, pb.compidx.ptr + ((r0 + s0) * c.idx_topk * 4) as u64, &neg)?;
                 continue;
             }
-            self.g.htod_sync(pb.ns.ptr, &ns)?;
+            self.up(pb, pb.ns.ptr, &ns)?;
             self.g.launch(
                 self.k["indexer_score"],
                 ((n_max as u32).div_ceil(8), rows as u32, 1),
