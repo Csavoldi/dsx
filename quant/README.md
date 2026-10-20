@@ -34,6 +34,25 @@ git apply /path/to/dsx/quant/xolotl-v41.patch
 # then copy quant/v41/*.py over tools/v41 and adapt the paths in run_v4b.sh
 ```
 
+## Renting a GPU
+
+`rent/` runs a build on a rented RunPod GPU, hydrated from Cloudflare R2 and Hugging Face. Credentials stay on the
+machine that drives it: pods get presigned URLs.
+
+1. Stage the inputs in R2 under `dsx/stage/` (quantizer code + `native/qkern.cu` as `quant2.tar.gz`, `calib3/`, the tier
+   map, `ds41-engram.json`); `rent/r2.py put KEY` gives a URL to `curl -T` into.
+2. `rent/pod.py up STATE` rents a pod (RTX PRO 6000 by default) and replaces one that has no ssh within 2 minutes.
+3. `rent/hydrate.sh MANIFEST` on the pod: Python deps, the staged files (presigned URLs from `r2.py get`), the FP8
+   checkpoint from Hugging Face (~2 GB/s), the native GPTQ library. About 4 minutes.
+4. `rent/quant_job.sh NAME MAP` runs the GPTQ chain and writes the GGUF; `rent/eval_job.sh NAME` splits it and runs the
+   Lucebox eval with dsx built on the pod.
+5. `rent/mirror.py STATE DIR PREFIX` copies results (or the checkpoint) to R2 as presigned multipart uploads;
+   `rent/pod.py down STATE` releases the pod.
+
+On an RTX PRO 6000 a layer takes ~80 s (~3x an RTX 3090); a full build is about an hour.
+Configuration (`~/.config/dsx/rent.env` or the environment): `R2_ACCOUNT`, `R2_BUCKET`, `R2_ENV` (file with the R2 keys)
+and `RUNPOD_ENV` (file with `RUNPOD_API_KEY`).
+
 ## Native quantizer (faster runs)
 
 `native/qkern.cu` (+ `native/build.sh`) replaces the two hot loops with CUDA kernels, batched over experts:
