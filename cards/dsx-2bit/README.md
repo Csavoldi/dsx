@@ -29,7 +29,7 @@ MI325X (256 GiB HBM) there is a near-lossless build: [lxe/DeepSeek-V4.1-Flash-10
 | Size | 148 GB (4 GGUF shards) + the official Engram shards (203 GB) |
 | Format | per-expert mixed precision: ternary, Q2_0 or Q3_K for each expert, Q8_0 dense |
 | Routing | exact: no expert pruning, no router bias |
-| Quality vs FP8 | KL 0.382 · top-1 74.9% · perplexity 10.69 (FP8: 8.56) |
+| Quality vs FP8 | KL 0.373 · top-1 74.4% · perplexity 10.68 (FP8: 8.56) |
 | Speed, 2x RTX 3090 | ~29 tok/s decode · 300-470 tok/s prefill |
 | Runtime | [dsx](https://github.com/lxe/dsx) (OpenAI / Anthropic API, image input, web UI) |
 
@@ -46,7 +46,7 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 | Unsloth UD-Q2_K_XL | ~224 GB without Engram | 0.114 | 85.7% | 9.04 |
 | Lucebox ROCMFP | 2.5 bpw | 0.253 | 78.7% | 9.78 |
 | Unsloth UD-IQ1_S | ~122 GB without Engram | 0.361 | 75.1% | 10.76 |
-| **dsx 2-bit** | **2.03 bpw, 148 GB** | **0.382** | **74.9%** | **10.69** |
+| **dsx 2-bit** | **2.03 bpw, 148 GB** | **0.373** | **74.4%** | **10.68** |
 
 Unsloth's GGUFs were measured in llama.cpp with the same token ids and metric
 ([tool](https://github.com/lxe/dsx/tree/main/amd/tools/lucebox-eval)). They also carry the Engram table, quantized to
@@ -60,7 +60,7 @@ Omni-MATH problems, temperature 1.0, reasoning effort low, all answers correct:
 | | Problem A | Problem B |
 |---|---|---|
 | FP8 model, hosted (8 runs) | 5.7K-17.4K (median 9.4K) | 7.5K-13.9K (median 10.7K) |
-| dsx 2-bit | 6.7K, 12.2K, 12.4K | 16.9K, 19.7K, 24.3K |
+| dsx 2-bit | 7.8K, 12.8K, 14.9K | 14.4K, 16.7K, 18.2K |
 | Unsloth UD-IQ1_S, llama.cpp | 10.6K, 13.1K, 19.9K | 21.2K, 29.8K, 33.9K |
 | Unsloth UD-IQ1_M, llama.cpp | 11.0K, 13.3K | 20.3K, 20.3K |
 
@@ -70,7 +70,7 @@ On harder problems it reasons longer than the FP8 model, up to about 2×. Sample
 
 ![dsx speed on 2x RTX 3090 and RTX 5090](assets/speed.png)
 
-Greedy, exact routing, 400 generated tokens. 2x RTX 3090: this build (v4); RTX 5090: build v2.
+Greedy, exact routing, 400 generated tokens. 2x RTX 3090: build v4 (same layout as v4b); RTX 5090: build v2.
 
 | | 2x RTX 3090, 128 GB DDR4 | RTX 5090, 128 GB DDR5 |
 |---|---:|---:|
@@ -92,7 +92,7 @@ Decode speed comes down to how many experts fit in VRAM + RAM. Two 24 GB GPUs + 
 
 ## Run
 
-**v4 needs dsx from 2026-10-19 or later.** Older builds do not know the rotation and produce garbage with it: pull and rebuild dsx first.
+**This build needs dsx from 2026-10-19 or later.** Older builds do not know the rotation and produce garbage with it: pull and rebuild dsx first.
 
 ```bash
 # the quant: 4 GGUF shards, loaded as one model
@@ -145,6 +145,8 @@ Also needed: CUDA 13, Rust, an AVX2 CPU, ~350 GB of disk.
 - **Rotation:** every routed expert is quantized in a Hadamard-rotated basis (128-wide blocks along each input
   dimension), which spreads outlier weights before rounding; dsx rotates the expert inputs to match at run time
   (GGUF key `dsx.expert_rot`). Same size as without it, KL 0.397 → 0.382.
+- **Scale refit:** after GPTQ picks each expert's codes, its group scales are refit by least squares against the full
+  calibration Hessian, GPTQ runs again from the refit scales, and a final refit follows. KL 0.382 → 0.373.
 - **Calibration text:** 160 × 2048 tokens: coding-agent sessions, antirez's agent and code prompts, and 53 sequences
   of the full model's own reasoning traces on Omni-MATH and SuperGPQA questions (none from the evaluated rows).
 - **Dense weights:** Q8_0. **Engram:** unquantized, read from the official shards.
@@ -163,7 +165,7 @@ Pipeline: [github.com/lxe/dsx/tree/main/quant](https://github.com/lxe/dsx/tree/m
 | `results/` | raw quality and speed logs |
 | `assets/` | charts and the script that draws them |
 
-This is build v4. Earlier builds: revision [`v3a`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v3a) (reasoning-trace calibration without rotation, KL 0.397), [`v2`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v2) (agent-text calibration, KL 0.395) and [`v1`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v1) (KL 0.462).
+This is build v4b. Earlier builds: revision [`v4`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v4) (rotation without the refit, KL 0.382), [`v3a`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v3a) (reasoning-trace calibration without rotation, KL 0.397), [`v2`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v2) (agent-text calibration, KL 0.395) and [`v1`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v1) (KL 0.462).
 
 ## Credits
 
