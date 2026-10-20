@@ -2,11 +2,12 @@
 # v4 = v3a (reasoning-trace calibration, v2's tier maps) + 128-block Hadamard-rotated experts, end to end:
 # quant chain (all 40 layers --rot) -> GGUF -> 4 shards with dsx.expert_rot -> Lucebox eval (prefill, positions 512+)
 # -> serve -> S01/S02 x3 at temperature 1.0 (run separately from the workstation).
+# expert / token batches sized for one 24 GB GPU
 set -eo pipefail
 cd ~/ai/ds41
 Q=~/ai/ds41/qwork-v4; CAL=~/ai/ds41/calib3
 V2=~/ai/ds41/qwork-joint/alloc; JOINT=~/ai/ds41/alloc-joint-2-36.json
-export V41_BATCH_EXPERTS=2 V41_BATCH_TOKENS=60000 V41_WORK=$CAL V41_ROWS=8192 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export V41_BATCH_EXPERTS=1 V41_BATCH_TOKENS=40000 V41_WORK=$CAL V41_ROWS=8192 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd quant2
 [ -f $Q/h/L00.bin ] || CUDA_VISIBLE_DEVICES=0 ../venv/bin/python v41_quant.py init --qwork $Q --calib $CAL
 for L in $(seq 0 39); do
