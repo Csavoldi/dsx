@@ -204,8 +204,10 @@ doesn't have. Such a machine needs ~160 GB of RAM, or a disk tier with batched d
   Off by default (slow links keep a fixed set).
 - **Cache tuning.** Usage decay 0.90-0.995 (`DSX_DECAY`) and 16 instead of 8 swaps per token: all within ±1 tok/s.
   Hit rate on this machine is set by capacity, not by the eviction rule.
-- **CPU expert speed.** The CPU kernels read 30-35 GB/s; a plain multithreaded AVX2 read on the same DDR4-3200 tops out
-  at 33-36 GB/s. No headroom there.
+- **CPU expert speed.** The CPU kernels read 30-35 GB/s. The memory controller moves ~42.6 GB/s during a plain read test
+  (DDR4-3200 Gear 1, but 4 dual-rank DIMMs run 2N command rate and slow refresh); the v5-era benchmarks also lost a few
+  GB/s to a concurrent job. Pinning the expert pool to one thread per physical P-core (`DSX_CPU_LIST`) was 1-2% slower
+  than the default 14 threads on 7 P-cores with their hyperthreads.
 
 ## 10. Open problems
 
