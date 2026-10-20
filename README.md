@@ -4,18 +4,18 @@ Run **DeepSeek-V4.1-Flash-1017** (552B MoE + 196B Engram) at full routing on a d
 an NVMe drive. A Rust + CUDA engine built for this one model, with its own 2-bit quant
 ([lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit)).
 
-- 30-37 tok/s decode, 334-508 tok/s prefill on 2x RTX 3090
+- ~29 tok/s decode, 300-470 tok/s prefill on 2x RTX 3090
 - Exact routing: no expert pruning, no router bias
 - OpenAI and Anthropic compatible server with tool calls, streaming, image input and a built-in web UI
 - Quality vs the FP8 model: KL 0.382, top-1 74.9%
 
 | | 2x RTX 3090, 128 GB DDR4 | RTX 5090, 128 GB DDR5 |
 |---|---:|---:|
-| Decode, prose | 37.2 tok/s | 12.0 tok/s |
-| Decode, 3K-token agent prompt | 30.0 tok/s | 15.2 tok/s |
-| Prefill, 3K / 8K tokens | 334 / 508 tok/s | 93 / 172 tok/s |
+| Decode, prose | 28.9 tok/s | 12.0 tok/s |
+| Decode, 3K-token agent prompt | 28.7 tok/s | 15.2 tok/s |
+| Prefill, 3K / 8K tokens | 301 / 470 tok/s | 93 / 172 tok/s |
 
-On the single-GPU box, ~40 GB of experts live on disk, which sets its speed.
+2x RTX 3090: build v4; RTX 5090: build v2. On the single-GPU box, ~40 GB of experts live on disk, which sets its speed.
 
 ## Quick start
 

@@ -9,8 +9,8 @@ what limits it? This document collects the analysis, measurements and results be
 
 | | |
 |---|---|
-| Decode | 30-37 tok/s on 2x RTX 3090 + 128 GB DDR4, exact routing |
-| Prefill | 334 tok/s (3K tokens), 508 tok/s (8K tokens) |
+| Decode | ~29 tok/s on 2x RTX 3090 + 128 GB DDR4, exact routing (v4) |
+| Prefill | 301 tok/s (3K tokens), 470 tok/s (8K tokens) (v4) |
 | Quality | KL 0.395, top-1 74.1%, perplexity 10.93 vs the FP8 model's 8.56 (148 GB quant) |
 | Limit | the experts the CPU computes from RAM (~40 GB/s), then the dense half on GPU0 |
 
@@ -157,7 +157,8 @@ What moves quality at a fixed size (Lucebox's 1017 eval, 8 × 1024 tokens agains
 
 Sharing the budget across layers gives sensitive layers (3-13, 17, 32) 2.2-2.75 bpw and most decoder layers ~1.76.
 Separate tiers for down and gate/up projections did not help. v2 is also faster: its smaller decoder-layer experts let
-~200 more experts fit in VRAM (prose 37.2 tok/s, agent 30.0).
+~200 more experts fit in VRAM (agent 30.0 tok/s; a 37.2 tok/s prose run had only 10.6% of picks on the CPU, against
+25-31% on typical prose).
 
 Quantizer speed: GPTQ's column loop and the scale search run as native CUDA kernels batched over experts, the H^-1
 factor comes from one Cholesky of the reversed Hessian, and integer codes rather than fp32 values go to the writer.

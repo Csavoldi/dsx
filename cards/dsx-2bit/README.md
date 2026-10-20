@@ -30,7 +30,7 @@ MI325X (256 GiB HBM) there is a near-lossless build: [lxe/DeepSeek-V4.1-Flash-10
 | Format | per-expert mixed precision: ternary, Q2_0 or Q3_K for each expert, Q8_0 dense |
 | Routing | exact: no expert pruning, no router bias |
 | Quality vs FP8 | KL 0.382 · top-1 74.9% · perplexity 10.69 (FP8: 8.56) |
-| Speed, 2x RTX 3090 | 30-37 tok/s decode · 334-508 tok/s prefill |
+| Speed, 2x RTX 3090 | ~29 tok/s decode · 300-470 tok/s prefill |
 | Runtime | [dsx](https://github.com/lxe/dsx) (OpenAI / Anthropic API, image input, web UI) |
 
 ## Quality
@@ -70,13 +70,13 @@ On harder problems it reasons longer than the FP8 model, up to about 2×. Sample
 
 ![dsx speed on 2x RTX 3090 and RTX 5090](assets/speed.png)
 
-Greedy, exact routing, 400 generated tokens.
+Greedy, exact routing, 400 generated tokens. 2x RTX 3090: this build (v4); RTX 5090: build v2.
 
 | | 2x RTX 3090, 128 GB DDR4 | RTX 5090, 128 GB DDR5 |
 |---|---:|---:|
-| Decode, prose | 37.2 tok/s | 12.0 tok/s |
-| Decode, 3K-token agent prompt | 30.0 tok/s | 15.2 tok/s |
-| Prefill, 3K / 8K tokens | 334 / 508 tok/s | 93 / 172 tok/s |
+| Decode, prose | 28.9 tok/s | 12.0 tok/s |
+| Decode, 3K-token agent prompt | 28.7 tok/s | 15.2 tok/s |
+| Prefill, 3K / 8K tokens | 301 / 470 tok/s | 93 / 172 tok/s |
 
 On the same 2x RTX 3090 machine, Unsloth's UD-IQ1_M in llama.cpp (PR #30817) runs at 12.3 tok/s decode and 109 tok/s
 prefill on the 3K-token agent prompt.

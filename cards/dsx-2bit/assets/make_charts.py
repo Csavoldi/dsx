@@ -19,7 +19,7 @@ W = 600  # CSS px; PNGs are 2x
 
 # ---------------------------------------------------------------- data
 SPEED = {  # tok/s, exact routing, greedy
-    "2x RTX 3090 + 128 GB DDR4": {"prose": 37.2, "agent": 30.0, "p3k": 334, "p8k": 508},
+    "2x RTX 3090 + 128 GB DDR4": {"prose": 28.9, "agent": 28.7, "p3k": 301, "p8k": 470},  # v4
     "RTX 5090 + 128 GB DDR5": {"prose": 12.0, "agent": 15.2, "p3k": 93, "p8k": 172},
 }
 QUALITY = [  # Lucebox 1017 eval set: 8 x 1024 tokens vs FP8 top-256 log-probs
