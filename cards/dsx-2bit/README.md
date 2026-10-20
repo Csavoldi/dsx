@@ -43,18 +43,26 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 | | Experts | KL ↓ | Top-1 ↑ | Perplexity ↓ |
 |---|---|---:|---:|---:|
 | FP8 / FP4 original | FP4 | 0 | 100% | 8.56 |
+| Unsloth UD-Q2_K_XL | ~224 GB without Engram | 0.114 | 85.7% | 9.04 |
 | Lucebox ROCMFP | 2.5 bpw | 0.253 | 78.7% | 9.78 |
-| **dsx 2-bit** | **2.03 bpw** | **0.382** | **74.9%** | **10.69** |
+| Unsloth UD-IQ1_S | ~122 GB without Engram | 0.361 | 75.1% | 10.76 |
+| **dsx 2-bit** | **2.03 bpw, 148 GB** | **0.382** | **74.9%** | **10.69** |
+
+Unsloth's GGUFs were measured in llama.cpp with the same token ids and metric
+([tool](https://github.com/lxe/dsx/tree/main/amd/tools/lucebox-eval)). They also carry the Engram table, quantized to
+IQ4_NL (110.6 GB); dsx reads it unquantized from the official shards.
 
 ## Reasoning
 
 Calibrated on the full model's own reasoning traces as well as agent text. Reasoning tokens per run on two
-Omni-MATH problems, temperature 1.0, all answers correct:
+Omni-MATH problems, temperature 1.0, reasoning effort low, all answers correct:
 
 | | Problem A | Problem B |
 |---|---|---|
 | FP8 model, hosted (8 runs) | 5.7K-17.4K (median 9.4K) | 7.5K-13.9K (median 10.7K) |
 | dsx 2-bit | 6.7K, 12.2K, 12.4K | 16.9K, 19.7K, 24.3K |
+| Unsloth UD-IQ1_S, llama.cpp | 10.6K, 13.1K, 19.9K | 21.2K, 29.8K, 33.9K |
+| Unsloth UD-IQ1_M, llama.cpp | 11.0K, 13.3K | 20.3K, 20.3K |
 
 On harder problems it reasons longer than the FP8 model, up to about 2×. Sample at temperature 1.0 for reasoning.
 
@@ -69,6 +77,9 @@ Greedy, exact routing, 400 generated tokens.
 | Decode, prose | 37.2 tok/s | 12.0 tok/s |
 | Decode, 3K-token agent prompt | 30.0 tok/s | 15.2 tok/s |
 | Prefill, 3K / 8K tokens | 334 / 508 tok/s | 93 / 172 tok/s |
+
+On the same 2x RTX 3090 machine, Unsloth's UD-IQ1_M in llama.cpp (PR #30817) runs at 12.3 tok/s decode and 109 tok/s
+prefill on the 3K-token agent prompt.
 
 Decode speed comes down to how many experts fit in VRAM + RAM. Two 24 GB GPUs + 128 GB hold all of them; one 32 GB GPU
 + 128 GB leaves ~40 GB of experts to be read from disk.
