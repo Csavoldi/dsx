@@ -90,7 +90,7 @@ pub struct CpuWorker {
     pub leg1_ns: Arc<Vec<[std::sync::atomic::AtomicU64; 2]>>,
     /// [layer * E + expert]: the CPU computes it (not resident on a GPU); changed only between tokens
     pub on_cpu: Arc<Vec<AtomicBool>>,
-    /// [layer * E + expert]: picks, decayed x0.97 per decode pass (f32 bits), for adaptive GPU residency
+    /// [layer * E + expert]: picks, decayed x decay() (0.97) per decode pass (f32 bits), for adaptive GPU residency
     pub score: Arc<Vec<AtomicU32>>,
     /// [routed picks, picks computed by the CPU]
     pub picks: Arc<[std::sync::atomic::AtomicU64; 2]>,
@@ -99,6 +99,12 @@ pub struct CpuWorker {
 /// u64 slots next to the flags: GPU publish time (ROUTE + 8), CPU store time (CPU + 8); per-layer GPU-side
 /// handoff sums at DIAG + 16 * layer
 pub const DIAG: usize = 2 << 20;
+
+/// usage score decay per decode pass (DSX_DECAY, default 0.97)
+pub fn decay() -> f32 {
+    static D: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var("DSX_DECAY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.97))
+}
 
 pub fn wall_ns() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)
@@ -210,10 +216,11 @@ impl CpuWorker {
                     xch.flag(CPU).store(seq, Ordering::Release);
                     if l + 1 == nl {
                         // end of a pass: decay the usage scores (after the flag, off the critical path)
+                        let dk = decay();
                         for a in sc.iter() {
                             let v = f32::from_bits(a.load(Ordering::Relaxed));
                             if v != 0.0 {
-                                a.store(if v < 0.01 { 0.0 } else { v * 0.97 }.to_bits(), Ordering::Relaxed);
+                                a.store(if v < 0.01 { 0.0 } else { v * dk }.to_bits(), Ordering::Relaxed);
                             }
                         }
                     }

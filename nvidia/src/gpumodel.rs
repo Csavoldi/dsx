@@ -500,7 +500,9 @@ impl<'m> GpuModel<'m> {
                 let mut exp = crate::experts::GpuExperts::new(&ga, m, set)?;
                 let adaptive = adaptive && exp.is_fast();
                 if adaptive {
-                    exp.enable_swaps(&ga, gm.adapt, max_raw)?;
+                    // DSX_ADAPT_AUX: in-flight replacements on aux GPUs (default DSX_ADAPT)
+                    let n = std::env::var("DSX_ADAPT_AUX").ok().and_then(|v| v.parse().ok()).unwrap_or(gm.adapt);
+                    exp.enable_swaps(&ga, n, max_raw)?;
                 }
                 let pre = if pl.prefill_chunk > 0 { Some(prefill::AuxPrefill::new(&ga, m, pl.prefill_chunk)?) } else { None };
                 msg += &format!(", GPU{} {} ({:.1} GB, {}, {bw:.1} GB/s link)", ga.ordinal, set.len(), exp.bytes as f64 / 1e9, if adaptive { "adaptive" } else { "static" });
@@ -553,12 +555,12 @@ impl<'m> GpuModel<'m> {
             gm.arena = arena;
             gm.worker = Some(crate::handoff::CpuWorker::spawn(ms, xch, on_cpu, c.top_k, arena));
             // adaptive residency starts from the calibration prior: each expert's expected decayed score (its share of
-            // the calibration tokens per layer x 1 / (1 - 0.97)), so placed experts keep their slots until the live
+            // the calibration tokens per layer x 1 / (1 - decay)), so placed experts keep their slots until the live
             // routing disagrees, instead of every slot looking idle at the first token
             if let Some(w) = gm.worker.as_ref() {
                 let per_layer: u64 = prior.iter().filter(|x| x.0 == 0).map(|x| x.2).sum::<u64>().max(1) / c.top_k as u64;
                 for &(l, e, n) in &prior {
-                    let v = n as f32 / per_layer as f32 / (1.0 - 0.97);
+                    let v = n as f32 / per_layer as f32 / (1.0 - crate::handoff::decay());
                     w.score[l * c.n_experts + e].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
                 }
             }

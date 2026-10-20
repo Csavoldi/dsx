@@ -185,6 +185,13 @@ doesn't have. Such a machine needs ~160 GB of RAM, or a disk tier with batched d
 - **EXL2 / EXL3.** ExLlama keeps all weights in VRAM and has no RAM tier. EXL3's trellis codes would improve quality per
   bit for GPU-resident experts, but decoding them on the CPU is likely compute-bound.
 - **Experts on disk.** Each token needs ~2 GB of expert weights; serving 10% of it from a 6 GB/s drive adds ~30 ms.
+- **Swapping on the x4 GPU** (`DSX_AUX_ADAPTIVE=1`). Decode on a 3K agent prompt 28.8 → 31.0 tok/s, on prose 29.1 →
+  22.0: evictable experts need RAM copies, GPU1's 23 GB of them push ~2,200 cold experts out of the arena onto disk.
+  Off by default (slow links keep a fixed set).
+- **Cache tuning.** Usage decay 0.90-0.995 (`DSX_DECAY`) and 16 instead of 8 swaps per token: all within ±1 tok/s.
+  Hit rate on this machine is set by capacity, not by the eviction rule.
+- **CPU expert speed.** The CPU kernels read 30-35 GB/s; a plain multithreaded AVX2 read on the same DDR4-3200 tops out
+  at 33-36 GB/s. No headroom there.
 
 ## 10. Open problems
 
@@ -192,4 +199,5 @@ doesn't have. Such a machine needs ~160 GB of RAM, or a disk tier with batched d
 - A disk tier for RAM-limited machines: batched direct reads, one read per expert, next-layer prefetch (as in
   [colibri](https://github.com/JustVugg/colibri)).
 - Prefill: the expert stream runs at ~75% of the PCIe floor.
-- The dense half (~14 ms per token) as decode's next floor.
+- The dense half (~14 ms per token) as decode's next floor: its weight GEMVs run at 740-860 GB/s (q_b 800, o_a 740, LM
+  head 860), and ~1,000 small kernels take ~3 ms; gaps between kernels are only ~1.2 ms per token.
