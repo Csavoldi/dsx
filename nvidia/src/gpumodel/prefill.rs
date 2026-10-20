@@ -198,18 +198,19 @@ impl GpuModel<'_> {
                 let rows_p = gp.rows.ptr + (off * 4) as u64;
                 let w_p = gp.wrow.ptr + (off * 4) as u64;
                 g1.launch(gp.k["gather_h"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.x16.ptr), Arg::P(rows_p), Arg::P(gp.gx16.ptr), Arg::I(d as i32)])?;
+                if rot {
+                    // rotated experts store W.R: rotate the activations (R x), not the weights
+                    g1.launch(gp.k["fwht_rows_f16"], ((d / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(gp.gx16.ptr), Arg::I(d as i32)])?;
+                }
                 for (wp, yp) in [(wg, gp.gg.ptr), (wu, gp.gu.ptr)] {
                     g1.launch(gp.k["dequant_f16"], ((d as u32).div_ceil(256), inter as u32, 1), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
-                    if rot {
-                        g1.launch(gp.k["fwht_rows_f16"], ((d / 128) as u32, inter as u32, 1), 128, 0, &[Arg::P(gp.w16.ptr), Arg::I(d as i32)])?;
-                    }
                     g1.gemm_f16(gp.gx16.ptr, gp.w16.ptr, yp, nt, d, inter, inter)?;
                 }
                 g1.launch(gp.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.gg.ptr), Arg::P(gp.gu.ptr), Arg::P(w_p), Arg::P(gp.h16.ptr), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
-                g1.launch(gp.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
                 if rot {
-                    g1.launch(gp.k["fwht_rows_f16"], ((inter / 128) as u32, d as u32, 1), 128, 0, &[Arg::P(gp.w16.ptr), Arg::I(inter as i32)])?;
+                    g1.launch(gp.k["fwht_rows_f16"], ((inter / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(gp.h16.ptr), Arg::I(inter as i32)])?;
                 }
+                g1.launch(gp.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
                 g1.gemm_f16(gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d, d)?;
                 g1.launch(gp.k["scatter_add"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.go.ptr), Arg::P(rows_p), Arg::P(gp.out.ptr), Arg::I(d as i32)])?;
             }
@@ -785,6 +786,10 @@ impl GpuModel<'_> {
             let rows_p = pb.rows.ptr + (off * 4) as u64;
             let w_p = pb.wrow.ptr + (off * 4) as u64;
             self.g.launch(self.k["gather_f16"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(x), Arg::P(rows_p), Arg::P(pb.gx16.ptr), Arg::I(d as i32)])?;
+            if rot {
+                // rotated experts store W.R: rotate the activations (R x, R h), not the weights
+                self.g.launch(self.k["fwht_rows_f16"], ((d / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(pb.gx16.ptr), Arg::I(d as i32)])?;
+            }
             // expert weights on the device: GPU0 store, else copied on the side stream into one of two staging
             // buffers while the main stream computes the previous expert (double buffering)
             let ex = &ml.experts[e];
@@ -811,16 +816,13 @@ impl GpuModel<'_> {
             };
             for (wp, yp) in [(gp, pb.gg.ptr), (up, pb.gu.ptr)] {
                 self.g.launch(self.k["dequant_f16"], ((d as u32).div_ceil(256), inter as u32, 1), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
-                if rot {
-                    self.g.launch(self.k["fwht_rows_f16"], ((d / 128) as u32, inter as u32, 1), 128, 0, &[Arg::P(pb.w16.ptr), Arg::I(d as i32)])?;
-                }
                 self.g.gemm_f16(pb.gx16.ptr, pb.w16.ptr, yp, nt, d, inter, inter)?;
             }
             self.g.launch(self.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(pb.gg.ptr), Arg::P(pb.gu.ptr), Arg::P(w_p), Arg::P(pb.h16.ptr), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
-            self.g.launch(self.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
             if rot {
-                self.g.launch(self.k["fwht_rows_f16"], ((inter / 128) as u32, d as u32, 1), 128, 0, &[Arg::P(pb.w16.ptr), Arg::I(inter as i32)])?;
+                self.g.launch(self.k["fwht_rows_f16"], ((inter / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(pb.h16.ptr), Arg::I(inter as i32)])?;
             }
+            self.g.launch(self.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
             self.g.gemm_f16(pb.h16.ptr, pb.w16.ptr, pb.go.ptr, nt, inter, d, d)?;
             self.g.launch(self.k["scatter_add"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(pb.go.ptr), Arg::P(rows_p), Arg::P(pb.out.ptr), Arg::I(d as i32)])?;
             if let Some(b) = staged {
