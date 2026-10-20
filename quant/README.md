@@ -51,7 +51,7 @@ Integer codes match the old path to >= 99.999% (rounding ties under FMA contract
 
 ## Credits
 
-- `v41/v41_calib.py`, `v41_formats.py`, `v41_gptq.py`, `v41_gptq_graph.py`, `v41_quant.py` are derived from
+- `v41/v41_alloc.py`, `v41_calib.py`, `v41_formats.py`, `v41_gptq.py`, `v41_gptq_graph.py`, `v41_quant.py` are derived from
   [Xolotl](https://github.com/Indras-Mirror/Xolotl)'s `tools/v41` (commit `7375e305`), MIT License, Copyright (c) 2026
   Niko1221 and the Strata contributors ([`v41/LICENSE-Xolotl`](v41/LICENSE-Xolotl)); our changes are marked in the
   files and in `xolotl-v41.patch`.
