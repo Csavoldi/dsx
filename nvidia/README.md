@@ -19,12 +19,17 @@ cargo test --release -p dsx --features cuda     # + GPU kernel tests (gemv vs CP
 |---|---|
 | `dsx ref --model DIR -ids ...` | CPU reference forward, token by token, exact model.py semantics (FP8/FP4 checkpoint dir, or a GGUF + `--engram DIR`) |
 | `dsx cmp --model M --ids ...` | GPU decode next to the CPU reference, per-token logit diff; `--no-ref -n N` decodes greedily; `--gpu0-gb/--gpu1-gb/--arena-gb` place experts |
-| `dsx gen --model GGUF --engram DIR --ids @file -n N` | chunked prefill, then decode; `--check` reruns the prompt token by token and compares |
+| `dsx gen --model GGUF --engram DIR --ids @file -n N` | chunked prefill, then decode; `--check` reruns the prompt token by token and compares; `--bench-verify T` / `--check-verify T` time / check T-token verify passes |
+| `dsx eval --model GGUF --engram DIR --eval DIR` | KL / top-1 / perplexity on Lucebox's eval set (`--decode`: token by token; `--from N`: positions N+) |
 | `dsx spec --model DIR --ids ...` | DSpark (the checkpoint's draft stack) acceptance on the CPU reference |
 
 Debug: `DSX_DUMP=dir` (per-layer residual streams, ref vs GPU), `DSX_ROUTES=1` (expert picks), `DSX_PROF=1` (time per section),
 `DSX_SYNC_MOE=1` (old host-synchronous expert path), `DSX_MOE_DEVICE=1` (device-driven expert kernels in the sync path),
 `DSX_OLD_MOE=1` (VRAM experts keep their GGUF blocks and run moe_gu / moe_down instead of the repacked int8-mma kernels).
+Placement experiments: `DSX_GPUS=0,2`, `DSX_AUX_ADAPTIVE=1/0`, `DSX_ADAPT=N`, `DSX_ADAPT_AUX=N` (in-flight swaps on other
+GPUs), `DSX_DECAY=x` (usage decay per token, default 0.97), `DSX_ROUTE_BIAS=x` (selection bonus for VRAM experts; changes
+the model's routing). Profiling: `DSX_EVPROF=1` (GPU event times per decode stage). Sensitivity: `DSX_NOISE=A-B:REL`
+(Gaussian noise on layers A..B's routed expert outputs in prefill).
 
 ## Layout
 
