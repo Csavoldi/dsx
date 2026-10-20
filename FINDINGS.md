@@ -160,12 +160,19 @@ What moves quality at a fixed size (Lucebox's 1017 eval, 8 × 1024 tokens agains
 | + least-squares scale refit after GPTQ (v4b) | **0.373** | **74.4%** | **10.68** |
 | Reference: 2.5 bpw (Lucebox ROCMFP) | 0.253 | 78.7% | 9.78 |
 | Reference: Unsloth UD-IQ1_S (llama.cpp codebooks, ~122 GB without Engram) | 0.361 | 75.1% | 10.76 |
+| Reference: Unsloth UD-IQ1_M (codebooks, ~140 GB without Engram) | 0.275 | 78.8% | 10.11 |
 
 v3a changes what the model does more than these numbers show: its reasoning traces are ~1.2x those of a
 near-lossless build on two hard math problems, against ~1.8x for v2. Rotation spreads each expert's outlier weights
 before rounding (the engine rotates expert inputs to match); the refit re-solves each group's scale for GPTQ's codes
 against the full Hessian, then GPTQ runs again. v4b's row was measured with the current prefill code, under which v4
 scores KL 0.3816.
+
+Two allocation experiments at v4b's size, measured on one rented RTX PRO 6000 next to v4b (KL 0.3746 / top-1 74.2% /
+ppl 10.69 there): weighting each layer's error by its measured KL sensitivity (v5: noise injected per 5-layer group)
+gave 0.3759 / 74.2% / 10.65, no gain; Unsloth UD-IQ1_M's layout in our formats (v6: layers 0-19 mostly ternary, more
+bits in layers 20-39 and down projections) gave 0.400 / 73.7% / 11.08, worse. With our grids the early layers need the
+bits; Unsloth's edge at this size is its codebook formats.
 
 Sharing the budget across layers gives sensitive layers (3-13, 17, 32) 2.2-2.75 bpw and most decoder layers ~1.76.
 Separate tiers for down and gate/up projections did not help. v2 is also faster: its smaller decoder-layer experts let
