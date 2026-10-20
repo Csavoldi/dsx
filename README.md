@@ -41,6 +41,7 @@ curl http://localhost:8090/v1/chat/completions -H 'content-type: application/jso
 ```
 
 Thinking is on by default; `"reasoning_effort": "none"` or `"thinking": {"type": "disabled"}` turns it off.
+On a machine others can reach, add `--api-key` (see [Security](#security)).
 
 ## Requirements
 
@@ -103,6 +104,36 @@ Any OpenAI-compatible client works. For the [pi](https://github.com/badlogic/pi-
 ```bash
 pi --provider dsx --model deepseek-v4.1-flash:off
 ```
+
+For a server started with `--api-key`: drop `"authHeader": false` and set `"apiKey"` to the key
+(`"$DSX_API_KEY"` reads it from the environment), and point `baseUrl` at the public URL.
+
+## Security
+
+`--api-key` (or `DSX_API_KEY`) puts one key in front of every endpoint that runs the model or reports on it:
+`/v1/chat/completions`, `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`, `/v1/models`, `/props`,
+`/slots`, `/tools`. Clients present it as `Authorization: Bearer <key>` (OpenAI convention, and the web UI's
+API key setting) or as `x-api-key: <key>` (Anthropic convention), so the same key works with both protocols.
+`/health`, `/v1/health` and the web UI's static files stay open: a tunnel's health check should not have to
+hold a secret, and a browser cannot put a header on a `<script src>`.
+
+```bash
+export DSX_API_KEY="$(openssl rand -hex 32)"   # the server reads it from the environment
+./target/release/dsx-server --model ... --host 0.0.0.0   # or --api-key "$DSX_API_KEY"
+curl https://dsx.example.com/v1/chat/completions -H "authorization: Bearer $DSX_API_KEY" \
+  -H 'content-type: application/json' -d '{"model": "deepseek-v4.1-flash", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+Without the flag the API is open, as it was before the flag existed; binding a non-loopback `--host` with no
+key logs a warning, and rejecting a request logs the client address (or `CF-Connecting-IP`) without the key.
+Worth knowing before you publish it:
+
+- It is one shared key: no accounts, no scopes, no expiry, no revocation list. Changing `--api-key` restarts
+the server; there is no endpoint that adds or removes keys.
+- It is not TLS. Terminate TLS in front (Cloudflare Tunnel, Caddy, nginx) — the key travels as a plain header,
+and over plain HTTP anyone on the path can read it.
+- Nothing is rate-limited. The engine serializes requests, so whoever holds the key can queue work; a public
+URL plus a key is still a public GPU.
 
 ## Tools
 

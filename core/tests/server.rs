@@ -27,6 +27,10 @@ fn tokenizer() -> Arc<Tokenizer> {
 }
 
 async fn start(mode: MockMode, delay_ms: u64) -> String {
+    start_cfg(mode, delay_ms, ServerConfig::default()).await
+}
+
+async fn start_cfg(mode: MockMode, delay_ms: u64, cfg: ServerConfig) -> String {
     let tok = tokenizer();
     let t2 = tok.clone();
     let engine = EngineHandle::spawn(move || {
@@ -35,7 +39,7 @@ async fn start(mode: MockMode, delay_ms: u64) -> String {
         Ok(Box::new(m) as Box<dyn Engine>)
     })
     .unwrap();
-    let st = AppState::new(engine, tok, ServerConfig::default()).unwrap();
+    let st = AppState::new(engine, tok, cfg).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(dsx_core::server::serve(listener, st));
@@ -43,8 +47,20 @@ async fn start(mode: MockMode, delay_ms: u64) -> String {
 }
 
 async fn post(base: &str, path: &str, body: Value) -> (u16, String) {
-    let r = reqwest::Client::new().post(format!("{base}{path}")).json(&body).send().await.unwrap();
+    post_h(base, path, body, &[]).await
+}
+
+async fn post_h(base: &str, path: &str, body: Value, headers: &[(&str, &str)]) -> (u16, String) {
+    let mut req = reqwest::Client::new().post(format!("{base}{path}")).json(&body);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let r = req.send().await.unwrap();
     (r.status().as_u16(), r.text().await.unwrap())
+}
+
+async fn get(base: &str, path: &str) -> u16 {
+    reqwest::Client::new().get(format!("{base}{path}")).send().await.unwrap().status().as_u16()
 }
 
 async fn post_json(base: &str, path: &str, body: Value) -> Value {
@@ -318,4 +334,84 @@ async fn disconnect_cancels_generation() {
     }
     let models: Value = client.get(format!("{base}/v1/models")).send().await.unwrap().json().await.unwrap();
     assert_eq!(models["data"][0]["id"], "deepseek-v4.1-flash");
+}
+
+// ---- api key
+
+const KEY: &str = "sk-dsx-test-0123456789abcdef";
+
+fn keyed() -> ServerConfig {
+    ServerConfig { api_key: Some(KEY.into()), ..ServerConfig::default() }
+}
+
+async fn chat_status(base: &str, headers: &[(&str, &str)]) -> (u16, String) {
+    let body = json!({"model": "m", "messages": [{"role": "user", "content": "Hello"}]});
+    post_h(base, "/v1/chat/completions", body, headers).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn api_key_guards_the_api() {
+    let base = start_cfg(MockMode::Scripted, 0, keyed()).await;
+    let bearer = format!("Bearer {KEY}");
+
+    // no credentials: 401 in the OpenAI envelope, and no generation started
+    let (status, text) = chat_status(&base, &[]).await;
+    assert_eq!(status, 401, "{text}");
+    let e: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(e["error"]["type"], "invalid_request_error");
+    assert_eq!(e["error"]["code"], "invalid_api_key");
+    let health: Value = reqwest::Client::new().get(format!("{base}/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(health["pending"], 0);
+
+    // either header, either protocol
+    assert_eq!(chat_status(&base, &[("authorization", &bearer)]).await.0, 200);
+    assert_eq!(chat_status(&base, &[("x-api-key", KEY)]).await.0, 200);
+    let msgs = json!({"model": "m", "max_tokens": 16, "messages": [{"role": "user", "content": "Hello"}]});
+    assert_eq!(post_h(&base, "/v1/messages", msgs.clone(), &[("x-api-key", KEY)]).await.0, 200);
+    let lower = format!("bearer {KEY}");
+    assert_eq!(chat_status(&base, &[("authorization", &lower)]).await.0, 200);
+
+    // wrong key, a prefix of the key, and a bare key without the scheme are all rejected
+    assert_eq!(chat_status(&base, &[("authorization", "Bearer nope")]).await.0, 401);
+    assert_eq!(chat_status(&base, &[("x-api-key", &KEY[..8])]).await.0, 401);
+    assert_eq!(chat_status(&base, &[("authorization", KEY)]).await.0, 401);
+    assert_eq!(chat_status(&base, &[("x-api-key", "")]).await.0, 401);
+
+    // Anthropic's error envelope on /v1/messages
+    let (status, text) = post(&base, "/v1/messages", msgs).await;
+    assert_eq!(status, 401);
+    let e: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(e["type"], "error");
+    assert_eq!(e["error"]["type"], "authentication_error");
+
+    // the other API surfaces are guarded too
+    for (path, body) in [
+        ("/v1/responses", json!({"model": "m", "input": "hi"})),
+        ("/v1/messages/count_tokens", json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]})),
+        ("/v1/streams/lookup", json!({})),
+        ("/tools", json!({})),
+    ] {
+        let (status, text) = post(&base, path, body).await;
+        assert_eq!(status, 401, "{path}: {text}");
+    }
+    for path in ["/v1/models", "/props", "/slots", "/tools"] {
+        assert_eq!(get(&base, path).await, 401, "{path}");
+    }
+
+    // health stays open (tunnel health checks) and the UI shell loads so its key field is reachable
+    assert_eq!(get(&base, "/health").await, 200);
+    assert_eq!(get(&base, "/v1/health").await, 200);
+    assert_eq!(get(&base, "/").await, 200);
+    assert_eq!(get(&base, "/_app/immutable/entry/start.js").await, 404, "assets need no key, missing ones are just missing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_api_key_leaves_the_api_open() {
+    // the default: no key configured, every request is served (as before the flag existed)
+    let base = start(MockMode::Scripted, 0).await;
+    assert_eq!(chat_status(&base, &[]).await.0, 200);
+    assert_eq!(chat_status(&base, &[("authorization", "Bearer whatever")]).await.0, 200);
+    // an empty --api-key is not a lock with no key, it is no lock at all
+    let base = start_cfg(MockMode::Scripted, 0, ServerConfig { api_key: Some("  ".into()), ..ServerConfig::default() }).await;
+    assert_eq!(chat_status(&base, &[]).await.0, 200);
 }

@@ -72,7 +72,7 @@ impl Engine for AmdEngine {
     }
 }
 
-pub fn serve(model: PathBuf, rank: Vec<(usize, usize)>, ctx: usize, host: String, port: u16, max_tokens: usize) -> Result<()> {
+pub fn serve(model: PathBuf, rank: Vec<(usize, usize)>, ctx: usize, host: String, port: u16, max_tokens: usize, api_key: Option<String>) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(async move {
         tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
@@ -84,7 +84,7 @@ pub fn serve(model: PathBuf, rank: Vec<(usize, usize)>, ctx: usize, host: String
             dec.load_dspark(&m2)?;
             Ok(Box::new(AmdEngine { dec, cached: vec![], stats: GenStats::default() }) as Box<dyn Engine>)
         })?;
-        let cfg = dsx_core::server::ServerConfig { model_name: "deepseek-v4.1-flash".into(), ctx, default_max_tokens: max_tokens, default_temperature: 1.0, default_top_p: 1.0, ..dsx_core::server::ServerConfig::default() };
+        let cfg = dsx_core::server::ServerConfig { model_name: "deepseek-v4.1-flash".into(), ctx, default_max_tokens: max_tokens, default_temperature: 1.0, default_top_p: 1.0, api_key, ..dsx_core::server::ServerConfig::default() };
         let st = dsx_core::server::AppState::new(engine, tok, cfg)?;
         let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
         tracing::info!("listening on http://{}", listener.local_addr()?);

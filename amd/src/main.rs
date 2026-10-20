@@ -98,6 +98,10 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value_t = 32768)]
         max_tokens: usize,
+        /// require this key on every API request (`Authorization: Bearer <key>` or `x-api-key: <key>`);
+        /// `openssl rand -hex 32` makes one. Health checks and the web UI's files stay open.
+        #[arg(long, env = "DSX_API_KEY")]
+        api_key: Option<String>,
     },
     /// Development loop: load once, then run commands from a file as it appears (one line per command):
     /// `reload PATH.hsaco`, `bench CTX STEPS`, `prof CTX`, `eval DIR SEQS`, `check REFCACHE`, `quit`.
@@ -466,7 +470,7 @@ fn main() -> Result<()> {
             let dec = Decoder::load(&model, 4096, &read_rank(&rank)?, &[], None)?;
             dec.export(&model, &out)
         }
-        Cmd::Serve { model, rank, ctx, host, port, max_tokens } => serve::serve(model, read_rank(&rank)?, ctx, host, port, max_tokens),
+        Cmd::Serve { model, rank, ctx, host, port, max_tokens, api_key } => serve::serve(model, read_rank(&rank)?, ctx, host, port, max_tokens, api_key),
         Cmd::Dev { model, rank, ctx, cmd } => dev(&model, &read_rank(&rank)?, ctx, &cmd),
         Cmd::Check { model, ids, n, rank, ref_cache } => {
             // ---- reference: tokens fed, logits per position, routed experts

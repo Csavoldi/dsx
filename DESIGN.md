@@ -59,6 +59,9 @@ arena and repacked on a side stream.
   at the end of the previous prompt.
 - llama.cpp's web UI is embedded and served at `/`, with the llama.cpp endpoints it expects (`/props`, `/slots`) and
   a `timings` chunk at the end of streamed responses.
+- Optional `--api-key`: one shared key, checked before every route that runs the model, in `Authorization: Bearer`
+  or `x-api-key`. Health checks and the UI's static files stay open; the key arrives as a header, so TLS is the
+  fronting proxy's job.
 
 ## Quantization
 
