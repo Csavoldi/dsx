@@ -16,7 +16,7 @@ About 74% of decode's expert picks are served from VRAM there; the CPU's share s
 
 dsx uses every visible GPU, up to six: one main GPU and up to five expert GPUs (`DSX_GPUS=0,2` picks which). At
 startup it measures each GPU's memory and host-to-device bandwidth. The best-linked one (within 15%, then the most
-memory) becomes the main GPU: dense weights, KV cache, prefill buffers, the vision tower and its own expert cache.
+memory) becomes the main GPU: dense weights, KV cache, prefill buffers and its own expert cache.
 Every other GPU only holds experts.
 
 An expert GPU whose link is at least half as fast as the main GPU's swaps experts like the main GPU's cache. A slower
@@ -68,8 +68,8 @@ v4b):
 | `--chunk 2048`, `--ctx 131072` | 1,196 |
 | `--chunk 1024`, `--ctx 131072` | 1,267 |
 
-Image input loads a vision tower onto the main GPU, which leaves room for ~50 fewer experts there (1,048 instead of
-1,099). A text-only server can start with `--no-vision` to keep that room for experts.
+The context window's KV cache and indexer keys are the 128K-vs-32K difference (~50 experts). The vision tower costs no
+experts: its weights (~1 GB) stay in RAM and stream to the main GPU one block at a time while an image is encoded.
 
 ## Machines
 
