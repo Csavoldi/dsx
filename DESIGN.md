@@ -66,5 +66,8 @@ arena and repacked on a side stream.
 ## Quantization
 
 Per-expert tiers (ternary 1.75, Q2_0 2.25, Q3_K 3.44 bpw) allocated by measured error under one budget shared across
-layers; GPTQ with Hessians from a layer-streaming calibration pass through DeepSeek's `model.py`. Native CUDA kernels
-handle GPTQ and the scale search, batched over experts. Details: [quant/README.md](quant/README.md).
+layers; GPTQ with Hessians from a layer-streaming calibration pass through DeepSeek's `model.py`, on calibration text
+that includes the full model's own reasoning traces. Experts are quantized in a 128-block Hadamard-rotated basis
+(GGUF key `dsx.expert_rot`; the engine rotates their inputs to match) and their group scales refit by least squares
+after GPTQ. Native CUDA kernels handle GPTQ and the scale search, batched over experts. Details:
+[quant/README.md](quant/README.md); techniques and their measured effects: [docs/techniques.md](docs/techniques.md).

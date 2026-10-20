@@ -11,12 +11,13 @@ what limits it? This document collects the analysis, measurements and results be
 |---|---|
 | Decode | ~29 tok/s on 2x RTX 3090 + 128 GB DDR4, exact routing (v4) |
 | Prefill | 301 tok/s (3K tokens), 470 tok/s (8K tokens) (v4) |
-| Quality | KL 0.395, top-1 74.1%, perplexity 10.93 vs the FP8 model's 8.56 (148 GB quant) |
-| Limit | the experts the CPU computes from RAM (~40 GB/s), then the dense half on GPU0 |
+| Quality | KL 0.373, top-1 74.4%, perplexity 10.68 vs the FP8 model's 8.56 (148 GB quant, v4b) |
+| Limit | the experts the CPU computes from RAM (33-36 GB/s on DDR4-3200), then the dense half on GPU0 |
 
 The levers that mattered, in order: keep every expert in VRAM or RAM (none on disk); rank VRAM residency by measured
 expert hotness and let it follow the conversation; one CPU core per spinning thread; a parallel decode-attention kernel;
-and a quant whose bit budget is shared across layers.
+a quant whose bit budget is shared across layers, calibrated on the model's own reasoning; Hadamard-rotated experts with
+refit scales.
 
 ## 1. The model
 
@@ -142,9 +143,10 @@ Each routed expert gets one of three tiers, chosen from its measured output erro
 | Q2_0 | 2.25 | {-1, 0, 1, 2}, fp16 scale per 64 |
 | Q3_K | 3.44 | 8 levels, 6-bit sub-scales per 16 |
 
-Method: layer-by-layer calibration through DeepSeek's reference `model.py` on the FP8/FP4 checkpoint (128 × 2048
-tokens of coding-agent sessions and agent/code prompts), GPTQ per expert, then tier allocation by error per byte
-(Xolotl's GSQ pipeline). Dense weights are Q8_0; Engram stays unquantized.
+Method: layer-by-layer calibration through DeepSeek's reference `model.py` on the FP8/FP4 checkpoint, GPTQ per
+expert, then tier allocation by error per byte (Xolotl's GSQ pipeline). Calibration text: 128 × 2048 tokens of
+coding-agent sessions and agent/code prompts through v2; from v3a, 160 × 2048 tokens with 53 sequences of the full
+model's own reasoning traces. Dense weights are Q8_0; Engram stays unquantized.
 
 What moves quality at a fixed size (Lucebox's 1017 eval, 8 × 1024 tokens against FP8 top-256 log-probs):
 
@@ -152,8 +154,18 @@ What moves quality at a fixed size (Lucebox's 1017 eval, 8 × 1024 tokens agains
 |---|---:|---:|---:|
 | 2.0 bpw per layer (v1) | 0.462 | 71.5% | 11.66 |
 | 2.0 bpw per layer, no limit on ternary | 0.463 | 71.8% | 11.93 |
-| **One budget for layers 2-36 (v2)** | **0.395** | **74.1%** | **10.93** |
+| One budget for layers 2-36 (v2) | 0.395 | 74.1% | 10.93 |
+| v2's tiers, calibration with reasoning traces (v3a) | 0.397 | 74.1% | 10.81 |
+| + 128-block Hadamard rotation of every expert (v4) | 0.382 | 74.9% | 10.69 |
+| + least-squares scale refit after GPTQ (v4b) | **0.373** | **74.4%** | **10.68** |
 | Reference: 2.5 bpw (Lucebox ROCMFP) | 0.253 | 78.7% | 9.78 |
+| Reference: Unsloth UD-IQ1_S (llama.cpp codebooks, ~122 GB without Engram) | 0.361 | 75.1% | 10.76 |
+
+v3a changes what the model does more than these numbers show: its reasoning traces are ~1.2x those of a
+near-lossless build on two hard math problems, against ~1.8x for v2. Rotation spreads each expert's outlier weights
+before rounding (the engine rotates expert inputs to match); the refit re-solves each group's scale for GPTQ's codes
+against the full Hessian, then GPTQ runs again. v4b's row was measured with the current prefill code, under which v4
+scores KL 0.3816.
 
 Sharing the budget across layers gives sensitive layers (3-13, 17, 32) 2.2-2.75 bpw and most decoder layers ~1.76.
 Separate tiers for down and gate/up projections did not help. v2 is also faster: its smaller decoder-layer experts let
@@ -178,9 +190,11 @@ doesn't have. Such a machine needs ~160 GB of RAM, or a disk tier with batched d
 
 ## 9. Negative results
 
-- **Speculative decoding (DSpark).** A 6-token verify pass costs 157 ms, ~5 decode steps, because the CPU's expert work
-  grows with the union of the tokens' experts (20.9 distinct experts per layer for 6 tokens vs 6.0 for one). It pays only
-  above ~4 accepted drafts per pass.
+- **Speculative decoding (DSpark).** A verify pass of 2 tokens costs 55 ms (1.5 decode steps), of 3 tokens ~70 ms,
+  after moving verify onto decode kernels (from 101 / 109 ms). Most of what remains is the CPU's expert work, which
+  grows with the union of the tokens' experts (20.9 distinct experts per layer for 6 tokens vs 6.0 for one). With the
+  draft's expected acceptance on a 2-bit model it would gain ~0-5% at best; it pays where every expert sits in GPU
+  memory (1.2-1.7x on the MI325X build, [FINDINGS-AMD.md](FINDINGS-AMD.md)).
 - **Routing bias toward VRAM-resident experts.** +4 tok/s at a bias of 0.2, for 2 points of top-1. Off by default.
 - **EXL2 / EXL3.** ExLlama keeps all weights in VRAM and has no RAM tier. EXL3's trellis codes would improve quality per
   bit for GPU-resident experts, but decoding them on the CPU is likely compute-bound.
@@ -195,7 +209,8 @@ doesn't have. Such a machine needs ~160 GB of RAM, or a disk tier with batched d
 
 ## 10. Open problems
 
-- The quality gap to 2.5 bpw (KL 0.395 vs 0.253) at a size that fits 128 GB + 48 GB.
+- Quality per byte: KL 0.373 at 148 GB against Unsloth's 0.361 at ~122 GB (codebook formats, more bits in late layers
+  and down projections), and the gap to 2.5 bpw (0.253) at a size that fits 128 GB + 48 GB.
 - A disk tier for RAM-limited machines: batched direct reads, one read per expert, next-layer prefetch (as in
   [colibri](https://github.com/JustVugg/colibri)).
 - Prefill: the expert stream runs at ~75% of the PCIe floor.

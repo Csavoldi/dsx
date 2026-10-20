@@ -11,7 +11,7 @@ compares with other engines for this model family. Measurements: [FINDINGS.md](.
 | One bit budget across layers 2-36, tiers picked by output error per byte | dsx (v2) | KL 0.462 → 0.395 at the same size |
 | GPTQ per expert, Hessians from a layer-by-layer calibration pass through DeepSeek's reference `model.py` | [GPTQ](https://arxiv.org/abs/2210.17323); Xolotl pipeline | — |
 | Native batched CUDA GPTQ, scale search and H^-1 | dsx | 159 → 70 s per layer |
-| Calibration text with the full model's own reasoning traces | dsx (v3a) | reasoning length 1.6x → 1.2x of a near-lossless build |
+| Calibration text with the full model's own reasoning traces | dsx (v3a) | reasoning length ~1.8x → ~1.2x of a near-lossless build |
 | 128-block Hadamard rotation of every routed expert's input dimension | [QuIP#](https://arxiv.org/abs/2402.04396), [QuaRot](https://arxiv.org/abs/2404.00456) | KL 0.397 → 0.382 |
 | Least-squares refit of group scales after GPTQ, GPTQ again, a final refit | dsx (v4b) | KL 0.382 → 0.373 |
 
