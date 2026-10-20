@@ -87,7 +87,7 @@ impl AuxPrefill {
         let c = &m.cfg;
         let (d, inter) = (c.dim, c.inter);
         let mut k = std::collections::HashMap::new();
-        for n in ["gather_h", "dequant_f16", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16"] {
+        for n in ["gather_h", "dequant_f16", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16", "add_noise_rows"] {
             k.insert(n, g1.kernel(n)?);
         }
         Ok(AuxPrefill {
@@ -105,6 +105,19 @@ impl AuxPrefill {
             k,
         })
     }
+}
+
+/// DSX_NOISE=A-B:REL (sensitivity probe, prefill path): every routed expert output of layers A..=B gets Gaussian noise
+/// of REL x its per-token RMS before it is added
+fn noise_rel(li: usize) -> Option<f32> {
+    static N: std::sync::OnceLock<Option<(usize, usize, f32)>> = std::sync::OnceLock::new();
+    let n = N.get_or_init(|| {
+        let v = std::env::var("DSX_NOISE").ok()?;
+        let (r, rel) = v.split_once(':')?;
+        let (a, b) = r.split_once('-').unwrap_or((r, r));
+        Some((a.parse().ok()?, b.parse().ok()?, rel.parse().ok()?))
+    });
+    n.and_then(|(a, b, rel)| (li >= a && li <= b).then_some(rel))
 }
 
 pub(crate) const SUB: usize = 256; // indexer queries per pass (bounds the [queries][positions] score matrix)
@@ -217,6 +230,9 @@ impl GpuModel<'_> {
                 }
                 g1.launch(gp.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
                 g1.gemm_f16(gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d, d)?;
+                if let Some(rel) = noise_rel(li) {
+                    g1.launch(gp.k["add_noise_rows"], (nt as u32, 1, 1), 256, 0, &[Arg::P(gp.go.ptr), Arg::I(d as i32), Arg::F(rel), Arg::I((li * 1000 + e + 1) as i32)])?;
+                }
                 g1.launch(gp.k["scatter_add"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.go.ptr), Arg::P(rows_p), Arg::P(gp.out.ptr), Arg::I(d as i32)])?;
             }
             let oh = unsafe { std::slice::from_raw_parts_mut(gp.out_host.host_ptr() as *mut f32, n * d) };
@@ -441,15 +457,18 @@ impl GpuModel<'_> {
             self.g.launch(self.k["hc_pre"], (1, 1, 1), 256, 0, &[Arg::P(off(pb.h.ptr, hc * d)), Arg::P(off(pb.mix_f.ptr, 24)), Arg::I(0), Arg::P(off(pb.x.ptr, d)), Arg::I(d as i32)])?;
             self.rms_rows(off(pb.x.ptr, d), &self.out_norm, off(pb.x.ptr, d), d, 1, false)?;
         }
-        if rows.len() > 1 {
+        if rows.len() > 1 && rows.len() <= crate::handoff::MAXT {
             // every row of a verify pass (rows 0..tn, contiguous): one pass over the head
             self.gemv_t(&self.head, pb.x.ptr, pb.logits.ptr, rows.len())?;
             let all: Vec<f32> = self.g.download(pb.logits.ptr, rows.len() * c.vocab)?;
             return Ok(Some(all.chunks(c.vocab).map(|r| r.to_vec()).collect()));
         }
-        let off = (rows[0] * d * 4) as u64;
-        self.gemv(&self.head, pb.x.ptr + off, pb.logits.ptr)?;
-        Ok(Some(vec![self.g.download(pb.logits.ptr, c.vocab)?]))
+        let mut out = vec![];
+        for t in rows {
+            self.gemv(&self.head, pb.x.ptr + (t * d * 4) as u64, pb.logits.ptr)?;
+            out.push(self.g.download(pb.logits.ptr, c.vocab)?);
+        }
+        Ok(Some(out))
     }
 
     fn prefill_engram(&mut self, pb: &PrefillBufs, li: usize, eidx: usize, tn: usize, p0: usize) -> Result<()> {
@@ -864,6 +883,9 @@ impl GpuModel<'_> {
             }
             self.g.launch(self.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
             self.g.gemm_f16(pb.h16.ptr, pb.w16.ptr, pb.go.ptr, nt, inter, d, d)?;
+            if let Some(rel) = noise_rel(li) {
+                self.g.launch(self.k["add_noise_rows"], (nt as u32, 1, 1), 256, 0, &[Arg::P(pb.go.ptr), Arg::I(d as i32), Arg::F(rel), Arg::I((li * 1000 + e + 1) as i32)])?;
+            }
             self.g.launch(self.k["scatter_add"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(pb.go.ptr), Arg::P(rows_p), Arg::P(pb.out.ptr), Arg::I(d as i32)])?;
             if let Some(b) = staged {
                 self.g.record(pb.ev_free[b], false)?;
