@@ -26,7 +26,7 @@ QUALITY = [  # Lucebox 1017 eval set: 8 x 1024 tokens vs FP8 top-256 log-probs
     # name, KL, top-1 %, perplexity, highlight
     ("FP8 original", 0.0, 100.0, 8.56, False),
     ("Lucebox ROCMFP, 2.5 bpw", 0.253, 78.7, 9.78, False),
-    ("dsx 2-bit, 2.03 bpw", 0.397, 74.1, 10.81, True),
+    ("dsx 2-bit, 2.03 bpw", 0.382, 74.9, 10.69, True),
 ]
 SIZE = [  # GB to download, without the 203 GB Engram tables unless marked
     ("FP8 original", 510, "includes Engram", False),
@@ -40,7 +40,7 @@ SIZE_QUALITY = [  # sizes all include the Engram tables; perplexity on the Luceb
     # name, GB, GB range or None, perplexity, highlight
     ("FP8 original", 510, None, 8.56, False),
     ("Lucebox ROCMFP 2.5 bpw", 395, (383, 405), 9.78, False),
-    ("dsx 2-bit", 351, None, 10.81, True),
+    ("dsx 2-bit", 351, None, 10.69, True),
 ]
 
 # ---------------------------------------------------------------- style

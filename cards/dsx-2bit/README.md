@@ -29,7 +29,7 @@ MI325X (256 GiB HBM) there is a near-lossless build: [lxe/DeepSeek-V4.1-Flash-10
 | Size | 148 GB (4 GGUF shards) + the official Engram shards (203 GB) |
 | Format | per-expert mixed precision: ternary, Q2_0 or Q3_K for each expert, Q8_0 dense |
 | Routing | exact: no expert pruning, no router bias |
-| Quality vs FP8 | KL 0.397 · top-1 74.1% · perplexity 10.81 (FP8: 8.56) |
+| Quality vs FP8 | KL 0.382 · top-1 74.9% · perplexity 10.69 (FP8: 8.56) |
 | Speed, 2x RTX 3090 | 30-37 tok/s decode · 334-508 tok/s prefill |
 | Runtime | [dsx](https://github.com/lxe/dsx) (OpenAI / Anthropic API, image input, web UI) |
 
@@ -44,7 +44,7 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 |---|---|---:|---:|---:|
 | FP8 / FP4 original | FP4 | 0 | 100% | 8.56 |
 | Lucebox ROCMFP | 2.5 bpw | 0.253 | 78.7% | 9.78 |
-| **dsx 2-bit** | **2.03 bpw** | **0.397** | **74.1%** | **10.81** |
+| **dsx 2-bit** | **2.03 bpw** | **0.382** | **74.9%** | **10.69** |
 
 ## Reasoning
 
@@ -54,7 +54,7 @@ Omni-MATH problems, temperature 1.0, all answers correct:
 | | Problem A | Problem B |
 |---|---|---|
 | FP8 model, hosted (8 runs) | 5.7K-17.4K (median 9.4K) | 7.5K-13.9K (median 10.7K) |
-| dsx 2-bit | 10.3K, 10.5K, 15.3K | 20.2K, 21.5K |
+| dsx 2-bit | 6.7K, 12.2K, 12.4K | 16.9K, 19.7K, 24.3K |
 
 On harder problems it reasons longer than the FP8 model, up to about 2×. Sample at temperature 1.0 for reasoning.
 
@@ -80,6 +80,8 @@ Decode speed comes down to how many experts fit in VRAM + RAM. Two 24 GB GPUs + 
 ![Size against perplexity](assets/size-vs-quality.png)
 
 ## Run
+
+**v4 needs dsx from 2026-10-19 or later.** Older builds do not know the rotation and produce garbage with it: pull and rebuild dsx first.
 
 ```bash
 # the quant: 4 GGUF shards, loaded as one model
@@ -129,6 +131,9 @@ Also needed: CUDA 13, Rust, an AVX2 CPU, ~350 GB of disk.
   forgiving ones ~1.76. Average: 2.03 bpw.
 - **Method:** GPTQ per expert, with Hessians from a layer-by-layer calibration pass through DeepSeek's reference
   `model.py` (GSQ pipeline from [Xolotl](https://github.com/Indras-Mirror/Xolotl)).
+- **Rotation:** every routed expert is quantized in a Hadamard-rotated basis (128-wide blocks along each input
+  dimension), which spreads outlier weights before rounding; dsx rotates the expert inputs to match at run time
+  (GGUF key `dsx.expert_rot`). Same size as without it, KL 0.397 → 0.382.
 - **Calibration text:** 160 × 2048 tokens: coding-agent sessions, antirez's agent and code prompts, and 53 sequences
   of the full model's own reasoning traces on Omni-MATH and SuperGPQA questions (none from the evaluated rows).
 - **Dense weights:** Q8_0. **Engram:** unquantized, read from the official shards.
@@ -147,13 +152,14 @@ Pipeline: [github.com/lxe/dsx/tree/main/quant](https://github.com/lxe/dsx/tree/m
 | `results/` | raw quality and speed logs |
 | `assets/` | charts and the script that draws them |
 
-Earlier builds: revision [`v2`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v2) (agent-text calibration, KL 0.395) and [`v1`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v1) (KL 0.462).
+This is build v4. Earlier builds: revision [`v3a`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v3a) (reasoning-trace calibration without rotation, KL 0.397), [`v2`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v2) (agent-text calibration, KL 0.395) and [`v1`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit/tree/v1) (KL 0.462).
 
 ## Credits
 
 [DeepSeek](https://huggingface.co/deepseek-ai) for the model (MIT) ·
 [Xolotl / Strata](https://github.com/Indras-Mirror/Xolotl) for the GSQ tools and V4.1 GGUF format (MIT) ·
 DeepSeek for the reference `model.py` the calibration runs · GPTQ ([Frantar et al.](https://arxiv.org/abs/2210.17323)) ·
+Hadamard rotation as in QuIP# ([Tseng et al.](https://arxiv.org/abs/2402.04396)) and QuaRot ([Ashkboos et al.](https://arxiv.org/abs/2404.00456)) ·
 [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) for the eval set ·
 antirez for the calibration prompts ·
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (Georgi Gerganov and the ggml authors, MIT) for the web UI.
