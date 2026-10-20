@@ -160,6 +160,11 @@ pub struct GpuModel<'m> {
     pub pb: Option<PrefillBufs>,
     /// > 0 while a verify pass runs: prefill's experts go through the decode handoff
     verify_t: usize,
+    /// speculative verify passes: the state before the pass (rewound for rejected tokens) and each ratio-2 compressor
+    /// layer's per-token kv / score rows from the pass ([layer][2][MAXT][hd] f32), for the carried half pair
+    vsnap: Option<Snapshot>,
+    vrows: Option<Buf>,
+    vpass: Option<(usize, usize, Vec<(usize, usize)>)>, // (first position, tokens, counters after the pass)
     /// image spans of the current prompt: (first position, span rows [len][dim] f32)
     pub images: Vec<(usize, Vec<f32>)>,
     /// image rows of the chunk being prefilled, chunk-local [lo, hi)
@@ -394,6 +399,9 @@ impl<'m> GpuModel<'m> {
             bonus: None,
             pb: None,
             verify_t: 0,
+            vsnap: None,
+            vrows: None,
+            vpass: None,
             images: Vec::new(),
             img_rows: Vec::new(),
             skip_experts: std::env::var_os("DSX_SKIP_EXPERTS").is_some(),
@@ -1530,6 +1538,84 @@ impl GpuModel<'_> {
         self.engram_hist.truncate(s.engram_len);
         self.pos = s.pos;
         self.g.sync()
+    }
+
+    /// Copy the decode state into `s` (buffers reused): verify_spec's rewind point.
+    fn snapshot_into(&self, s: &mut Snapshot) -> Result<()> {
+        let (rb, sb) = (self.ring_bytes(), self.state_bytes());
+        for (i, l) in self.layers.iter().enumerate() {
+            self.g.dtod(s.rings.ptr + (i * rb) as u64, l.window.ptr, rb)?;
+            if let Some((k, st)) = &l.comp_state {
+                self.g.dtod(s.states.ptr + (i * sb) as u64, k.ptr, sb / 2)?;
+                self.g.dtod(s.states.ptr + (i * sb + sb / 2) as u64, st.ptr, sb / 2)?;
+            }
+        }
+        s.counters = self.layers.iter().map(|l| (l.n_comp, l.n_idx)).collect();
+        s.engram_len = self.engram_hist.len();
+        s.pos = self.pos;
+        Ok(())
+    }
+
+    /// Speculative verify: like `verify` (logits after each of up to 8 tokens), but rewindable: `keep(k)` afterwards
+    /// keeps the first k tokens' effects and drops the rest without another forward pass.
+    pub fn verify_spec(&mut self, pb: &PrefillBufs, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
+        let c = &self.m.cfg;
+        if self.vsnap.is_none() {
+            let (rb, sb) = (self.ring_bytes(), self.state_bytes());
+            let n = self.layers.len();
+            self.vsnap = Some(Snapshot { pos: 0, rings: self.g.alloc(rb * n)?, states: self.g.alloc(sb * n)?, counters: vec![], engram_len: 0 });
+            self.vrows = Some(self.g.alloc(n * 2 * crate::handoff::MAXT * c.head_dim * 4)?);
+        }
+        let mut snap = self.vsnap.take().unwrap();
+        self.snapshot_into(&mut snap)?;
+        self.vsnap = Some(snap);
+        let p0 = self.pos;
+        let r = self.verify(pb, tokens)?;
+        self.vpass = Some((p0, tokens.len(), self.layers.iter().map(|l| (l.n_comp, l.n_idx)).collect()));
+        Ok(r)
+    }
+
+    /// After verify_spec: keep the first `k` (1..=T) verified tokens. Rejected positions get their window slots back;
+    /// compressed / index rows and the ratio-2 carry are recounted for the kept prefix.
+    pub fn keep(&mut self, k: usize) -> Result<()> {
+        let (p0, t, after) = self.vpass.take().expect("keep without verify_spec");
+        anyhow::ensure!(k >= 1 && k <= t, "keep {k} of {t}");
+        if k == t {
+            return Ok(());
+        }
+        let c = &self.m.cfg;
+        let (w, hd) = (c.window, c.head_dim);
+        let snap = self.vsnap.as_ref().unwrap();
+        let rows = self.vrows.as_ref().unwrap().ptr;
+        let (rb, slot) = (self.ring_bytes(), hd * 2);
+        // positions in [p0, p0 + k) that end a group of `ratio` (the compressed rows they add)
+        let ends = |ratio: usize, n: usize| (p0..p0 + n).filter(|p| (p + 1) % ratio == 0).count();
+        for (i, l) in self.layers.iter_mut().enumerate() {
+            for p in p0 + k..p0 + t {
+                let o = ((p % w) * slot) as u64;
+                self.g.dtod(l.window.ptr + o, snap.rings.ptr + (i * rb) as u64 + o, slot)?;
+            }
+            let ratio = self.m.layers[i].ratio.max(1);
+            let (b, a) = (snap.counters[i], after[i]);
+            if a.0 > b.0 {
+                l.n_comp = b.0 + ends(ratio, k);
+            }
+            if a.1 > b.1 {
+                l.n_idx = b.1 + ends(ratio, k);
+            }
+            // ratio 2: the kept prefix ending on an even position leaves that position waiting in the carry
+            if let Some((ks, ss)) = &l.comp_state {
+                if ratio == 2 && a.0 > b.0 && (p0 + k - 1) % 2 == 0 {
+                    let base = rows + (i * 2 * crate::handoff::MAXT * hd * 4) as u64;
+                    let r = ((k - 1) * hd * 4) as u64;
+                    self.g.dtod(ks.ptr, base + r, hd * 4)?;
+                    self.g.dtod(ss.ptr, base + (crate::handoff::MAXT * hd * 4) as u64 + r, hd * 4)?;
+                }
+            }
+        }
+        self.engram_hist.truncate(snap.engram_len + k);
+        self.pos = p0 + k;
+        Ok(())
     }
 
     /// Forget the sequence (caches are overwritten as positions are refilled; stale window slots are masked).

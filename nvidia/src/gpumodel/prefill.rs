@@ -564,6 +564,12 @@ impl GpuModel<'_> {
                 } else {
                     self.gemm(pb, l.comp_kv.as_ref().unwrap(), x, pb.ckv.ptr, n)?;
                     self.gemm(pb, l.comp_gate.as_ref().unwrap(), x, pb.csc.ptr, n)?;
+                    if let (true, Some(v)) = (self.verify_t > 0, self.vrows.as_ref()) {
+                        // speculative verify: keep this layer's per-token rows for keep()'s carry
+                        let base = v.ptr + (li * 2 * crate::handoff::MAXT * hd * 4) as u64;
+                        self.g.dtod(base, pb.ckv.ptr, n * hd * 4)?;
+                        self.g.dtod(base + (crate::handoff::MAXT * hd * 4) as u64, pb.csc.ptr, n * hd * 4)?;
+                    }
                     let (ks, ss) = l.comp_state.as_ref().unwrap();
                     let off = (p0 + r0) % 2; // 1: the first group's first token is in the carried state
                     let total = off + n;

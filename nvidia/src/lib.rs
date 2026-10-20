@@ -16,6 +16,7 @@ pub mod gpumodel;
 #[cfg(feature = "cuda")]
 pub mod handoff;
 pub mod q6;
+pub mod spec;
 #[cfg(feature = "cuda")]
 pub mod topk;
 

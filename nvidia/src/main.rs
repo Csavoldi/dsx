@@ -74,6 +74,10 @@ enum Cmd {
         /// against decode's (DSX_ADAPT=0 for a like-for-like placement)
         #[arg(long, default_value_t = 0)]
         check_verify: usize,
+        /// speculative decoding with drafts looked up in the context (up to N per step), then the same tokens decoded
+        /// plainly for comparison
+        #[arg(long, default_value_t = 0)]
+        spec: usize,
     },
     /// Quality on a held-out set against teacher top-k log-probs (Lucebox's 1017 eval: 8 x 1024 tokens, top-256):
     /// KL(teacher || model) over the teacher's top-k, top-1 agreement, perplexity.
@@ -306,7 +310,7 @@ fn main() -> Result<()> {
             println!("generated ids: {seq:?}");
         }
         #[cfg(feature = "cuda")]
-        Cmd::Gen { model, engram, ids, n, ctx, chunk, gpu0_gb, gpu1_gb, arena_gb, check, rank, bench_verify, check_verify } => {
+        Cmd::Gen { model, engram, ids, n, ctx, chunk, gpu0_gb, gpu1_gb, arena_gb, check, rank, bench_verify, check_verify, spec } => {
             let ids: Vec<u32> = if let Some(f) = ids.strip_prefix('@') {
                 std::fs::read_to_string(f)?.split(|ch: char| ch == ',' || ch.is_whitespace()).filter(|x| !x.is_empty()).map(|x| x.parse().unwrap()).collect()
             } else {
@@ -344,6 +348,8 @@ fn main() -> Result<()> {
                 }
             }
             let mut out = vec![];
+            // --spec: rewind here afterwards and decode the same tokens speculatively
+            let after_prompt = if spec > 0 { Some((gm.snapshot()?, logits.clone())) } else { None };
             if let Some(p) = gm.prof.as_mut() {
                 p.clear();
             }
@@ -393,6 +399,93 @@ fn main() -> Result<()> {
                 }
             }
             println!("generated: {out:?}");
+            if spec > 0 {
+                // the same prompt again, speculatively: drafts from the context, verified in one pass, the rest rewound
+                let (snap, lg) = after_prompt.unwrap();
+                gm.restore(&snap)?;
+                let oracle = std::env::var_os("DSX_SPEC_ORACLE").is_some();
+                if oracle {
+                    // the reference: greedy decode through 1-token verify passes, so speculative decoding (same
+                    // arithmetic) must reproduce it exactly, and its own continuation makes perfect drafts
+                    let mut l = lg.clone();
+                    out.clear();
+                    let t = Instant::now();
+                    for _ in 0..n {
+                        let nx = top(&l, 1)[0].0;
+                        out.push(nx);
+                        l = gm.verify_spec(&pb, &[nx])?.pop().unwrap();
+                        gm.keep(1)?;
+                    }
+                    println!("verify-path decode {n} tokens in {:.2} s ({:.2} tok/s)", t.elapsed().as_secs_f64(), n as f64 / t.elapsed().as_secs_f64());
+                    gm.restore(&snap)?;
+                }
+                if std::env::var_os("DSX_SPEC_ROLLTEST").is_some() {
+                    // rollback check that numerics cannot fool: every step verifies [next, dummy] and keeps 1; the
+                    // first token cannot depend on the dummy, so two dummies must give the same tokens
+                    let mut seqs = vec![];
+                    for dummy in [11u32, 4242] {
+                        gm.restore(&snap)?;
+                        let mut l = lg.clone();
+                        let mut s2 = vec![];
+                        for _ in 0..n {
+                            let nx = top(&l, 1)[0].0;
+                            s2.push(nx);
+                            l = gm.verify_spec(&pb, &[nx, dummy])?.swap_remove(0);
+                            gm.keep(1)?;
+                        }
+                        seqs.push(s2);
+                    }
+                    let same = seqs[0].iter().zip(&seqs[1]).take_while(|(a, b)| a == b).count();
+                    println!("rollback test: dummies 11 vs 4242 agree on the first {same}/{n} tokens");
+                    return Ok(());
+                }
+                let (g2, pb2) = (&mut gm, &pb);
+                let mut ctxt: Vec<u32> = ids.clone();
+                let mut out2: Vec<u32> = vec![];
+                let (mut passes, mut drafted, mut accepted) = (0usize, 0usize, 0usize);
+                let t0 = Instant::now();
+                let mut next = top(&lg, 1)[0].0;
+                while out2.len() < n {
+                    ctxt.push(next);
+                    let room = (n - out2.len() - 1).min(spec).min(dsx::handoff::MAXT - 1);
+                    // DSX_SPEC_ORACLE=1: drafts are plain decode's own continuation (a rollback check and the best case)
+                    let drafts = if room == 0 {
+                        vec![]
+                    } else if oracle {
+                        let i = out2.len() + 1;
+                        out[i.min(out.len())..(i + room).min(out.len())].to_vec()
+                    } else {
+                        dsx::spec::lookup(&ctxt, room)
+                    };
+                    if drafts.is_empty() {
+                        out2.push(next);
+                        let l = g2.step(next)?;
+                        next = top(&l, 1)[0].0;
+                        continue;
+                    }
+                    let mut toks = vec![next];
+                    toks.extend(&drafts);
+                    let lv = g2.verify_spec(&pb2, &toks)?;
+                    let mut j = 0;
+                    while j < drafts.len() && top(&lv[j], 1)[0].0 == drafts[j] {
+                        j += 1;
+                    }
+                    g2.keep(1 + j)?;
+                    out2.push(next);
+                    out2.extend(&drafts[..j]);
+                    ctxt.extend(&drafts[..j]);
+                    next = top(&lv[j], 1)[0].0;
+                    passes += 1;
+                    drafted += drafts.len();
+                    accepted += j;
+                }
+                let el2 = t0.elapsed().as_secs_f64();
+                out2.truncate(n);
+                let same = out.iter().zip(&out2).take_while(|(a, b)| a == b).count();
+                println!("spec decode {} tokens in {el2:.2} s ({:.2} tok/s vs {:.2} plain); {passes} verify passes, {accepted}/{drafted} drafts accepted; same as plain decode for the first {same}/{n} tokens",
+                    out2.len(), out2.len() as f64 / el2, n as f64 / el);
+                return Ok(());
+            }
             if bench_verify > 0 {
                 // the same tokens again, T at a time: what one speculative verify pass costs next to a decode step
                 let mut times = vec![];
