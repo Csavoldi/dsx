@@ -270,6 +270,29 @@ class Layer:
                 t0 = mark("hinv", t0)
                 Qb = NV.gptq_batched(torch.stack(Ws), torch.stack(Ss), torch.stack(los), torch.stack(his), Hinv, dead)
                 t0 = mark("gptq", t0)
+                if a.refit:   # least-squares scales for GPTQ's codes, GPTQ again on them, a final refit (ptq1 / q2_0)
+                    tk = [tiers[prep[i][0]] for (i, _, _) in idx]
+                    ok = [t in ("ptq1", "q2_0") for t in tk]
+                    if any(ok):
+                        def refit_all(Qx, Sx):
+                            gs = [refit_scales(Ws[k], Qx[k], Sx[k], Hs[k], G.TIERS[tk[k]][2]) if ok[k] else None for k in range(len(idx))]
+                            ex = [G.expand_scales(gs[k], tk[k], Ws[k].shape[1]) if ok[k] else Sx[k] for k in range(len(idx))]
+                            return gs, ex
+                        _, E1 = refit_all(Qb, Ss)
+                        Qb = NV.gptq_batched(torch.stack(Ws), torch.stack(E1), torch.stack(los), torch.stack(his), Hinv, dead)
+                        g2, E2 = refit_all(Qb, E1)
+                        Qn = []
+                        for k, (i, mats, sc) in enumerate(idx):
+                            if not ok[k]:
+                                Qn.append(Qb[k]); continue
+                            codes = torch.where(E1[k].abs() < 1e-20, torch.zeros_like(Qb[k]), torch.round(Qb[k] / E1[k]))
+                            Qn.append(codes * E2[k])
+                            r0, sc2 = 0, []          # the stored group scales, split back per matrix
+                            for W in mats:
+                                sc2.append(g2[k][r0:r0 + W.shape[0]]); r0 += W.shape[0]
+                            idx[k] = (i, mats, sc2)
+                        Qb = torch.stack(Qn)
+                    t0 = mark("refit", t0)
                 del Hinv
                 for k, (i, mats, sc) in enumerate(idx):
                     q[(i, part)] = self._split(Qb[k], mats, sc)
@@ -334,6 +357,34 @@ class Layer:
         e_y = sum(s.get("y_energy", 0) for s in stats.values())
         C.log(f"quant L{L}: {sum(2 * g + d for g, d in self.size) / 2**30:.2f} GiB -> {self.sink.mode}, held-out rel err {e_q / max(e_y, 1e-30):.4f}, "
               f"tiers gu {dict((t, self.gu.count(t)) for t in G.TIERS)} dn {dict((t, self.dn.count(t)) for t in G.TIERS)}")
+
+
+def refit_scales(W, Q, Sx, H, G, chunk=256):
+    """Least-squares group scales for fixed codes: per row, minimize (w - sum_g s_g q_g)^T H (w - sum_g s_g q_g).
+    W, Q, Sx [R, C] (Sx: current scales expanded per weight), H [C, C]. Returns stored-format (fp16) group scales
+    [R, C/G]. Batched on the GPU: T = q-blocks x H (one matmul per chunk), A = <q_g, T_h>, then a batched ng x ng solve."""
+    W, Q, Sx, H = W.float(), Q.float(), Sx.float(), H.float()
+    R, C = W.shape
+    ng = C // G
+    qi = torch.where(Sx.abs() < 1e-20, torch.zeros_like(Q), torch.round(Q / Sx))
+    WH = W @ H
+    Hb = H.reshape(ng, G, C)
+    out = torch.empty(R, ng, device=W.device)
+    old = Sx[:, ::G]
+    for r0 in range(0, R, chunk):
+        r1 = min(R, r0 + chunk)
+        k = r1 - r0
+        qb = qi[r0:r1].reshape(k, ng, G)
+        T = torch.einsum("rhk,hkc->rhc", qb, Hb)                                  # [k, ng, C]
+        A = torch.einsum("rgk,rhgk->rgh", qb, T.reshape(k, ng, ng, G))            # [k, ng, ng]
+        b = (qb * WH[r0:r1].reshape(k, ng, G)).sum(-1)                            # [k, ng]
+        live = qb.abs().sum(-1) > 0                                               # groups with any nonzero code
+        diag = torch.diagonal(A, dim1=1, dim2=2)
+        diag += torch.where(live, 1e-6 * diag.abs().mean(-1, keepdim=True), torch.ones_like(diag))
+        s = torch.linalg.solve(A, b.unsqueeze(-1)).squeeze(-1)
+        out[r0:r1] = torch.where(live, s, old[r0:r1])
+    out = out.half().float()
+    return torch.where(out == 0, torch.full_like(out, 1e-30), out)
 
 
 _ROT = {}
@@ -445,6 +496,7 @@ def main():
             g.add_argument("--tier", choices=list(G.TIERS))
             p.add_argument("--propagate", choices=("quant", "teacher"), default="quant")
             p.add_argument("--damp", type=float, default=1.0)
+            p.add_argument("--refit", action="store_true", help="least-squares group scales against the full H after GPTQ (ptq1 / q2_0)")
             p.add_argument("--rot", action="store_true", help="store experts in the 128-block Hadamard-rotated input basis (engine: dsx.expert_rot)")
             p.add_argument("--min-fit", type=int, default=32)
             p.add_argument("--batch", type=int, default=0)
