@@ -128,6 +128,7 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/tools", get(webui::no_tools).post(webui::no_tools))
         .route("/v1/streams/lookup", post(webui::no_streams))
         .fallback(get(webui::asset))
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
         .with_state(st)
 }
 
