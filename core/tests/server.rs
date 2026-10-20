@@ -415,3 +415,13 @@ async fn no_api_key_leaves_the_api_open() {
     let base = start_cfg(MockMode::Scripted, 0, ServerConfig { api_key: Some("  ".into()), ..ServerConfig::default() }).await;
     assert_eq!(chat_status(&base, &[]).await.0, 200);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn large_request_bodies_are_accepted() {
+    // base64 images make multi-MB requests; axum's default 2 MB body limit used to reject them with 413
+    let base = start(MockMode::Scripted, 0).await;
+    let big = "a ".repeat(4 * 1024 * 1024); // 8 MB of text
+    let body = json!({"model": "m", "max_tokens": 4, "messages": [{"role": "user", "content": big}]});
+    let (status, text) = post(&base, "/v1/chat/completions", body).await;
+    assert_ne!(status, 413, "{}", &text[..text.len().min(200)]);
+}
