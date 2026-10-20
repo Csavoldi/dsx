@@ -415,7 +415,7 @@ fn fake_cfg() -> dsx_core::model::Config {
         rope_theta: 0.0, compress_rope_theta: 0.0, rope_factor: 0.0, beta_fast: 0.0, beta_slow: 0.0,
         original_seq_len: 0, compress_ratios: vec![], kv_sources: vec![], index_sources: vec![], engram_layers: vec![],
         engram_rows: vec![], engram_heads: 0, engram_dim: 0, engram_ngram: 0, engram_pad: 0, engram_token_map: vec![],
-        engram_primes: vec![], engram_multipliers: vec![], dspark_targets: vec![],
+        engram_primes: vec![], engram_multipliers: vec![], dspark_targets: vec![], expert_rot: vec![],
     }
 }
 
