@@ -1252,6 +1252,24 @@ extern "C" __global__ void swiglu_rows_f16(const float *g, const float *u, const
 }
 
 // out[rows[r]] += o[r] (rows distinct within one call); grid (ceil(k/256), n)
+// DSX_NOISE sensitivity probe: o[r] += rel * rms(o[r]) * N(0, 1) per row (hash-seeded Box-Muller); grid rows, block 256
+extern "C" __global__ void add_noise_rows(float *o, int k, float rel, unsigned seed) {
+  __shared__ float sh[32];
+  float *x = o + (size_t)blockIdx.x * k;
+  float s = 0.f;
+  for (int i = threadIdx.x; i < k; i += blockDim.x) s += x[i] * x[i];
+  s = block_sum(s, sh);
+  float a = rel * sqrtf(s / k);
+  for (int i = threadIdx.x; i < k; i += blockDim.x) {
+    unsigned h = seed * 0x9E3779B9u ^ (blockIdx.x * 0x85EBCA6Bu) ^ (i * 0xC2B2AE35u);
+    h ^= h >> 16; h *= 0x7FEB352Du; h ^= h >> 15; h *= 0x846CA68Bu; h ^= h >> 16;
+    unsigned h2 = h * 0x9E3779B9u + 0x6A09E667u;
+    h2 ^= h2 >> 16; h2 *= 0x7FEB352Du; h2 ^= h2 >> 15;
+    float u1 = ((h >> 8) + 1) * (1.f / 16777217.f), u2 = (h2 >> 8) * (1.f / 16777216.f);
+    x[i] += a * sqrtf(-2.f * logf(u1)) * cospif(2.f * u2);
+  }
+}
+
 extern "C" __global__ void scatter_add(const float *o, const int *rows, float *out, int k) {
   int r = blockIdx.y, c = blockIdx.x * blockDim.x + threadIdx.x;
   if (c < k) out[(size_t)rows[r] * k + c] += o[(size_t)r * k + c];
