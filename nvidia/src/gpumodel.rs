@@ -165,6 +165,11 @@ pub struct GpuModel<'m> {
     vsnap: Option<Snapshot>,
     vrows: Option<Buf>,
     vpass: Option<(usize, usize, Vec<(usize, usize)>)>, // (first position, tokens, counters after the pass)
+    /// DSX_PREGATE=1 (decode statistics): layer L+1's router applied to layer L's expert input, top-8 per layer, next to
+    /// the actual top-6 ([layer][16] i32: 8 predicted, 6 actual); counted per token into pregate_stats
+    pregate: Option<Buf>,
+    /// [picks, predicted in top-6, predicted in top-8, CPU picks, CPU picks predicted in top-8]
+    pub pregate_stats: [u64; 5],
     /// image spans of the current prompt: (first position, span rows [len][dim] f32)
     pub images: Vec<(usize, Vec<f32>)>,
     /// image rows of the chunk being prefilled, chunk-local [lo, hi)
@@ -402,6 +407,8 @@ impl<'m> GpuModel<'m> {
             vsnap: None,
             vrows: None,
             vpass: None,
+            pregate: if std::env::var_os("DSX_PREGATE").is_some() { Some(g.alloc_zeroed(c.n_layers * 16 * 4 + 4096)?) } else { None },
+            pregate_stats: [0; 5],
             images: Vec::new(),
             img_rows: Vec::new(),
             skip_experts: std::env::var_os("DSX_SKIP_EXPERTS").is_some(),
@@ -646,6 +653,16 @@ impl<'m> GpuModel<'m> {
         self.gemv_t(&l.gate_w, x, self.tmp.ptr, t)?;
         let idx_buf = self.tmp2.ptr; // [t][k] i32 then [t][k] f32 at +256
         self.g.launch(self.k["router_topk"], (t as u32, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
+        if let (Some(pg), 1) = (self.pregate.as_ref(), t) {
+            // actual picks of this layer next to the prediction made one layer earlier
+            self.g.dtod(pg.ptr + (li * 64 + 32) as u64, idx_buf, c.top_k * 4)?;
+            if li + 1 < c.n_layers && std::env::var("DSX_PREGATE").is_ok_and(|v| v == "1") {
+                let ln = &self.layers[li + 1];
+                let scratch = pg.ptr + (c.n_layers * 64) as u64; // [8] i32 then [8] f32 weights
+                self.gemv_t(&ln.gate_w, x, self.tmp.ptr, 1)?;
+                self.g.launch(self.k["router_topk"], (1, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(ln.gate_bias.ptr), Arg::P(pg.ptr + ((li + 1) * 64) as u64), Arg::P(scratch + 32), Arg::I(c.n_experts as i32), Arg::I(8), Arg::F(c.route_scale), Arg::P(0)])?;
+            }
+        }
         self.ev(li, 2)?;
         let d0 = self.xch_dev;
         if self.skip_experts {
@@ -657,6 +674,11 @@ impl<'m> GpuModel<'m> {
             self.gemv_t(&l.sh_up, x, u_ptr, t)?;
             self.g.launch(self.k["swiglu"], ((inter as u32).div_ceil(256), t as u32, 1), 256, 0, &[Arg::P(g_ptr), Arg::P(u_ptr), Arg::I(inter as i32), Arg::P(0), Arg::P(hm), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
             return self.gemv_t(&l.sh_down, hm, a, t);
+        }
+        // DSX_DEFER (decode): the CPU may still be reading the previous layer's picks and input; publishing overwrites them
+        let deferred = crate::handoff::defer().is_some() && t == 1;
+        if deferred && li > 0 {
+            self.flag_wait(d0 + crate::handoff::XACK as u64, seq - 1)?;
         }
         self.g.launch(self.k["publish_route"], (1, 1, 1), 1024, 0, &[Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.top_k as i32), Arg::P(x), Arg::I(d as i32), Arg::P(d0), Arg::I(seq as i32), Arg::I(t as i32)])?;
         match self.exp0.as_ref() {
@@ -673,13 +695,28 @@ impl<'m> GpuModel<'m> {
         self.g.launch(self.k["swiglu"], ((inter as u32).div_ceil(256), t as u32, 1), 256, 0, &[Arg::P(g_ptr), Arg::P(u_ptr), Arg::I(inter as i32), Arg::P(0), Arg::P(hm), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
         self.gemv_t(&l.sh_down, hm, a, t)?;
         self.ev(li, 4)?;
+        // the CPU's experts: this layer's (or, deferred, the previous layer's; the last layer waits for its own too)
+        let last = li + 1 == c.n_layers;
         self.flag_wait(d0 + crate::handoff::CPU as u64, seq)?;
+        let mut cpu_mask = 1;
+        if deferred {
+            // deferred slots: even layers bit 1, odd layers bit 2
+            let slot = |l: usize| if l % 2 == 0 { 2 } else { 4 };
+            if li > 0 {
+                self.flag_wait(d0 + crate::handoff::CPUD as u64, seq - 1)?;
+                cpu_mask |= slot(li - 1);
+            }
+            if last {
+                self.flag_wait(d0 + crate::handoff::CPUD as u64, seq)?;
+                cpu_mask |= slot(li);
+            }
+        }
         self.ev(li, 5)?;
         for i in 0..self.aux.len() {
             self.flag_wait(d0 + crate::handoff::aux_flag(i) as u64, seq)?;
         }
         self.ev(li, 6)?;
-        self.g.launch(self.k["combine_experts"], (((t * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(1), Arg::I(self.aux.len() as i32), Arg::I(t as i32)])?;
+        self.g.launch(self.k["combine_experts"], (((t * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(cpu_mask), Arg::I(self.aux.len() as i32), Arg::I(t as i32), Arg::I(crate::handoff::y_cpu2(d) as i32), Arg::I(crate::handoff::y_cpu3(d) as i32)])?;
         self.ev(li, 7)
     }
 
@@ -1368,6 +1405,22 @@ impl<'m> GpuModel<'m> {
         }
         if r.is_ok() {
             self.ev_collect()?;
+            if let Some(pg) = self.pregate.as_ref() {
+                let (nl, ne, k) = (self.m.cfg.n_layers, self.m.cfg.n_experts, self.m.cfg.top_k);
+                let v: Vec<i32> = self.g.download(pg.ptr, nl * 16)?;
+                for l in 1..nl {
+                    let (pred, act) = (&v[l * 16..l * 16 + 8], &v[l * 16 + 8..l * 16 + 8 + k]);
+                    for &e in act {
+                        let cpu = self.worker.as_ref().is_some_and(|w| w.on_cpu[l * ne + e as usize].load(std::sync::atomic::Ordering::Relaxed));
+                        let (in6, in8) = (pred[..k].contains(&e), pred.contains(&e));
+                        self.pregate_stats[0] += 1;
+                        self.pregate_stats[1] += in6 as u64;
+                        self.pregate_stats[2] += in8 as u64;
+                        self.pregate_stats[3] += cpu as u64;
+                        self.pregate_stats[4] += (cpu && in8) as u64;
+                    }
+                }
+            }
             if self.adapt > 0 {
                 let t = std::time::Instant::now();
                 self.adapt_step()?;
@@ -1447,6 +1500,13 @@ impl<'m> GpuModel<'m> {
             self.mark(&mut tm, "hc+norm")?;
             self.ev(li, 9)?;
             let th = std::time::Instant::now();
+            if let (Some(pg), true) = (self.pregate.as_ref(), std::env::var("DSX_PREGATE").is_ok_and(|v| v == "2")) {
+                // this layer's own router on its attention input (before attention): what a prefetch could know
+                let l = &self.layers[li];
+                let scratch = pg.ptr + (c.n_layers * 64) as u64;
+                self.gemv_t(&l.gate_w, self.x.ptr, self.tmp.ptr, 1)?;
+                self.g.launch(self.k["router_topk"], (1, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(pg.ptr + (li * 64) as u64), Arg::P(scratch + 32), Arg::I(c.n_experts as i32), Arg::I(8), Arg::F(c.route_scale), Arg::P(0)])?;
+            }
             self.attention(li)?;
             self.ev(li, 10)?;
             self.hmark(th, if li < 20 { "host: attention enc" } else { "host: attention dec" });

@@ -193,6 +193,18 @@ fn main() {
         }
     }
 
+    // the same 2 experts (~18 MB, under the 25 MB L3) as all 6 of a call: weights come from cache after the first call,
+    // the ceiling for a prefetch-into-L3 scheme
+    println!("\nL3-resident: 6 experts per call drawn from the same 2 (~{:.0} MB), engine's 14 threads", (ew[0].bytes() + ew[1].bytes()) as f64 / 1e6);
+    let hot: Vec<ExpertW> = (0..6).map(|i| ew[i % 2].clone()).collect();
+    {
+        let mut moe = CpuMoe::new(Pool::new(&(0..14).collect::<Vec<_>>(), Duration::from_millis(5)));
+        let (g, ms) = layer_rate(&mut moe, &hot, 1, 200, &mut rng);
+        println!("  T=1: {ms:.3} ms per call ({g:.1} GB/s of weights touched)");
+        let (g, ms) = layer_rate(&mut moe, &ew, 1, 3, &mut rng);
+        println!("  from RAM, same threads: {ms:.3} ms per call ({g:.1} GB/s)");
+    }
+
     println!("\nfixed overhead per call, 16 threads");
     let pool = Pool::new(&cpus(16), Duration::from_millis(2));
     let empty = |c: &Ctx| c.barrier();

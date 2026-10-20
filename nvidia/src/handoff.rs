@@ -39,6 +39,30 @@ pub fn aux_y(i: usize, dim: usize) -> usize {
     X + (64 + 32 * i) * dim
 }
 
+/// DSX_DEFER: the CPU's deferred results alternate between two slots by layer (even layers here, odd in y_cpu3), after
+/// the aux slots; y_cpu keeps the CPU's immediate experts
+pub fn y_cpu2(dim: usize) -> usize {
+    aux_y(MAX_AUX, dim)
+}
+pub fn y_cpu3(dim: usize) -> usize {
+    y_cpu2(dim) + MAXT * 4 * dim
+}
+
+/// DSX_DEFER: the CPU raises this to a layer's sequence number when its deferred experts are in their slot
+pub const CPUD: usize = DIAG - 128;
+
+/// DSX_DEFER: the CPU raises this to a layer's sequence number once it has copied that layer's picks and input, so the
+/// main GPU may publish the next layer over them
+pub const XACK: usize = DIAG - 64;
+
+/// DSX_DEFER=R: in decode, the CPU's experts the router ranked R or lower (0 = best of the 6) are added in layer L+1
+/// instead of layer L, so the main GPU does not wait for them inside the layer; the last layer waits for everything.
+/// Changes outputs (expert deferral as in KTransformers, SOSP '25, which keeps the top-ranked experts immediate).
+pub fn defer() -> Option<usize> {
+    static D: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var("DSX_DEFER").ok().and_then(|v| v.parse().ok()))
+}
+
 pub struct Xch {
     pub buf: HostBuf,
     pub dim: usize,
@@ -46,7 +70,7 @@ pub struct Xch {
 
 impl Xch {
     pub fn new(dim: usize) -> Result<Xch> {
-        let end = aux_y(MAX_AUX, dim);
+        let end = y_cpu3(dim) + MAXT * 4 * dim;
         anyhow::ensure!(end <= DIAG, "exchange: dim {dim} too large for {MAX_AUX} aux slots below DIAG");
         Ok(Xch { buf: HostBuf::new(DIAG + 16 * 64)?, dim }) // 64 layers of diagnostics
     }
@@ -73,6 +97,12 @@ impl Xch {
     #[allow(clippy::mut_from_ref)]
     pub fn y_cpu(&self, t: usize) -> &mut [f32] {
         unsafe { std::slice::from_raw_parts_mut(self.at(X + 32 * self.dim), t * self.dim) }
+    }
+    /// deferred result slot of layer `l` under DSX_DEFER (even layers: y_cpu2, odd: y_cpu3)
+    #[allow(clippy::mut_from_ref)]
+    pub fn y_cpu_deferred(&self, l: usize, t: usize) -> &mut [f32] {
+        let off = if l % 2 == 0 { y_cpu2(self.dim) } else { y_cpu3(self.dim) };
+        unsafe { std::slice::from_raw_parts_mut(self.at(off), t * self.dim) }
     }
     #[allow(clippy::mut_from_ref)]
     pub fn y_aux(&self, i: usize, t: usize) -> &mut [f32] {
@@ -165,6 +195,9 @@ impl CpuWorker {
                     y.resize(nt * d, 0.0);
                     x.copy_from_slice(xch.x(nt));
                     let (sel, wts) = (xch.sel(nt * top_k).to_vec(), xch.wts(nt * top_k).to_vec());
+                    // inputs copied: under DSX_DEFER the main GPU may now publish the next layer over them
+                    xch.flag(XACK).store(seq, Ordering::Release);
+                    let defer_rank = if nt == 1 { defer() } else { None };
                     if let Some(f) = route_log.as_mut() {
                         use std::io::Write;
                         let _ = writeln!(f, "{l} {}", sel.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(" "));
@@ -175,6 +208,7 @@ impl CpuWorker {
                     // distinct CPU-side experts over the tokens, with per-token weights (0 = not routed there)
                     let mut experts: Vec<usize> = vec![];
                     let mut w: Vec<f32> = vec![];
+                    let (mut dexperts, mut dw): (Vec<usize>, Vec<f32>) = (vec![], vec![]);
                     for t in 0..nt {
                         for j in 0..top_k {
                             let e = sel[t * top_k + j] as usize;
@@ -185,6 +219,12 @@ impl CpuWorker {
                                 continue;
                             }
                             pk[1].fetch_add(1, Ordering::Relaxed);
+                            if defer_rank.is_some_and(|r| j >= r) {
+                                // nt == 1 here: each expert appears once
+                                dexperts.push(e);
+                                dw.push(wts[j]);
+                                continue;
+                            }
                             let i = match experts.iter().position(|&x| x == e) {
                                 Some(i) => i,
                                 None => {
@@ -199,9 +239,8 @@ impl CpuWorker {
                     y.iter_mut().for_each(|v| *v = 0.0);
                     let tf = std::time::Instant::now();
                     split[1].fetch_add((tf - t0).as_nanos() as u64, Ordering::Relaxed);
-                    if !experts.is_empty() && !noop {
-                        let ex: Vec<ExpertW> = experts
-                            .iter()
+                    let weights = |ids: &[usize]| -> Vec<ExpertW> {
+                        ids.iter()
                             .map(|&e| {
                                 let x = &m.layers[l].experts[e];
                                 match arena.and_then(|a| a.get(l, e)) {
@@ -209,14 +248,25 @@ impl CpuWorker {
                                     None => ExpertW { gu: x.gate.ty, gate: x.gate.bytes(), up: x.up.bytes(), dn: x.down.ty, down: x.down.bytes() },
                                 }
                             })
-                            .collect();
-                        cm.rot = m.cfg.expert_rot[l];
-                        cm.forward(&ex, d, &x, nt, &w, &mut y);
+                            .collect()
+                    };
+                    cm.rot = m.cfg.expert_rot[l];
+                    if !experts.is_empty() && !noop {
+                        cm.forward(&weights(&experts), d, &x, nt, &w, &mut y);
                     }
                     split[2].fetch_add(tf.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     xch.y_cpu(nt).copy_from_slice(&y);
                     unsafe { std::ptr::write_volatile(xch.at::<u64>(CPU + 8), wall_ns()) };
                     xch.flag(CPU).store(seq, Ordering::Release);
+                    if defer_rank.is_some() {
+                        // the deferred experts, while the main GPU runs the next layer; it adds them there
+                        y.iter_mut().for_each(|v| *v = 0.0);
+                        if !dexperts.is_empty() && !noop {
+                            cm.forward(&weights(&dexperts), d, &x, nt, &dw, &mut y);
+                        }
+                        xch.y_cpu_deferred(l, nt).copy_from_slice(&y);
+                        xch.flag(CPUD).store(seq, Ordering::Release);
+                    }
                     if l + 1 == nl {
                         // end of a pass: decay the usage scores (after the flag, off the critical path)
                         let dk = decay();

@@ -1137,14 +1137,17 @@ extern "C" __global__ void spin_wait(const volatile uint32_t *flag, uint32_t seq
   }
 }
 
-// a[t] = bf16(a[t] + out0[t] + y_cpu[t] + sum over aux GPUs of y_aux[i][t]) for T tokens; grid ceil(T*dim/256)
-// (aux i's slot: XCH_X + (64 + 32 i) * dim, handoff::aux_y)
-extern "C" __global__ void combine_experts(float *a, const float *out0, const uint8_t *xch, int dim, int use_cpu, int n_aux, int T) {
+// a[t] = bf16(a[t] + out0[t] + the CPU's slots in cpu_mask + sum over aux GPUs of y_aux[i][t]) for T tokens;
+// grid ceil(T*dim/256). CPU slots: bit 0 = XCH_X + 32 dim (y_cpu), bit 1 = cpu2_off, bit 2 = cpu3_off (DSX_DEFER's
+// deferred slots for even / odd layers); aux i's slot: XCH_X + (64 + 32 i) dim (handoff::aux_y)
+extern "C" __global__ void combine_experts(float *a, const float *out0, const uint8_t *xch, int dim, int cpu_mask, int n_aux, int T, int cpu2_off,
+                                           int cpu3_off) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= T * dim) return;
-  const volatile float *yc = (const volatile float *)(xch + XCH_X + 32 * dim);
   float v = a[i] + out0[i];
-  if (use_cpu) v += yc[i];
+  if (cpu_mask & 1) v += ((const volatile float *)(xch + XCH_X + 32 * dim))[i];
+  if (cpu_mask & 2) v += ((const volatile float *)(xch + cpu2_off))[i];
+  if (cpu_mask & 4) v += ((const volatile float *)(xch + cpu3_off))[i];
   for (int j = 0; j < n_aux; j++) v += ((const volatile float *)(xch + XCH_X + (64 + 32 * j) * dim))[i];
   a[i] = bf16r(v);
 }

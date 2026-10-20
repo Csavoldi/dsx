@@ -398,6 +398,11 @@ fn main() -> Result<()> {
                     println!("  {k:<40} {:.2} ms/token", v / steps);
                 }
             }
+            if gm.pregate_stats[0] > 0 {
+                let p = gm.pregate_stats;
+                println!("pre-gating (DSX_PREGATE=1: layer L+1's router on layer L's expert input; 2: layer L's router on its attention input): {:.1}% of picks in the predicted top-6, {:.1}% in the top-8; CPU picks {:.1}% of all, {:.1}% of them in the predicted top-8",
+                    100.0 * p[1] as f64 / p[0] as f64, 100.0 * p[2] as f64 / p[0] as f64, 100.0 * p[3] as f64 / p[0] as f64, 100.0 * p[4] as f64 / p[3].max(1) as f64);
+            }
             println!("generated: {out:?}");
             if spec > 0 {
                 // the same prompt again, speculatively: drafts from the context, verified in one pass, the rest rewound

@@ -188,6 +188,31 @@ With one 32 GB GPU and ~90 GB of usable RAM, ~40 GB of experts are read from dis
 sets the speed. Static placement wins there: the adaptive cache's RAM copies of GPU0's experts cost space the machine
 doesn't have. Such a machine needs ~160 GB of RAM, or a disk tier with batched direct reads and prefetch.
 
+## 8b. Overlapping the CPU's experts with the GPU
+
+Each decode layer alternates GPU attention (~0.35 ms) and CPU experts (~0.4 ms); RAM idles in the first, the GPU in
+the second. Perfect overlap would cost max(~12.6 ms of RAM reads, ~14 ms of GPU work) per token instead of ~35 ms.
+
+**Expert deferral** (`DSX_DEFER=R`, after KTransformers, SOSP '25): the CPU's experts that the router ranked R or lower
+(0 = best of 6) are added one layer later, so the main GPU does not wait for them; the CPU computes the immediate ones
+first. Outputs change. 2x RTX 3090, v4b, 3K agent prompt, decode-path eval (2 sequences):
+
+| Deferred | Decode | KL | Top-1 |
+|---|---:|---:|---:|
+| none | 29.9 tok/s | 0.369 | 76.5% |
+| ranks 3-5 (`DSX_DEFER=3`) | 36.3 tok/s | 0.395 | 75.2% |
+| ranks 2-5 (`DSX_DEFER=2`) | 39.0 tok/s | 0.422 | 75.0% |
+| ranks 1-5 | 37.6 tok/s | 0.466 | 72.7% |
+| all | 36.8 tok/s | 0.537 | 70.9% |
+
+Deferring more than ranks 2-5 is slower again: the CPU's deferred work for one layer then delays its immediate work for
+the next.
+
+**Prefetch into L3** (exact): with the same 2 experts reused, the CPU kernels run 0.69 ms per 6-expert call (~87 GB/s)
+against 1.30 ms from RAM (~48 GB/s). Predicting a layer's picks one layer early (its router on the previous layer's
+expert input, `DSX_PREGATE=1`) finds 71% of the CPU's picks in a top-8; its router on its own attention input
+(`DSX_PREGATE=2`) only 52-55%.
+
 ## 9. Negative results
 
 - **Speculative decoding (DSpark).** A verify pass of 2 tokens costs 55 ms (1.5 decode steps), of 3 tokens ~70 ms,
