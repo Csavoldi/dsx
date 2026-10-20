@@ -38,6 +38,10 @@ struct Cli {
     /// A request's `hesitation_penalty` field overrides it.
     #[arg(long, default_value_t = 0.0)]
     hesitation_penalty: f32,
+    /// faster decode, slightly different outputs: the CPU's experts the router ranked R or lower (0 = best of 6) are added one
+    /// layer later instead of being waited for (3: ~+20% decode for KL +0.014 on 2x RTX 3090). Same as DSX_DEFER=R
+    #[arg(long)]
+    defer_rank: Option<usize>,
     /// run the deterministic mock engine instead of the model
     #[arg(long)]
     mock: bool,
@@ -84,6 +88,10 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let mut cli = Cli::parse();
+    if let Some(r) = cli.defer_rank {
+        // read once by the engine (handoff::defer) before the model starts
+        unsafe { std::env::set_var("DSX_DEFER", r.to_string()) };
+    }
     if cli.no_vision {
         cli.vision = None;
     } else if cli.vision.is_none() {

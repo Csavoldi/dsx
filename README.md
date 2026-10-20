@@ -157,6 +157,12 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 | `--chunk` | prefill tokens per pass (default 4096); smaller leaves more VRAM for experts |
 | `DSX_GPUS=0,2` | use only these GPUs (all by default) |
 
+**Speed**
+
+| | |
+|---|---|
+| `--defer-rank R` | add the CPU's lower-ranked experts (router rank R or lower, 0 = best of 6) one layer later instead of waiting for them. `--defer-rank 3`: decode ~30 → ~36 tok/s on 2x RTX 3090, KL 0.369 → 0.383 against the FP8 model. Off by default because outputs change slightly |
+
 Settings by machine (the flags are explained in [docs/placement.md](docs/placement.md)):
 
 | Machine | Flags |

@@ -36,6 +36,7 @@ KL: Lucebox's 1017 eval set, 8 x 1024 tokens against the FP8 model's top-256 log
 | Rotated experts in prefill: activations rotated instead of weights | 3K prefill 217 → 300 tok/s |
 | Decode kernel fusions: router top-k in registers, mixing reduce + finish, KV norm + RoPE + FP8 + store | +1% |
 | Verify passes (speculative decoding) on decode kernels | 2 tokens 101 → 55 ms |
+| Opt-in expert deferral (`--defer-rank 3`, after [KTransformers](https://madsys.cs.tsinghua.edu.cn/publication/ktransformers-unleashing-the-full-potential-of-cpu/gpu-hybrid-inference-for-moe-models/SOSP25-chen.pdf)): the CPU's experts ranked 3-5 enter the residual one layer later, with their own layer's output weights | decode 29.9 → 35.9 tok/s; KL 0.369 → 0.383 |
 | Prefix reuse across turns; vision weights streamed from RAM | — |
 
 ## Compared with other engines
