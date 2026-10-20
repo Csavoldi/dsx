@@ -43,17 +43,18 @@ curl http://localhost:8090/v1/chat/completions -H 'content-type: application/jso
   "messages": [{"role": "user", "content": "Write a haiku about MoE routing."}] }'
 ```
 
-Thinking is on by default; `"reasoning_effort": "none"` or `"thinking": {"type": "disabled"}` turns it off.
-If other machines can reach the server, start it with `--api-key` (see [Parameters](#parameters)).
-
 ## Requirements
 
 | | |
 |---|---|
 | GPU | NVIDIA with 24 GB or more and CUDA 13. It has run on the RTX 3090 (sm_86), RTX 4090 (sm_89) and RTX 5090 (sm_120); an A100 (sm_80) build compiles with `CUDA_ARCHS=80` but has not been run |
-| Memory | ~140 GB of VRAM and RAM combined, for the experts |
+| RAM | 128 GB |
 | CPU | x86 with AVX2 (AVX-VNNI or AVX-512 VNNI preferred) |
 | Disk | ~350 GB: the quant (148 GB) + the Engram shards (203 GB) |
+
+The quant's routed experts take about 140 GB. dsx keeps as many of them as fit in VRAM and in a RAM arena, and reads
+the rest from the GGUF file on disk, which slows decoding. Two 24 GB GPUs with 128 GB of RAM hold all of the experts;
+one 32 GB GPU with 128 GB of RAM leaves about 40 GB of them on disk.
 
 ## Parameters
 
@@ -104,6 +105,15 @@ Settings for the two machines measured above:
 On the single-GPU machine, `--main-gb=-2.0` leaves 2 GB of the GPU's free memory unused by experts, and `DSX_ADAPT=0`
 keeps the GPU's set of experts fixed. Changing the set during a conversation means keeping a RAM copy of every expert
 the GPU might evict, and this machine has no RAM to spare for those copies.
+
+## Thinking
+
+Thinking is on by default, at high effort. A request turns it off or sets the effort:
+
+| | OpenAI API (`/v1/chat/completions`) | Anthropic API (`/v1/messages`) |
+|---|---|---|
+| Thinking off | `"reasoning_effort": "none"` or `"thinking": {"type": "disabled"}` | `"thinking": {"type": "disabled"}` |
+| Effort | `"reasoning_effort"`: `low` (or `minimal`), `high` (or `medium`), `xhigh`, `max` | `"output_config": {"effort": ...}`: `low`, `high` (or `medium`), `xhigh`, `max` |
 
 ## Placement
 
