@@ -156,6 +156,9 @@ enum Cmd {
         /// new `general.name`
         #[arg(long)]
         name: Option<String>,
+        /// write dsx.expert_rot from a quant output dir (QDIR/LNN.json "rot" per layer)
+        #[arg(long)]
+        expert_rot_from: Option<PathBuf>,
     },
     /// Render answered chat requests (JSON lines: system, user, effort, reasoning, answer) as training-style text with
     /// the server's V4.1 template: prompt, reasoning, `</think>`, answer, end of sentence. JSON lines {"text"} to stdout.
@@ -494,15 +497,27 @@ fn main() -> Result<()> {
             w.flush()?;
             println!("{}: {} tensors, {:.2} GB", out.display(), names.len(), off as f64 / 1e9);
         }
-        Cmd::Split { input, prefix, shards, name } => {
-            let paths = dsx::gguf::split(&input, &prefix, shards, name.as_deref())?;
+        Cmd::Split { input, prefix, shards, name, expert_rot_from } => {
+            let mut arrays = vec![];
+            if let Some(q) = &expert_rot_from {
+                let nl = dsx::gguf::Gguf::open(&input)?.u64("deepseek41.num_hidden_layers")? as usize;
+                let rot: Vec<u32> = (0..nl)
+                    .map(|l| -> Result<u32> {
+                        let j: serde_json::Value = serde_json::from_slice(&std::fs::read(q.join(format!("L{l:02}.json")))?)?;
+                        Ok(j["rot"].as_u64().unwrap_or(0) as u32)
+                    })
+                    .collect::<Result<_>>()?;
+                println!("dsx.expert_rot: {} of {nl} layers rotated", rot.iter().filter(|&&r| r != 0).count());
+                arrays.push(("dsx.expert_rot".to_string(), rot));
+            }
+            let paths = dsx::gguf::split(&input, &prefix, shards, name.as_deref(), &arrays)?;
             let (a, b) = (dsx::gguf::Gguf::open(&input)?, dsx::gguf::Gguf::open(&paths[0])?);
             anyhow::ensure!(a.order.len() == b.order.len(), "tensor count {} vs {}", a.order.len(), b.order.len());
             for k in &a.order {
                 let (x, y) = (&a.tensors[k], b.get(k)?);
                 anyhow::ensure!(x.dims == y.dims && x.ty == y.ty && a.bytes(x) == b.bytes(y), "tensor {k} differs");
             }
-            let kv_same = a.kv.iter().all(|(k, v)| b.kv.get(k) == Some(v) || (name.is_some() && k == "general.name"));
+            let kv_same = a.kv.iter().all(|(k, v)| b.kv.get(k) == Some(v) || (name.is_some() && k == "general.name") || arrays.iter().any(|(n, _)| n == k));
             anyhow::ensure!(kv_same, "metadata differs");
             println!("{} tensors and {} metadata keys match", a.order.len(), a.kv.len());
         }

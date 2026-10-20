@@ -185,6 +185,7 @@ impl CpuWorker {
                                 }
                             })
                             .collect();
+                        cm.rot = m.cfg.expert_rot[l];
                         cm.forward(&ex, d, &x, nt, &w, &mut y);
                     }
                     split[2].fetch_add(tf.elapsed().as_nanos() as u64, Ordering::Relaxed);

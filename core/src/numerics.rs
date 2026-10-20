@@ -190,3 +190,45 @@ mod tests {
         assert_eq!(pow2_ceil(0.3), 0.5);
     }
 }
+
+/// Expert input rotation: an orthonormal Sylvester Hadamard of size `ROT` applied to each `ROT`-wide block of `x`
+/// (`x.len()` a multiple of ROT). Its own inverse. Experts quantized in the rotated basis (W R) see R x.
+pub const ROT: usize = 128;
+
+pub fn fwht_blocks(x: &mut [f32]) {
+    assert!(x.len() % ROT == 0);
+    let s = 1.0 / (ROT as f32).sqrt();
+    for b in x.chunks_exact_mut(ROT) {
+        let mut h = 1;
+        while h < ROT {
+            for i in (0..ROT).step_by(2 * h) {
+                for j in i..i + h {
+                    let (a, c) = (b[j], b[j + h]);
+                    b[j] = a + c;
+                    b[j + h] = a - c;
+                }
+            }
+            h *= 2;
+        }
+        for v in b.iter_mut() {
+            *v *= s;
+        }
+    }
+}
+
+#[cfg(test)]
+mod fwht_tests {
+    use super::*;
+    #[test]
+    fn involution_and_norm() {
+        let x: Vec<f32> = (0..2 * ROT).map(|i| ((i * 37 % 11) as f32 - 5.0) * 0.3).collect();
+        let mut y = x.clone();
+        fwht_blocks(&mut y);
+        let (n0, n1): (f32, f32) = (x.iter().map(|v| v * v).sum(), y.iter().map(|v| v * v).sum());
+        assert!((n0 - n1).abs() < 1e-3 * n0);
+        fwht_blocks(&mut y);
+        for (a, b) in x.iter().zip(&y) {
+            assert!((a - b).abs() < 1e-4);
+        }
+    }
+}

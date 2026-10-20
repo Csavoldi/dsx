@@ -88,7 +88,7 @@ fn expert_moe_speed() {
     let mut seed = 7u64;
     // the same six experts in enough layers (>= 256 MB) that cycling through them defeats L2
     let nl = 6;
-    let c = ExpCfg { n_layers: nl, n_experts: 8, inter: 2304, dim: 5120, lim: 10.0 };
+    let c = ExpCfg { n_layers: nl, n_experts: 8, inter: 2304, dim: 5120, lim: 10.0, rot: 0 };
     eprintln!("{}: 6 resident experts (gate+up+down), us per layer and GB/s of expert bytes read", g.name);
     for (gu, dn) in [(GType::Q2_0, GType::Q2_0), (GType::Ptq1_0, GType::Ptq1_0), (GType::Q3K, GType::Q3K)] {
         let mats: Vec<[Vec<u8>; 3]> = (0..6)

@@ -315,13 +315,29 @@ __device__ __forceinline__ void tile_dot(int ty, const uint8_t *const (&m)[NM], 
 // x [nvec][k] -> q (permuted, see top), d, s (sums per 64). grid (k / 256, nvec), block 256.
 // With sel != 0, block (0, 0) also writes the call's plan: the distinct resident experts among sel [T][K] in first-
 // occurrence order, each with every token's pick index. plan[0] = count, entry u at plan + 1 + u * PLAN_W.
+// With rot != 0, each 128-wide half of the block is first rotated by an orthonormal Sylvester Hadamard (experts
+// stored as W R see R x; numerics::fwht_blocks on the CPU).
 extern "C" __global__ void quant_act(const float *x, int k, int8_t *q, float *d, short *s, const int *sel,
-                                     const ExpSlot *tab, int layer, int E, int K, int T, int *plan) {
+                                     const ExpSlot *tab, int layer, int E, int K, int T, int *plan, int rot) {
   __shared__ float sh[8];
   __shared__ int ss[8], first[64];
+  __shared__ float fb[256];
   int tid = threadIdx.x;
   size_t i = (size_t)blockIdx.y * k + blockIdx.x * 256 + tid;
-  float v = x[i], a = warp_max(fabsf(v));
+  float v = x[i];
+  if (rot) {
+    fb[tid] = v;
+    __syncthreads();
+#pragma unroll
+    for (int h = 1; h < 128; h <<= 1) {
+      float own = fb[tid], other = fb[tid ^ h];
+      __syncthreads();
+      fb[tid] = (tid & h) ? other - own : own + other;
+      __syncthreads();
+    }
+    v = fb[tid] * 0.08838834764831845f;  // 1 / sqrt(128)
+  }
+  float a = warp_max(fabsf(v));
   if ((tid & 31) == 0) sh[tid >> 5] = a;
   __syncthreads();
   a = sh[0];

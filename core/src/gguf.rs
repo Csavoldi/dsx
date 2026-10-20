@@ -282,8 +282,8 @@ impl Gguf {
 
 /// Write `src` as `n` llama.cpp-style split files `<prefix>-0000k-of-0000n.gguf`, tensors in file order, balanced by
 /// bytes. Shard 1 carries all metadata; every shard carries `split.no`, `split.count`, `split.tensors.count`.
-/// `name` replaces `general.name`.
-pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>) -> Result<Vec<PathBuf>> {
+/// `name` replaces `general.name`; `u32_arrays` adds (or replaces) u32 array keys (e.g. `dsx.expert_rot`).
+pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays: &[(String, Vec<u32>)]) -> Result<Vec<PathBuf>> {
     use std::io::{BufWriter, Write};
     let g = Gguf::open(src)?;
     anyhow::ensure!(g.paths.len() == 1, "{} is already split", src.display());
@@ -297,9 +297,23 @@ pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>) -> Result<V
         let k = c.string()?;
         let t = c.u32()?;
         c.value(t)?;
-        if !(name.is_some() && k == "general.name") {
+        let replaced = u32_arrays.iter().any(|(n, _)| *n == k);
+        if !(name.is_some() && k == "general.name") && !replaced {
             kv_raw.extend(&map[p0..c.p]);
+        } else if replaced {
+            nkv -= 1;
         }
+    }
+    for (key, vals) in u32_arrays {
+        kv_raw.extend((key.len() as u64).to_le_bytes());
+        kv_raw.extend(key.as_bytes());
+        kv_raw.extend(9u32.to_le_bytes()); // array
+        kv_raw.extend(4u32.to_le_bytes()); // of u32
+        kv_raw.extend((vals.len() as u64).to_le_bytes());
+        for v in vals {
+            kv_raw.extend(v.to_le_bytes());
+        }
+        nkv += 1;
     }
     if let Some(nm) = name {
         nkv = nkv - g.kv.contains_key("general.name") as usize + 1;
@@ -378,4 +392,25 @@ pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>) -> Result<V
         out.push(path);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod split_tests {
+    #[test]
+    fn u32_array_round_trip() {
+        let src = std::path::Path::new(concat!(env!("HOME"), "/.node-llama-cpp/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf"));
+        if !src.exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join("dsx_split_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let prefix = dir.join("t").to_string_lossy().into_owned();
+        let rot: Vec<u32> = (0..26).map(|l| if l % 3 == 0 { 128 } else { 0 }).collect();
+        let p = super::split(src, &prefix, 2, None, &[("dsx.expert_rot".into(), rot.clone())]).unwrap();
+        let g = super::Gguf::open(&p[0]).unwrap();
+        assert_eq!(g.arr_u64("dsx.expert_rot").unwrap(), rot.iter().map(|&v| v as u64).collect::<Vec<_>>());
+        for f in p {
+            std::fs::remove_file(f).ok();
+        }
+    }
 }

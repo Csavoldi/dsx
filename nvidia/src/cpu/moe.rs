@@ -2,6 +2,7 @@
 //! The routing weight scales the SwiGLU output before down (model.py Expert.forward); h is re-quantized
 //! to 256-blocks for the down projection.
 
+use crate::numerics::fwht_blocks;
 use super::pool::{Ctx, Pool};
 use super::qdot::{QAct, QActRaw, QK, dot_rows, dot_rows_sel};
 use crate::gguf::GType;
@@ -65,6 +66,8 @@ pub struct CpuMoe {
     toks: Vec<Vec<usize>>,
     cnt: Vec<AtomicU32>,
     next: [Padded; 2],
+    /// the experts of this call are stored in the Hadamard-rotated basis: rotate x and h before quantizing them
+    pub rot: bool,
 }
 
 #[repr(align(128))]
@@ -87,6 +90,7 @@ struct Job<'a> {
     cnt: &'a [AtomicU32],
     next: &'a [Padded; 2],
     out: *mut f32,
+    rot: bool,
 }
 unsafe impl Sync for Job<'_> {}
 
@@ -100,6 +104,7 @@ impl CpuMoe {
             toks: vec![],
             cnt: vec![],
             next: Default::default(),
+            rot: false,
         }
     }
 
@@ -151,6 +156,7 @@ impl CpuMoe {
             cnt: &self.cnt,
             next: &self.next,
             out: out.as_mut_ptr(),
+            rot: self.rot,
         };
         self.pool.run(&|c: &Ctx| job.work(c));
     }
@@ -165,11 +171,17 @@ impl Job<'_> {
         let mut u = [0f32; MAX_TOKENS * RU];
         // x quantized in parallel, block i by worker i % n
         let xb = dim / QK;
+        let mut rb = [0f32; QK];
         for i in (c.id..self.t * xb).step_by(c.n) {
-            unsafe {
-                self.xa_raw
-                    .quantize_block(i / xb, i % xb, &self.x[i * QK..(i + 1) * QK])
+            let blk = &self.x[i * QK..(i + 1) * QK];
+            let src: &[f32] = if self.rot {
+                rb.copy_from_slice(blk);
+                fwht_blocks(&mut rb);
+                &rb
+            } else {
+                blk
             };
+            unsafe { self.xa_raw.quantize_block(i / xb, i % xb, src) };
         }
         c.barrier();
         let xa = unsafe { &*self.xa };
@@ -198,7 +210,10 @@ impl Job<'_> {
             if self.cnt[e * (inter / QK) + b].fetch_add(1, AcqRel) as usize == QK / RU - 1 {
                 for j in 0..tk.len() {
                     unsafe {
-                        let hb = std::slice::from_raw_parts(h.add(j * inter + b * QK), QK);
+                        let hb = std::slice::from_raw_parts_mut(h.add(j * inter + b * QK), QK);
+                        if self.rot {
+                            fwht_blocks(hb);
+                        }
                         self.ha_raw[e].quantize_block(j, b, hb);
                     }
                 }

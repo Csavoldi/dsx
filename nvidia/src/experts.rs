@@ -33,6 +33,8 @@ pub struct ExpCfg {
     pub inter: usize,
     pub dim: usize,
     pub lim: f32,
+    /// bit l: layer l's experts are stored in the Hadamard-rotated input basis (quant_act rotates x and h)
+    pub rot: u64,
 }
 
 /// most tokens (T) and picks per token (K) of one run_device_fast call
@@ -76,6 +78,7 @@ pub struct GpuExperts {
     inter: usize,
     dim: usize,
     lim: f32,
+    rot: u64,
     pub bytes: usize,
     /// weights repacked for the fast kernels (expert_fast.cuh); None = raw GGUF blocks (DSX_OLD_MOE=1)
     fast: Option<Fast>,
@@ -137,7 +140,7 @@ impl GpuExperts {
     /// DSX_OLD_MOE is set.
     pub fn new(g: &Gpu, m: &Model, which: &[(usize, usize)]) -> Result<GpuExperts> {
         let c = &m.cfg;
-        let cfg = ExpCfg { n_layers: c.n_layers, n_experts: c.n_experts, inter: c.inter, dim: c.dim, lim: c.swiglu_limit };
+        let cfg = ExpCfg { n_layers: c.n_layers, n_experts: c.n_experts, inter: c.inter, dim: c.dim, lim: c.swiglu_limit, rot: c.expert_rot.iter().enumerate().fold(0u64, |m, (l, &r)| m | ((r as u64) << l)) };
         let items: Vec<((usize, usize), RawExpert)> = which
             .iter()
             .map(|&(l, e)| {
@@ -239,6 +242,7 @@ impl GpuExperts {
             inter: c.inter,
             dim: c.dim,
             lim: c.lim,
+            rot: c.rot,
             bytes: total,
             fast,
             swap: None,
@@ -408,6 +412,7 @@ impl GpuExperts {
     /// Enqueue the resident picks of layer `l` (sel/wts device pointers, K picks) for one token: out = their
     /// weighted sum. Fast kernels when the store is repacked, else moe_gu / moe_down.
     pub fn run_device(&self, g: &Gpu, l: usize, sel: u64, wts: u64, k: usize, x: u64, out: u64) -> Result<()> {
+        anyhow::ensure!(self.fast.is_some() || (self.rot >> l) & 1 == 0, "rotated experts need the repacked store (unset DSX_OLD_MOE)");
         if self.fast.is_some() {
             return self.run_device_fast(g, l, sel, wts, k, 1, x, out);
         }
@@ -438,12 +443,13 @@ impl GpuExperts {
         }
         let (dim, inter) = (self.dim, self.inter);
         let (tab, e) = (Arg::P(self.tab.ptr), Arg::I(self.n_experts as i32));
+        let rot = ((self.rot >> l) & 1) as i32;
         g.launch(
             self.k["quant_act"],
             ((dim / 256) as u32, t as u32, 1),
             256,
             0,
-            &[Arg::P(x), Arg::I(dim as i32), Arg::P(f.xq.ptr), Arg::P(f.xd.ptr), Arg::P(f.xs.ptr), Arg::P(sel), tab, Arg::I(l as i32), e, Arg::I(k as i32), Arg::I(t as i32), Arg::P(f.plan.ptr)],
+            &[Arg::P(x), Arg::I(dim as i32), Arg::P(f.xq.ptr), Arg::P(f.xd.ptr), Arg::P(f.xs.ptr), Arg::P(sel), tab, Arg::I(l as i32), e, Arg::I(k as i32), Arg::I(t as i32), Arg::P(f.plan.ptr), Arg::I(rot)],
         )?;
         g.launch(
             self.k["moe_gu_fast"],
@@ -457,7 +463,7 @@ impl GpuExperts {
             ((inter / 256) as u32, (t * k) as u32, 1),
             256,
             0,
-            &[Arg::P(f.h.ptr), Arg::I(inter as i32), Arg::P(f.hq.ptr), Arg::P(f.hd.ptr), Arg::P(f.hs.ptr), Arg::P(0), tab, Arg::I(0), e, Arg::I(0), Arg::I(0), Arg::P(0)],
+            &[Arg::P(f.h.ptr), Arg::I(inter as i32), Arg::P(f.hq.ptr), Arg::P(f.hd.ptr), Arg::P(f.hs.ptr), Arg::P(0), tab, Arg::I(0), e, Arg::I(0), Arg::I(0), Arg::P(0), Arg::I(rot)],
         )?;
         g.launch(
             self.k["moe_down_fast"],

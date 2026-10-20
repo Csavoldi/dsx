@@ -220,6 +220,7 @@ class Layer:
             tm[k] = tm.get(k, 0.0) + time.time() - t0
             return time.time()
         t0 = time.time()
+        orig = []
         for ex, exp, xe, ge, fit, lim, out_t in items:
             W1, W3, W2 = self.weights(exp)
             n_fit = int(fit.sum())
@@ -228,6 +229,11 @@ class Layer:
                 H1, H2 = C.act_hessians(xe[fit], W1, W3, ge[fit], lim)
             else:
                 H1, H2 = torch.eye(C.D, device=xe.device), torch.eye(W2.shape[1], device=xe.device)
+            orig.append((W1, W3, W2))
+            if a.rot:   # quantize W R against R H R; evaluate and propagate in the original basis
+                Rd, Rf = rot_mat(C.D, xe.device), rot_mat(W2.shape[1], xe.device)
+                W1, W3, W2 = W1 @ Rd, W3 @ Rd, W2 @ Rf
+                H1, H2 = Rd @ H1 @ Rd, Rf @ H2 @ Rf
             prep.append((ex, W1, W3, W2, H1, H2, do, n_fit))
             dump = os.environ.get("V41_DUMP")   # DIR: save every 8th expert's weights, Hessians, held-out inputs (experiments)
             if dump and do and ex % 8 == 0 and str(L) == os.environ.get("V41_DUMP_LAYER", str(L)):
@@ -274,6 +280,10 @@ class Layer:
             (q2,) = q[(i, "dn")]
             t0 = time.time()
             self.write(ex, q1, q3, q2)
+            W1, W3, W2 = orig[i]
+            if a.rot:   # back to the original basis (R is its own inverse) for the error and the next layer's input
+                Rd, Rf = rot_mat(C.D, W1.device), rot_mat(W2.shape[1], W1.device)
+                q1, q3, q2 = (q1[0] @ Rd, q1[1]), (q3[0] @ Rd, q3[1]), (q2[0] @ Rf, q2[1])
             t0 = mark("write (to host)", t0)
             st = {"gu": self.gu[ex], "dn": self.dn[ex], "n_fit": n_fit, "gptq": do}
             xv, gv = xe[~fit], ge[~fit]
@@ -304,6 +314,9 @@ class Layer:
         for ex in range(C.NE):   # experts no token reached: static scales, identity importance
             if ex not in self.done:
                 W1, W3, W2 = self.weights(blk.ffn.experts[ex])
+                if self.a.rot:
+                    Rd, Rf = rot_mat(C.D, W1.device), rot_mat(W2.shape[1], W1.device)
+                    W1, W3, W2 = W1 @ Rd, W3 @ Rd, W2 @ Rf
                 q1, q3 = quant([W1, W3], torch.eye(C.D, device=W1.device), self.gu[ex], self.a.damp, False)
                 (q2,) = quant([W2], torch.eye(W2.shape[1], device=W1.device), self.dn[ex], self.a.damp, False)
                 self.write(ex, q1, q3, q2)
@@ -311,7 +324,7 @@ class Layer:
         self.drain()                              # every expert's bytes written before fsync + the done json
         self.sink.close()
         j = {"layer": L, "sink": self.sink.mode, "gu_type": self.gt, "d_type": self.dt, "propagate": self.a.propagate, "damp": self.a.damp,
-             "map": self.a.map, "tier": self.a.tier, "experts": {str(e): stats[e] for e in range(C.NE)}}
+             "map": self.a.map, "tier": self.a.tier, "rot": 128 if self.a.rot else 0, "experts": {str(e): stats[e] for e in range(C.NE)}}
         tmp = C.wpath("q", f"L{L:02d}.json.tmp")
         json.dump(j, open(tmp, "w"))
         os.replace(tmp, C.wpath("q", f"L{L:02d}.json"))
@@ -321,6 +334,21 @@ class Layer:
         e_y = sum(s.get("y_energy", 0) for s in stats.values())
         C.log(f"quant L{L}: {sum(2 * g + d for g, d in self.size) / 2**30:.2f} GiB -> {self.sink.mode}, held-out rel err {e_q / max(e_y, 1e-30):.4f}, "
               f"tiers gu {dict((t, self.gu.count(t)) for t in G.TIERS)} dn {dict((t, self.dn.count(t)) for t in G.TIERS)}")
+
+
+_ROT = {}
+
+
+def rot_mat(C, device):
+    """Block-diagonal orthonormal Sylvester Hadamard (128-wide blocks), symmetric and its own inverse: experts are
+    stored as W R and the engine feeds them R x (numerics::fwht_blocks / quant_act rot)."""
+    k = (C, str(device))
+    if k not in _ROT:
+        H = torch.ones(1, 1)
+        while H.shape[0] < 128:
+            H = torch.cat([torch.cat([H, H], 1), torch.cat([H, -H], 1)], 0)
+        _ROT[k] = torch.block_diag(*[H / 128 ** 0.5] * (C // 128)).to(device)
+    return _ROT[k]
 
 
 def _gpu_codes(Q, S, tier):
@@ -369,6 +397,7 @@ def cmd_init(a):
 
 
 def cmd_layer(a):
+    assert NATIVE or not a.rot, "--rot needs the native batched path (V41_NATIVE=1)"
     if os.path.exists(C.wpath("q", f"L{a.layer:02d}.json")) and os.path.exists(C.wpath("stats", f"L{a.layer:02d}.json")):
         C.log(f"quant L{a.layer}: done already")
         return
@@ -416,6 +445,7 @@ def main():
             g.add_argument("--tier", choices=list(G.TIERS))
             p.add_argument("--propagate", choices=("quant", "teacher"), default="quant")
             p.add_argument("--damp", type=float, default=1.0)
+            p.add_argument("--rot", action="store_true", help="store experts in the 128-block Hadamard-rotated input basis (engine: dsx.expert_rot)")
             p.add_argument("--min-fit", type=int, default=32)
             p.add_argument("--batch", type=int, default=0)
             p.add_argument("--device", default="cuda")

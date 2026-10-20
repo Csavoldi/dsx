@@ -1798,3 +1798,21 @@ extern "C" __global__ void vit_to_bf16(const float *x, __nv_bfloat16 *out, int n
   long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
   if (i < n) out[i] = __float2bfloat16(x[i]);
 }
+
+// rotated experts in prefill: w [rows][cols] f16 dequantized from W R -> W (each 128-wide block of every row through
+// the same orthonormal Hadamard, its own inverse). grid (cols / 128, rows), block 128.
+extern "C" __global__ void fwht_rows_f16(__half *w, int cols) {
+  __shared__ float fb[128];
+  int t = threadIdx.x;
+  size_t i = (size_t)blockIdx.y * cols + blockIdx.x * 128 + t;
+  fb[t] = __half2float(w[i]);
+  __syncthreads();
+#pragma unroll
+  for (int h = 1; h < 128; h <<= 1) {
+    float own = fb[t], other = fb[t ^ h];
+    __syncthreads();
+    fb[t] = (t & h) ? other - own : own + other;
+    __syncthreads();
+  }
+  w[i] = __float2half(fb[t] * 0.08838834764831845f);
+}

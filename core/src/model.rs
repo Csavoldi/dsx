@@ -58,6 +58,8 @@ pub struct Config {
     pub engram_primes: Vec<u64>,      // [layer][ngram-1][head]
     pub engram_multipliers: Vec<u64>, // [layer][shift]
     pub dspark_targets: Vec<usize>,
+    /// per layer: routed experts stored in the Hadamard-rotated input basis (numerics::fwht_blocks); GGUF dsx.expert_rot
+    pub expert_rot: Vec<bool>,
 }
 
 impl Config {
@@ -115,6 +117,17 @@ impl Config {
             engram_primes: g.arr_u64(&k("engram.primes"))?,
             engram_multipliers: g.arr_u64(&k("engram.multipliers"))?,
             dspark_targets: tc["dspark_target_layer_ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect()).unwrap_or_default(),
+            expert_rot: {
+                let n = u("num_hidden_layers")?;
+                match g.arr_u64("dsx.expert_rot") {
+                    Ok(v) => {
+                        anyhow::ensure!(v.len() == n, "dsx.expert_rot has {} entries for {n} layers", v.len());
+                        anyhow::ensure!(v.iter().all(|&b| b == 0 || b == crate::numerics::ROT as u64), "dsx.expert_rot: only block {} is supported", crate::numerics::ROT);
+                        v.into_iter().map(|b| b != 0).collect()
+                    }
+                    Err(_) => vec![false; n],
+                }
+            },
         })
     }
 }
@@ -177,6 +190,7 @@ impl Config {
             engram_primes: e["primes"].as_array().context("primes")?.iter().flat_map(arr).collect(),
             engram_multipliers: e["multipliers"].as_array().context("multipliers")?.iter().flat_map(arr).collect(),
             dspark_targets: arr(&t["dspark_target_layer_ids"]).into_iter().map(|x| x as usize).collect(),
+            expert_rot: vec![false; t["num_hidden_layers"].as_u64().unwrap_or(0) as usize],
         })
     }
 }
@@ -1012,15 +1026,22 @@ impl Model {
         }
         let wsum: f32 = sel.iter().map(|&e| scores[e]).sum::<f32>() + 1e-20;
         let mut y = vec![0f32; d];
-        let mut run = |ex: (&Mat, &Mat, &Mat), wt: f32| {
-            let g = lin(self, ex.0, x);
-            let u = lin(self, ex.1, x);
+        // routed experts of a rotated layer are stored as W R: feed them R x and R h
+        let rot = c.expert_rot.get(l.id).copied().unwrap_or(false);
+        let xr: Vec<f32> = if rot { let mut v = x.to_vec(); crate::numerics::fwht_blocks(&mut v); v } else { vec![] };
+        let mut run = |ex: (&Mat, &Mat, &Mat), wt: f32, routed: bool| {
+            let xin: &[f32] = if routed && rot { &xr } else { x };
+            let g = lin(self, ex.0, xin);
+            let u = lin(self, ex.1, xin);
             let lim = c.swiglu_limit;
-            let hmid: Vec<f32> = g
+            let mut hmid: Vec<f32> = g
                 .iter()
                 .zip(&u)
                 .map(|(&g, &u)| round_bf16(silu(g.min(lim)) * u.clamp(-lim, lim) * wt))
                 .collect();
+            if routed && rot {
+                crate::numerics::fwht_blocks(&mut hmid);
+            }
             let o = lin(self, ex.2, &hmid);
             for i in 0..d {
                 y[i] += o[i];
@@ -1028,9 +1049,9 @@ impl Model {
         };
         for &e in sel {
             let ex = &l.experts[e];
-            run((&ex.gate, &ex.up, &ex.down), scores[e] / wsum * c.route_scale);
+            run((&ex.gate, &ex.up, &ex.down), scores[e] / wsum * c.route_scale, true);
         }
-        run((&l.sh_gate, &l.sh_up, &l.sh_down), 1.0);
+        run((&l.sh_gate, &l.sh_up, &l.sh_down), 1.0, false);
         round_bf16_slice(&mut y);
         y
     }

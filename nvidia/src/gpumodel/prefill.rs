@@ -84,7 +84,7 @@ impl Gpu1Prefill {
         let c = &m.cfg;
         let (d, inter) = (c.dim, c.inter);
         let mut k = std::collections::HashMap::new();
-        for n in ["gather_h", "dequant_f16", "swiglu_rows_f16", "scatter_add"] {
+        for n in ["gather_h", "dequant_f16", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16"] {
             k.insert(n, g1.kernel(n)?);
         }
         Ok(Gpu1Prefill {
@@ -173,6 +173,7 @@ impl GpuModel<'_> {
     /// Enqueue GPU1's experts for this layer (returns without waiting; prefill_moe syncs GPU1 before adding).
     #[allow(clippy::too_many_arguments)]
     fn prefill_moe_gpu1(&self, pb: &PrefillBufs, li: usize, x: u64, n: usize, spans: &[(usize, usize, usize)], all_rows: &[i32], all_w: &[f32]) -> Result<()> {
+        let rot = self.m.cfg.expert_rot[li];
         let c = &self.m.cfg;
         let (d, inter) = (c.dim, c.inter);
         let (g1, gp, s1) = (self.g1.as_ref().unwrap(), self.g1p.as_ref().unwrap(), self.exp1.as_ref().unwrap());
@@ -194,10 +195,16 @@ impl GpuModel<'_> {
             g1.launch(gp.k["gather_h"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.x16.ptr), Arg::P(rows_p), Arg::P(gp.gx16.ptr), Arg::I(d as i32)])?;
             for (wp, yp) in [(wg, gp.gg.ptr), (wu, gp.gu.ptr)] {
                 g1.launch(gp.k["dequant_f16"], ((d as u32).div_ceil(256), inter as u32, 1), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
+                if rot {
+                    g1.launch(gp.k["fwht_rows_f16"], ((d / 128) as u32, inter as u32, 1), 128, 0, &[Arg::P(gp.w16.ptr), Arg::I(d as i32)])?;
+                }
                 g1.gemm_f16(gp.gx16.ptr, gp.w16.ptr, yp, nt, d, inter, inter)?;
             }
             g1.launch(gp.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.gg.ptr), Arg::P(gp.gu.ptr), Arg::P(w_p), Arg::P(gp.h16.ptr), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
             g1.launch(gp.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
+            if rot {
+                g1.launch(gp.k["fwht_rows_f16"], ((inter / 128) as u32, d as u32, 1), 128, 0, &[Arg::P(gp.w16.ptr), Arg::I(inter as i32)])?;
+            }
             g1.gemm_f16(gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d, d)?;
             g1.launch(gp.k["scatter_add"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.go.ptr), Arg::P(rows_p), Arg::P(gp.out.ptr), Arg::I(d as i32)])?;
         }
@@ -671,6 +678,7 @@ impl GpuModel<'_> {
     }
 
     fn prefill_moe(&mut self, pb: &PrefillBufs, li: usize, r0: usize, n: usize) -> Result<()> {
+        let rot = self.m.cfg.expert_rot[li];
         let m = self.m;
         let c = &m.cfg;
         let (d, inter) = (c.dim, c.inter);
@@ -798,10 +806,16 @@ impl GpuModel<'_> {
             };
             for (wp, yp) in [(gp, pb.gg.ptr), (up, pb.gu.ptr)] {
                 self.g.launch(self.k["dequant_f16"], ((d as u32).div_ceil(256), inter as u32, 1), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
+                if rot {
+                    self.g.launch(self.k["fwht_rows_f16"], ((d / 128) as u32, inter as u32, 1), 128, 0, &[Arg::P(pb.w16.ptr), Arg::I(d as i32)])?;
+                }
                 self.g.gemm_f16(pb.gx16.ptr, pb.w16.ptr, yp, nt, d, inter, inter)?;
             }
             self.g.launch(self.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(pb.gg.ptr), Arg::P(pb.gu.ptr), Arg::P(w_p), Arg::P(pb.h16.ptr), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
             self.g.launch(self.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
+            if rot {
+                self.g.launch(self.k["fwht_rows_f16"], ((inter / 128) as u32, d as u32, 1), 128, 0, &[Arg::P(pb.w16.ptr), Arg::I(inter as i32)])?;
+            }
             self.g.gemm_f16(pb.h16.ptr, pb.w16.ptr, pb.go.ptr, nt, inter, d, d)?;
             self.g.launch(self.k["scatter_add"], ((d as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(pb.go.ptr), Arg::P(rows_p), Arg::P(pb.out.ptr), Arg::I(d as i32)])?;
             if let Some(b) = staged {

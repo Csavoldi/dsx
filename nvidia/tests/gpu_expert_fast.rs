@@ -149,7 +149,7 @@ fn mat_dots(ty: GType, raw: &[u8], rows: usize, k: usize, xs: &[&[f32]]) -> Vec<
 fn moe_fast_matches_moe_gu_down() {
     let g = Gpu::new(0).unwrap();
     let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-    let c = ExpCfg { n_layers: 2, n_experts: 14, inter: 2304, dim: 5120, lim: 10.0 };
+    let c = ExpCfg { n_layers: 2, n_experts: 14, inter: 2304, dim: 5120, lim: 10.0, rot: 0 };
     let kinds = [(GType::Q2_0, GType::Q2_0), (GType::Ptq1_0, GType::Q2_0), (GType::Q3K, GType::Q3K), (GType::Q2_0, GType::Q3K), (GType::Ptq1_0, GType::Ptq1_0), (GType::Q8_0, GType::Q8_0)];
     // layer 1: experts 0..10 resident, 10..14 not
     let mats: Vec<(GType, GType, Vec<u8>, Vec<u8>, Vec<u8>)> = (0..10)
