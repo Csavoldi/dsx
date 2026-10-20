@@ -232,8 +232,8 @@ class Layer:
             orig.append((W1, W3, W2))
             if a.rot:   # quantize W R against R H R; evaluate and propagate in the original basis
                 Rd, Rf = rot_mat(C.D, xe.device), rot_mat(W2.shape[1], xe.device)
-                W1, W3, W2 = W1 @ Rd, W3 @ Rd, W2 @ Rf
-                H1, H2 = Rd @ H1 @ Rd, Rf @ H2 @ Rf
+                W1, W3, W2 = W1.float() @ Rd, W3.float() @ Rd, W2.float() @ Rf
+                H1, H2 = Rd @ H1.float() @ Rd, Rf @ H2.float() @ Rf
             prep.append((ex, W1, W3, W2, H1, H2, do, n_fit))
             dump = os.environ.get("V41_DUMP")   # DIR: save every 8th expert's weights, Hessians, held-out inputs (experiments)
             if dump and do and ex % 8 == 0 and str(L) == os.environ.get("V41_DUMP_LAYER", str(L)):
@@ -283,7 +283,7 @@ class Layer:
             W1, W3, W2 = orig[i]
             if a.rot:   # back to the original basis (R is its own inverse) for the error and the next layer's input
                 Rd, Rf = rot_mat(C.D, W1.device), rot_mat(W2.shape[1], W1.device)
-                q1, q3, q2 = (q1[0] @ Rd, q1[1]), (q3[0] @ Rd, q3[1]), (q2[0] @ Rf, q2[1])
+                q1, q3, q2 = (q1[0].float() @ Rd, q1[1]), (q3[0].float() @ Rd, q3[1]), (q2[0].float() @ Rf, q2[1])
             t0 = mark("write (to host)", t0)
             st = {"gu": self.gu[ex], "dn": self.dn[ex], "n_fit": n_fit, "gptq": do}
             xv, gv = xe[~fit], ge[~fit]
@@ -316,7 +316,7 @@ class Layer:
                 W1, W3, W2 = self.weights(blk.ffn.experts[ex])
                 if self.a.rot:
                     Rd, Rf = rot_mat(C.D, W1.device), rot_mat(W2.shape[1], W1.device)
-                    W1, W3, W2 = W1 @ Rd, W3 @ Rd, W2 @ Rf
+                    W1, W3, W2 = W1.float() @ Rd, W3.float() @ Rd, W2.float() @ Rf
                 q1, q3 = quant([W1, W3], torch.eye(C.D, device=W1.device), self.gu[ex], self.a.damp, False)
                 (q2,) = quant([W2], torch.eye(W2.shape[1], device=W1.device), self.dn[ex], self.a.damp, False)
                 self.write(ex, q1, q3, q2)
@@ -344,10 +344,10 @@ def rot_mat(C, device):
     stored as W R and the engine feeds them R x (numerics::fwht_blocks / quant_act rot)."""
     k = (C, str(device))
     if k not in _ROT:
-        H = torch.ones(1, 1)
+        H = torch.ones(1, 1, dtype=torch.float32)   # v41_calib makes bf16 the default dtype
         while H.shape[0] < 128:
             H = torch.cat([torch.cat([H, H], 1), torch.cat([H, -H], 1)], 0)
-        _ROT[k] = torch.block_diag(*[H / 128 ** 0.5] * (C // 128)).to(device)
+        _ROT[k] = torch.block_diag(*[H / 128 ** 0.5] * (C // 128)).to(device=device, dtype=torch.float32)
     return _ROT[k]
 
 
