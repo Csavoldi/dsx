@@ -7,11 +7,7 @@ an NVMe drive. A Rust + CUDA engine built for this one model, with its own 2-bit
 - 30-37 tok/s decode, 334-508 tok/s prefill on 2x RTX 3090
 - Exact routing: no expert pruning, no router bias
 - OpenAI and Anthropic compatible server with tool calls, streaming, image input and a built-in web UI
-- Quality vs the FP8 model: KL 0.395, top-1 74.1%
-
-![dsx speed on 2x RTX 3090 and RTX 5090](cards/dsx-2bit/assets/speed.png)
-
-![Quality against the FP8 original](cards/dsx-2bit/assets/quality.png)
+- Quality vs the FP8 model: KL 0.382, top-1 74.9%
 
 | | 2x RTX 3090, 128 GB DDR4 | RTX 5090, 128 GB DDR5 |
 |---|---:|---:|
@@ -33,7 +29,7 @@ hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 ./target/release/dsx-server --model dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
   --engram v41-1017 --tokenizer v41-1017/tokenizer.json --host 0.0.0.0 --port 8090 \
-  --ctx 131072 --gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110 --rank dsx-2bit/expert-rank.json
+  --ctx 131072 --arena-gb 110 --rank dsx-2bit/expert-rank.json
 ```
 
 Open `http://localhost:8090/` for the web UI, or use any OpenAI client with base URL `http://localhost:8090/v1`:
@@ -57,31 +53,36 @@ Thinking is on by default; `"reasoning_effort": "none"` or `"thinking": {"type":
 
 ## Placement
 
-Experts are spread across VRAM, a RAM arena and the file, hottest first.
+Experts are spread across VRAM, a RAM arena and the file, hottest first. Every visible GPU is used: at startup dsx
+measures each GPU's host link and memory, makes the best-linked one the main GPU (dense weights, KV cache, prefill)
+and fills the others with experts. GPUs with a fast link swap experts to follow the conversation; slower links (x4)
+hold a fixed hot set.
 
 | Flag | |
 |---|---|
-| `--gpu0-gb`, `--gpu1-gb` | GB of experts per GPU; negative = all free VRAM minus that much; `--gpu1-gb 0` for one GPU |
+| `--gpu0-gb` | GB of experts on the main GPU; negative = its free VRAM minus that much (default -1.5) |
+| `--gpu1-gb` (`--aux-gb`) | GB of experts on each other GPU; negative = free VRAM minus that much (default -1.0); 0 = main GPU only |
+| `DSX_GPUS=0,2` | use only these GPUs |
 | `--arena-gb` | RAM for experts the CPU computes |
 | `--rank` | expert hotness order (`expert-rank.json` from the quant repo) |
 | `--vision` | the vision tower for image input; default: `vision.safetensors` next to the model. `--no-vision` for text only |
-| `DSX_ADAPT=N` | GPU0 expert swaps per token to follow the conversation (default 8; 0 = static) |
+| `DSX_ADAPT=N` | expert swaps per token per fast-linked GPU (default 8; 0 = static) |
 
 | Machine | Flags |
 |---|---|
-| 2x 24 GB GPU, 128 GB RAM | `--gpu0-gb=-1.5 --gpu1-gb=-1.0 --arena-gb 110` |
-| 1x 32 GB GPU, 128 GB RAM | `--gpu0-gb=-2.0 --gpu1-gb 0 --arena-gb 80`, `DSX_ADAPT=0` |
+| 2x 24 GB GPU, 128 GB RAM | `--arena-gb 110` |
+| 1x 32 GB GPU, 128 GB RAM | `--gpu0-gb=-2.0 --arena-gb 80`, `DSX_ADAPT=0` |
 
 ## How it works
 
 | Part | Where it runs |
 |---|---|
-| Attention, shared expert, routers (Q8_0) | GPU0 |
-| Hottest routed experts (~3,300 of 15,360) | VRAM on both GPUs; GPU0's set adapts to the conversation |
+| Attention, shared expert, routers (Q8_0) | the main GPU |
+| Hottest routed experts (~3,300 of 15,360 on 2x 24 GB) | VRAM on every GPU; fast-linked GPUs' sets adapt to the conversation |
 | Remaining experts | 14 CPU threads, straight from a hugepage RAM arena |
 | Engram n-gram rows | read from the official shards by a prefetch thread |
 
-- Within a token, GPU0 posts each layer's expert picks to shared memory and the CPU and GPU1 answer through flags,
+- Within a token, the main GPU posts each layer's expert picks to shared memory and the CPU and the other GPUs answer through flags,
   so the whole token runs without waiting on the host.
 - Prefill runs the first half of the layers on every token and the second half only on the tokens it can still affect.
 - The server reuses the cached prefix across turns.
@@ -113,30 +114,19 @@ pi --provider dsx --model deepseek-v4.1-flash:off
 | `eval` | KL / top-1 / perplexity against teacher log-probs |
 | `cmp`, `ref` | GPU against the CPU reference implementation |
 
-## On one AMD MI325X
-
-[`amd/`](amd/) is a second runner (Rust + HIP) for one AMD Instinct MI325X, which holds the whole model in its 256 GiB
-of HBM. Its build keeps most experts in the checkpoint's own MXFP4
-([lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4), 270 GB):
-110-114 tok/s decode at up to 256K context, KL 0.049 vs FP8. Same server as above. Setup and numbers:
-[amd/README.md](amd/README.md), [FINDINGS-AMD.md](FINDINGS-AMD.md).
-
 ## Repo
 
 | Path | |
 |---|---|
-| [`core/`](core/) | shared by both runners: config, GGUF / safetensors readers, block formats, the CPU reference forward and DSpark reference, the server and web UI |
+| [`core/`](core/) | config, GGUF / safetensors readers, block formats, the CPU reference forward, the server and web UI |
 | [`nvidia/`](nvidia/) | the desktop runner: CUDA kernels, expert placement over VRAM / RAM / disk, CPU expert kernels ([nvidia/README.md](nvidia/README.md)) |
-| [`amd/`](amd/) | the MI325X runner: HIP kernels, the MXFP4 + 3-bit build and its export, DSpark on the GPU |
+| [`amd/`](amd/) | a separate runner for one AMD MI325X with a near-lossless MXFP4 build: [amd/README.md](amd/README.md) |
 | [`quant/`](quant/) | the 2-bit quantization pipeline, with native CUDA GPTQ |
-| [`cards/`](cards/) | the Hugging Face model cards ([dsx-2bit](cards/dsx-2bit/README.md), [dsx-mxfp4](cards/dsx-mxfp4/README.md)) |
-| [`FINDINGS.md`](FINDINGS.md), [`FINDINGS-AMD.md`](FINDINGS-AMD.md) | research notes and measurements |
+| [`cards/`](cards/) | the Hugging Face model cards |
+| [`FINDINGS.md`](FINDINGS.md), [`DESIGN.md`](DESIGN.md) | measurements and design notes |
 
-One Cargo workspace: `cargo build --release` builds `core` and the NVIDIA runner (CPU-only without
-`--features cuda`); `-p dsx-amd` builds the AMD runner (needs ROCm). Binaries land in `target/release/`.
-
-The 2-bit quant uses dsx's per-expert formats (ternary, Q2_0, Q3_K per expert) and loads in the NVIDIA runner; the
-MXFP4 + 3-bit build loads in the AMD runner.
+`cargo build --release` builds `core` and the NVIDIA runner (CPU-only without `--features cuda`); binaries land in
+`target/release/`.
 
 ## Credits
 
