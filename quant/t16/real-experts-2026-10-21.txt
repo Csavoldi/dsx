@@ -1,0 +1,24 @@
+# T16 trellis vs EXL3 mul1 vs Unsloth UD-IQ1_M's experts on real experts (October 21, 2026)
+# One RTX PRO 6000 on RunPod (0.74 h, ~$1.84). Checkpoint from R2 (ckpt_list.py + aria2, 882 MB/s).
+# Dumps: forward-only v41_calib chains (layers 0-20) over calib3 (Hessians + held-out tokens) and the Lucebox eval
+# heldout (8 x 1024), every 8th expert of layers 5 and 20 (as quant/experiments/ud_diag). Quantized with exllamav3 at
+# da68d57 (v1.6.4): stock = EXL3 mul1, make_mul16_exllamav3.sh = T16, each JIT-built and imported in its own process;
+# quantize_exl3 with each expert's dumped Hessian (count 1, seed 1). UD rows: UD-IQ1_M's actual experts (ud_fetch.py).
+# Scores (q_eval.py, table.py): token-weighted rel = mean over experts of err/ye weighted by tokens; E_L = sum err /
+# sum ye; shrink = <y_hat, y> / <y, y>, mean over experts. Few Lucebox tokens per expert (20-140), pooled per layer.
+mul1 gaussian 4096^2, H = I, K2: weight MSE 0.06832446157932281
+t16 gaussian 4096^2, H = I, K2: weight MSE 0.07116448134183884
+
+layer 5: 48 experts with tokens in both sets
+  variant              bpw   calib tok-w rel   E_L  |  eval tok-w rel   E_L   | eval/calib (tok-w, E_L) | shrink calib, eval
+  mul1:2,2,2         2.000   0.0515  0.04935  |  0.1107  0.10169  | 2.15 2.06  | 0.928 0.882
+  mul1:ud            1.729   0.1639  0.15305  |  0.1975  0.17384  | 1.20 1.14  | 0.931 0.924
+  t16:2,2,2          2.000   0.0536  0.05144  |  0.1152  0.10578  | 2.15 2.06  | 0.924 0.876
+  t16:2,2,3          2.333   0.0277  0.02570  |  0.0655  0.05647  | 2.37 2.20  | 0.947 0.913
+
+layer 20: 46 experts with tokens in both sets
+  variant              bpw   calib tok-w rel   E_L  |  eval tok-w rel   E_L   | eval/calib (tok-w, E_L) | shrink calib, eval
+  mul1:2,2,2         2.000   0.1163  0.11866  |  0.1859  0.18548  | 1.60 1.56  | 0.891 0.849
+  mul1:ud            2.229   0.1563  0.14778  |  0.1539  0.15058  | 0.98 1.02  | 0.956 0.955
+  t16:2,2,2          2.000   0.1210  0.12343  |  0.1941  0.19440  | 1.60 1.57  | 0.887 0.843
+  t16:2,2,3          2.333   0.0761  0.07563  |  0.1204  0.12041  | 1.58 1.59  | 0.920 0.885
