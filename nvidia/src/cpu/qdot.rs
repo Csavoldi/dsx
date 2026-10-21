@@ -895,12 +895,21 @@ macro_rules! isa_kernels {
                 let rep = _mm256_set_epi64x(0x0303030303030303, 0x0202020202020202, 0x0101010101010101, 0);
                 let bits = _mm256_set1_epi64x(0x8040201008040201u64 as i64);
                 let one = _mm256_set1_epi8(1);
+                // i16 lane l of the scale vector: byte 2 ib (low 8 lanes = first 16 weights) or 2 ib + 1, high byte zero
+                let lsi = _mm256_set_epi64x(0x8001_8001_8001_8001u64 as i64, 0x8001_8001_8001_8001u64 as i64, 0x8000_8000_8000_8000u64 as i64, 0x8000_8000_8000_8000u64 as i64);
                 for r in 0..nr {
                     let mut acc = [_mm256_setzero_ps(); T];
                     for blk in 0..cols / 256 {
                         unsafe {
                             let p = w.as_ptr().add(r * rb + 74 * blk);
                             let mut tot = [_mm256_setzero_si256(); T];
+                            let lsb = {
+                                // 2s + 1 per 16 weights as bytes (lo, hi of each 32), in both lanes
+                                let sc8 = _mm_loadl_epi64(p.add(66) as *const __m128i);
+                                let m = _mm_set1_epi8(15);
+                                let v = _mm_unpacklo_epi8(_mm_and_si128(sc8, m), _mm_and_si128(_mm_srli_epi16(sc8, 4), m));
+                                _mm256_broadcastsi128_si256(_mm_add_epi8(_mm_add_epi8(v, v), _mm_set1_epi8(1)))
+                            };
                             for ib in 0..8 {
                                 let q = std::ptr::read_unaligned(p.add(2 + 8 * ib) as *const u64);
                                 let e = |l: usize| *grid.add(((q >> (16 * l)) & 511) as usize);
@@ -909,8 +918,7 @@ macro_rules! isa_kernels {
                                 let sb = sg(0) | sg(1) << 8 | sg(2) << 16 | sg(3) << 24;
                                 let m = _mm256_cmpeq_epi8(_mm256_and_si256(_mm256_shuffle_epi8(_mm256_set1_epi32(sb as i32), rep), bits), bits);
                                 let sm = _mm256_or_si256(m, one);
-                                let sc = *p.add(66 + ib) as i16;
-                                let ls = _mm256_set_m128i(_mm_set1_epi16(2 * (sc >> 4) + 1), _mm_set1_epi16(2 * (sc & 15) + 1));
+                                let ls = _mm256_shuffle_epi8(lsb, _mm256_add_epi8(lsi, _mm256_set1_epi8(2 * ib as i8)));
                                 for j in 0..T {
                                     let x = _mm256_sign_epi8(ld(tp[j].x.add(256 * blk + 32 * ib)), sm);
                                     tot[j] = _mm256_add_epi32(tot[j], _mm256_madd_epi16(_mm256_maddubs_epi16(wv, x), ls));
@@ -937,12 +945,21 @@ macro_rules! isa_kernels {
                 let rep = _mm256_set_epi64x(0x0303030303030303, 0x0202020202020202, 0x0101010101010101, 0);
                 let bits = _mm256_set1_epi64x(0x8040201008040201u64 as i64);
                 let one = _mm256_set1_epi8(1);
+                // i16 lane l of the scale vector: byte 2 ib (low 8 lanes = first 16 weights) or 2 ib + 1, high byte zero
+                let lsi = _mm256_set_epi64x(0x8001_8001_8001_8001u64 as i64, 0x8001_8001_8001_8001u64 as i64, 0x8000_8000_8000_8000u64 as i64, 0x8000_8000_8000_8000u64 as i64);
                 for r in 0..nr {
                     let mut acc = [_mm256_setzero_ps(); T];
                     for blk in 0..cols / 256 {
                         unsafe {
                             let p = w.as_ptr().add(r * rb + 82 * blk);
                             let mut tot = [_mm256_setzero_si256(); T];
+                            let lsb = {
+                                // 2s + 1 per 16 weights as bytes (lo, hi of each 32), in both lanes
+                                let sc8 = _mm_loadl_epi64(p.add(74) as *const __m128i);
+                                let m = _mm_set1_epi8(15);
+                                let v = _mm_unpacklo_epi8(_mm_and_si128(sc8, m), _mm_and_si128(_mm_srli_epi16(sc8, 4), m));
+                                _mm256_broadcastsi128_si256(_mm_add_epi8(_mm_add_epi8(v, v), _mm_set1_epi8(1)))
+                            };
                             for ib in 0..8 {
                                 let qs = std::ptr::read_unaligned(p.add(2 + 4 * ib) as *const u32) as usize;
                                 let qh = *p.add(66 + ib) as usize;
@@ -951,8 +968,7 @@ macro_rules! isa_kernels {
                                 let sb = std::ptr::read_unaligned(p.add(34 + 4 * ib) as *const i32);
                                 let m = _mm256_cmpeq_epi8(_mm256_and_si256(_mm256_shuffle_epi8(_mm256_set1_epi32(sb), rep), bits), bits);
                                 let sm = _mm256_or_si256(m, one);
-                                let sc = *p.add(74 + ib) as i16;
-                                let ls = _mm256_set_m128i(_mm_set1_epi16(2 * (sc >> 4) + 1), _mm_set1_epi16(2 * (sc & 15) + 1));
+                                let ls = _mm256_shuffle_epi8(lsb, _mm256_add_epi8(lsi, _mm256_set1_epi8(2 * ib as i8)));
                                 for j in 0..T {
                                     let x = _mm256_sign_epi8(ld(tp[j].x.add(256 * blk + 32 * ib)), sm);
                                     tot[j] = _mm256_add_epi32(tot[j], _mm256_madd_epi16(_mm256_maddubs_epi16(wv, x), ls));
