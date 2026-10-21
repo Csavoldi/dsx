@@ -40,6 +40,18 @@ DIRS = [MAIN]
 WORK = os.environ.get("V41_WORK", "/media/Crucial1TB/v41-calib")
 D, HC, NE, TOPK = 5120, 4, 384, 6
 TIERS = list(G.TIERS)
+# V41_SCREEN_TIERS=a,b: screen only these scalar tiers ("" = none: an iq2xxs-only screening run whose e_iq2xxs merge
+# into an earlier run's stats; the chain's propagated activations do not depend on the tiers)
+_SCREEN_TIERS = [t for t in os.environ.get("V41_SCREEN_TIERS", ",".join(TIERS)).split(",") if t]
+# the IQ2_XXS tier is screened too when the native library (with its kernels) loads; V41_SCREEN_IQ2=0 skips it
+_IQ2 = None
+if os.environ.get("V41_SCREEN_IQ2", "1") != "0":
+    try:
+        import v41_iq2 as _IQ2  # noqa: E402
+    except (OSError, AttributeError) as e:   # libqkern.so missing or without the IQ2 kernels
+        if not _SCREEN_TIERS:
+            raise SystemExit(f"v41_calib: an iq2xxs-only screening run (V41_SCREEN_TIERS=\"\") without v41_iq2: {e}")
+        print(f"v41_calib: no iq2xxs screening ({e})", file=sys.stderr)
 BF16 = torch.bfloat16
 
 
@@ -259,11 +271,12 @@ def cmd_prep_ids(a):
     os.makedirs(WORK, exist_ok=True)
     tok = AutoTokenizer.from_pretrained(MAIN)
     ids = np.concatenate([np.fromfile(f, dtype=np.int32) for f in a.ids])
-    tokens = ids.reshape(1, -1).astype(np.int32)
+    tokens = ids.reshape(a.rows, -1).astype(np.int32)   # --rows N: N independent sequences (e.g. the Lucebox eval's 8 x 1024)
+    n = tokens.shape[0]
     np.save(wpath("tokens.npy"), tokens)
-    json.dump({"n": 1, "seq": int(tokens.shape[1]), "domains": [a.domain], "is_eval": [True], "corpus": None},
+    json.dump({"n": n, "seq": int(tokens.shape[1]), "domains": [a.domain] * n, "is_eval": [True] * n, "corpus": None},
               open(wpath("meta.json"), "w"))
-    args = model_args(1, int(tokens.shape[1]))
+    args = model_args(n, int(tokens.shape[1]))
     layout = M.EngramLayout.from_args(args)
     hs = M.NgramHashState(args, layout, tok)
     with torch.inference_mode():
@@ -427,7 +440,7 @@ def act_hessians(xf, W1, W3, gf, lim):
     return H1, H2
 
 
-def screen_expert(exp, xe, ge, fit, lim, min_fit, damps=(0.01,)):
+def screen_expert(exp, xe, ge, fit, lim, min_fit, damps=(0.01,), key=None):
     """GPTQ + RTN at every tier on the fit tokens, output error on the held-out tokens.  Returns a stats dict."""
     W1 = K.dequant_fp4_weight(exp.w1.weight, exp.w1.scale)
     W3 = K.dequant_fp4_weight(exp.w3.weight, exp.w3.scale)
@@ -443,6 +456,12 @@ def screen_expert(exp, xe, ge, fit, lim, min_fit, damps=(0.01,)):
     else:                               # too few tokens for a Hessian: weight-space importance only
         H1 = torch.eye(D, device=xe.device); H2 = torch.eye(W2.shape[1], device=xe.device)
         st["lowdata"] = True
+    dump = os.environ.get("V41_DUMP")   # DIR: every 8th expert's weights, Hessians, held-out inputs (quant_variants)
+    if dump and key is not None and key[1] % 8 == 0 and str(key[0]) in os.environ.get("V41_DUMP_LAYER", str(key[0])).split(","):
+        os.makedirs(dump, exist_ok=True)
+        torch.save({"L": key[0], "ex": key[1], "W1": W1.bfloat16().cpu(), "W3": W3.bfloat16().cpu(), "W2": W2.bfloat16().cpu(),
+                    "H1": H1.cpu(), "H2": H2.cpu(), "xv": xv.cpu(), "gv": gv.cpu(), "lim": lim, "n_fit": st["n_fit"]},
+                   os.path.join(dump, f"L{key[0]:02d}_e{key[1]:03d}.pt"))
     if not len(xv):
         return st
     Y = expert_f(xv, W1, W3, W2, gv, lim)
@@ -450,15 +469,24 @@ def screen_expert(exp, xe, ge, fit, lim, min_fit, damps=(0.01,)):
     err = lambda q1, q3, q2: sq_err(xv, q1, q3, q2, gv, lim, Y)
     for di, damp in enumerate(damps):   # several damps (sweep): keys after the first get an "@damp" suffix
         sfx = "" if di == 0 else f"@{damp:g}"
-        Qg1, Qr1 = G.quantize_stack([W1, W3], H1, TIERS, damp=damp, do_gptq=do_gptq)
-        Qg2, Qr2 = G.quantize_stack([W2], H2, TIERS, damp=damp, do_gptq=do_gptq)
-        Qg1, Qg2 = (Qg1, Qg2) if do_gptq else (Qr1, Qr2)
-        for t in TIERS:
+        tiers = _SCREEN_TIERS
+        if tiers:
+            Qg1, Qr1 = G.quantize_stack([W1, W3], H1, tiers, damp=damp, do_gptq=do_gptq)
+            Qg2, Qr2 = G.quantize_stack([W2], H2, tiers, damp=damp, do_gptq=do_gptq)
+            Qg1, Qg2 = (Qg1, Qg2) if do_gptq else (Qr1, Qr2)
+        for t in tiers:
             st[f"e_{t}{sfx}"] = err(Qg1[t][0], Qg1[t][1], Qg2[t][0])            # whole expert at tier t (GPTQ)
             st[f"egu_{t}{sfx}"] = err(Qg1[t][0], Qg1[t][1], W2)                 # gate+up only
             st[f"edn_{t}{sfx}"] = err(W1, W3, Qg2[t][0])                        # down only
             if di == 0:
                 st[f"rtn_{t}"] = err(Qr1[t][0], Qr1[t][1], Qr2[t][0])          # RTN control
+        if _IQ2 is not None:   # IQ2_XXS (v41_iq2: native codebook GPTQ, no refit like the scalar tiers here)
+            n1 = W1.shape[0]
+            q13 = _IQ2.quantize(torch.cat([W1, W3]).float(), H1.float(), damp, 0)[0]
+            q2 = _IQ2.quantize(W2.float().contiguous(), H2.float(), damp, 0)[0]
+            st[f"e_iq2xxs{sfx}"] = err(q13[:n1], q13[n1:], q2)
+            st[f"egu_iq2xxs{sfx}"] = err(q13[:n1], q13[n1:], W2)
+            st[f"edn_iq2xxs{sfx}"] = err(W1, W3, q2)
     return st
 
 
@@ -567,7 +595,7 @@ def cmd_layer(a):
                 st.update(extra)
             Y.index_add_(0, tok, out.float())
             if not a.no_gptq and ex < a.gptq_experts and ex % a.expert_stride == 0:
-                st.update(screen_expert(blk.ffn.experts[ex], xe, ge, ~is_eval_tok[tok], lim, a.min_fit, a.damps))
+                st.update(screen_expert(blk.ffn.experts[ex], xe, ge, ~is_eval_tok[tok], lim, a.min_fit, a.damps, key=(L, ex)))
             stats[ex] = st
             if ex % 64 == 63:
                 log(f"layer {L}: experts {ex + 1}/{NE} ({time.time() - t2:.0f} s)")
@@ -677,6 +705,7 @@ def main():
     p.add_argument("--think-weight", type=int, default=0, help="share of reasoning traces (think.jsonl) next to the mix's 32")
     sub.add_parser("init")
     p = sub.add_parser("prep-ids"); p.add_argument("ids", nargs="+"); p.add_argument("--domain", default="custom")
+    p.add_argument("--rows", type=int, default=1, help="split the ids into this many equal sequences")
     p = sub.add_parser("head"); p.add_argument("--layer", type=int, default=40, help="h/L to read (40 = after the last block)")
     p.add_argument("--device", default="cuda")
     p.add_argument("--save-argmax", action="store_true", help="also write stats/head_argmax_LNN.npy (int32 [N, S-1])")

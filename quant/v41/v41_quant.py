@@ -44,6 +44,7 @@ import v41_gptq as G  # noqa: E402
 NATIVE = os.environ.get("V41_NATIVE", "1") != "0"   # native/qkern.cu GPTQ + scale search, batched over experts
 if NATIVE:
     import v41_native as NV  # noqa: E402
+    import v41_iq2 as IQ2  # noqa: E402  (IQ2_XXS tier: codebook GPTQ, native/qkern.cu)
 import v41_gptq_graph as GG  # noqa: E402  (bit-identical CUDA-graph gptq, 8x faster)
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 
@@ -148,13 +149,14 @@ class Layer:
         self.pool, self.pending = ThreadPoolExecutor(max_workers=max(WRITE_THREADS, 1)), []
 
     def _encode_put(self, ex, mats):
-        b = [(_pack_codes(q, s, t) if q.dtype == np.int8 else F.encode_tier(q, s, t)).tobytes() for q, s, t in mats]
+        b = [(s if t == "iq2xxs" else _pack_codes(q, s, t) if q.dtype == np.int8 else F.encode_tier(q, s, t)).tobytes() for q, s, t in mats]
         self.sink.put(ex, *b)
 
     def write(self, ex, q1, q3, q2):
         if self.sink.mode != "none":
             if NATIVE:   # integer codes computed on the GPU: int8 to the host instead of fp32 values (4x fewer bytes)
-                mats = [(_gpu_codes(q, s, t).cpu().numpy(), s.cpu().numpy(), t)
+                mats = [(None, IQ2.encode(*(x.cpu().numpy() for x in s[1:])), t) if t == "iq2xxs" else
+                        (_gpu_codes(q, s, t).cpu().numpy(), s.cpu().numpy(), t)
                         for (q, s), t in ((q1, self.gu[ex]), (q3, self.gu[ex]), (q2, self.dn[ex]))]
             else:
                 mats = [(q.cpu().numpy(), s.cpu().numpy(), t)
@@ -230,26 +232,31 @@ class Layer:
             else:
                 H1, H2 = torch.eye(C.D, device=xe.device), torch.eye(W2.shape[1], device=xe.device)
             orig.append((W1, W3, W2))
+            dump = os.environ.get("V41_DUMP")   # DIR: save every 8th expert's weights, Hessians, held-out inputs (original basis, before --rot)
+            # in the layers listed by V41_DUMP_LAYER (comma-separated; default all)
+            if dump and do and ex % 8 == 0 and str(L) in os.environ.get("V41_DUMP_LAYER", str(L)).split(","):
+                os.makedirs(dump, exist_ok=True)
+                torch.save({"L": L, "ex": ex, "W1": W1.bfloat16().cpu(), "W3": W3.bfloat16().cpu(), "W2": W2.bfloat16().cpu(),
+                            "H1": H1.cpu(), "H2": H2.cpu(), "xv": xe[~fit].cpu(), "gv": ge[~fit].cpu(), "lim": lim,
+                            "gu": self.gu[ex], "dn": self.dn[ex], "n_fit": n_fit}, os.path.join(dump, f"L{L:02d}_e{ex:03d}.pt"))
             if a.rot:   # quantize W R against R H R; evaluate and propagate in the original basis
                 Rd, Rf = rot_mat(C.D, xe.device), rot_mat(W2.shape[1], xe.device)
                 W1, W3, W2 = W1.float() @ Rd, W3.float() @ Rd, W2.float() @ Rf
                 H1, H2 = Rd @ H1.float() @ Rd, Rf @ H2.float() @ Rf
             prep.append((ex, W1, W3, W2, H1, H2, do, n_fit))
-            dump = os.environ.get("V41_DUMP")   # DIR: save every 8th expert's weights, Hessians, held-out inputs (experiments)
-            if dump and do and ex % 8 == 0 and str(L) == os.environ.get("V41_DUMP_LAYER", str(L)):
-                os.makedirs(dump, exist_ok=True)
-                torch.save({"L": L, "ex": ex, "W1": W1.bfloat16().cpu(), "W3": W3.bfloat16().cpu(), "W2": W2.bfloat16().cpu(),
-                            "H1": H1.cpu(), "H2": H2.cpu(), "xv": xe[~fit].cpu(), "gv": ge[~fit].cpu(), "lim": lim,
-                            "gu": self.gu[ex], "dn": self.dn[ex], "n_fit": n_fit}, os.path.join(dump, f"L{L:02d}_e{ex:03d}.pt"))
         t0 = mark("dequant+hessians", t0)
         q = {}
         for part in ("gu", "dn"):
             tiers = self.gu if part == "gu" else self.dn
             Ws, Ss, los, his, Hs, idx = [], [], [], [], [], []
+            iq = []   # IQ2_XXS experts of this part: (i, mats, W stacked, H)
             for i, (ex, W1, W3, W2, H1, H2, do, n_fit) in enumerate(prep):
                 H = H1 if part == "gu" else H2
                 mats = [W1, W3] if part == "gu" else [W2]
                 t = tiers[ex]
+                if t == "iq2xxs":   # without GPTQ H is the identity: the same path rounds group by group
+                    iq.append((i, mats, torch.cat(mats).float(), H.float()))
+                    continue
                 lo, hi, _, _ = G.TIERS[t]
                 d = torch.diag(H).clamp_min(0) + 1e-8
                 sc = [NV.search_scales(W, d, t) for W in mats]
@@ -296,6 +303,9 @@ class Layer:
                 del Hinv
                 for k, (i, mats, sc) in enumerate(idx):
                     q[(i, part)] = self._split(Qb[k], mats, sc)
+            if iq:
+                q.update(self._iq2_part(iq, part, a))
+                t0 = mark("iq2xxs", t0)
         res = []
         for i, (ex, W1, W3, W2, H1, H2, do, n_fit) in enumerate(prep):
             _, _, xe, ge, fit, lim, out_t = items[i]
@@ -324,6 +334,39 @@ class Layer:
             mark("quantized forward", t0)
             res.append((out, st))
         return res
+
+    @staticmethod
+    def _iq2_part(iq, part, a):
+        """IQ2_XXS experts of one part, batched: scales, codebook GPTQ, and with --refit and V41_IQ2_REFIT=1 the scalar
+        tiers' sequence (refit, GPTQ on the refit scales, a final refit). -> {(i, part): [(Q, ("iq2xxs", IDX, SGN, ls, dsup)) per matrix]}"""
+        Ws = torch.stack([w for _, _, w, _ in iq])
+        Hs = torch.stack([h for _, _, _, h in iq])
+        ds = torch.diagonal(Hs, dim1=-2, dim2=-1).clamp_min(0) + 1e-8
+        sc = [IQ2.search_scales(Ws[k], ds[k]) for k in range(len(iq))]
+        DB = torch.stack([s[2] for s in sc])
+        Hinv, dead = _hinv_chol_batched(Hs, a.damp)
+        Qb, IDX, SGN = IQ2.gptq_batched(Ws, DB, ds, Hinv, dead)
+        res = [(Qb[k], IDX[k], SGN[k], sc[k][1], sc[k][0]) for k in range(len(iq))]
+        # refit lowers the fit tokens' error but not held-out error for the codebook (A/B, layer 20: 0.1463 -> 0.1467):
+        # opt-in with V41_IQ2_REFIT=1
+        if a.refit and os.environ.get("V41_IQ2_REFIT") == "1":
+            r1 = [IQ2.refit(Ws[k], Qb[k], DB[k], Hs[k], (sc[k][0], sc[k][1])) for k in range(len(iq))]
+            DB1 = torch.stack([r[3] for r in r1])
+            Qb, IDX, SGN = IQ2.gptq_batched(Ws, DB1, ds, Hinv, dead)
+            res = []
+            for k in range(len(iq)):
+                Qk, dsup, ls, _ = IQ2.refit(Ws[k], Qb[k], DB1[k], Hs[k], (r1[k][1], r1[k][2]))
+                res.append((Qk, IDX[k], SGN[k], ls, dsup))
+        del Hinv
+        out = {}
+        for (i, mats, _, _), (Qk, ik, sk, lk, dk) in zip(iq, res):
+            parts, r0 = [], 0
+            for W in mats:
+                r1 = r0 + W.shape[0]
+                parts.append((Qk[r0:r1], ("iq2xxs", ik[r0:r1], sk[r0:r1], lk[r0:r1], dk[r0:r1])))
+                r0 = r1
+            out[(i, part)] = parts
+        return out
 
     @staticmethod
     def _split(Q, mats, sc):
@@ -449,6 +492,7 @@ def cmd_init(a):
 
 def cmd_layer(a):
     assert NATIVE or not a.rot, "--rot needs the native batched path (V41_NATIVE=1)"
+    assert NATIVE or "iq2xxs" not in sum(tiers_for(a, a.layer), []), "the iq2 tier needs the native batched path (V41_NATIVE=1)"
     if os.path.exists(C.wpath("q", f"L{a.layer:02d}.json")) and os.path.exists(C.wpath("stats", f"L{a.layer:02d}.json")):
         C.log(f"quant L{a.layer}: done already")
         return

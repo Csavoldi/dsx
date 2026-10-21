@@ -70,10 +70,17 @@ Integer codes match the old path to >= 99.999% (rounding ties under FMA contract
 
 ## Credits
 
-- `v41/v41_alloc.py`, `v41_calib.py`, `v41_formats.py`, `v41_gptq.py`, `v41_gptq_graph.py`, `v41_quant.py` are derived from
-  [Xolotl](https://github.com/Indras-Mirror/Xolotl)'s `tools/v41` (commit `7375e305`), MIT License, Copyright (c) 2026
-  Niko1221 and the Strata contributors ([`v41/LICENSE-Xolotl`](v41/LICENSE-Xolotl)); our changes are marked in the
-  files and in `xolotl-v41.patch`.
+- `v41/v41_alloc.py`, `v41_calib.py`, `v41_formats.py`, `v41_gguf.py`, `v41_gptq.py`, `v41_gptq_graph.py`, `v41_quant.py`
+  are derived from [Xolotl](https://github.com/Indras-Mirror/Xolotl)'s `tools/v41` (commit `7375e305`), and
+  `v41_gguf_meta.py` and `v41/torch_kernels/kernel.py` are copied from it unchanged; MIT License, Copyright (c) 2026 Niko1221 and the Strata contributors
+  ([`v41/LICENSE-Xolotl`](v41/LICENSE-Xolotl)); our changes are marked in the files and in `xolotl-v41.patch`.
+- IQ2_XXS (the `iq2xxs` tier: `v41/v41_iq2.py`, `v41/v41_iqgrid.py`, the engine's kernels): the format and its codebook
+  tables are ggml's ([ggml](https://github.com/ggml-org/ggml) / [llama.cpp](https://github.com/ggml-org/llama.cpp), MIT,
+  Copyright (c) 2023-2026 The ggml authors; the notice is in `v41_iqgrid.py`). Codebook GPTQ (each group of 8 columns
+  rounded jointly, error fed back column by column) follows GPTVQ (van Baalen et al.,
+  [arXiv 2402.15319](https://arxiv.org/abs/2402.15319)), QuIP# (Tseng et al.,
+  [arXiv 2402.04396](https://arxiv.org/abs/2402.04396)) and AQLM (Egiazarian et al.,
+  [arXiv 2401.06118](https://arxiv.org/abs/2401.06118)).
 - GPTQ: Frantar, Ashkboos, Hoefler, Alistarh, *GPTQ: Accurate Post-Training Quantization for Generative Pre-trained
   Transformers* ([arXiv 2210.17323](https://arxiv.org/abs/2210.17323)).
 - Hadamard rotation of expert inputs (`--rot`): incoherence processing as in QuIP# (Tseng et al.,

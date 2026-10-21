@@ -15,8 +15,8 @@ held-out tokens: their error is not measured, so they must not drift to ternary 
 import argparse, glob, json, os, re
 import numpy as np
 
-TIERS = ["ptq1", "q2_0", "q3_k"]
-BPW = {"ptq1": 1.75, "q2_0": 2.25, "q3_k": 3.4375}
+TIERS = ["ptq1", "iq2xxs", "q2_0", "q3_k"]   # ascending bytes (the solver moves between neighbors)
+BPW = {"ptq1": 1.75, "iq2xxs": 2.0625, "q2_0": 2.25, "q3_k": 3.4375}
 GU, DN = 2 * 5120 * 2304, 5120 * 2304          # params per expert: gate+up, down
 
 
@@ -44,6 +44,9 @@ def items_for(stats, a):
                 ch = []
                 for ti, t in enumerate(TIERS):
                     if ti < floor:
+                        continue
+                    # IQ2_XXS only where screened (e_iq2xxs), and not for the experts --iq2-not-hot keeps in Q2_0
+                    if t == "iq2xxs" and (not unseen and key + t not in s or (L, int(e)) in a.hot):
                         continue
                     err = s.get(key + t, 0.0) if not unseen else 0.0
                     ch.append((t, w * err / energy, n * BPW[t] / 8))
@@ -112,8 +115,13 @@ def main():
     ap.add_argument("--unseen-floor", default="q2_0", choices=TIERS)
     ap.add_argument("--out", default=None)
     ap.add_argument("--budget-bpw", type=float, default=None, help="ds41: budget in bits/weight (default: all-Q2_0 = 2.25)")
+    ap.add_argument("--rank", default=None, help="expert-rank.json ([[layer, expert, tokens], ...] hottest first)")
+    ap.add_argument("--iq2-not-hot", type=int, default=0, metavar="N",
+                    help="the N hottest experts of --rank (the ones dsx places in VRAM) may not take iq2xxs: Q2_0's GPU "
+                         "kernel is ~1.6x faster than IQ2_XXS's on an RTX 3090")
     a = ap.parse_args()
     a.lw = json.load(open(a.layer_weights)) if a.layer_weights else None
+    a.hot = {(int(r[0]), int(r[1])) for r in json.load(open(a.rank))[:a.iq2_not_hot]} if a.iq2_not_hot else set()
     layers = None
     if a.layers:
         x, y = map(int, a.layers.split("-"))
@@ -132,23 +140,25 @@ def main():
     print(f"layers {sorted(stats)}  items {len(items)}  budget {budget / 2**30:.2f} GiB (all-Q2_0)  used {used / 2**30:.2f} GiB")
     print(f"proxy error (sum of per-layer relative output error): all-Q2_0 {q2_err:.4f}  mixed {mixed_err:.4f}  "
           f"({100 * (mixed_err / q2_err - 1):+.1f}%)")
-    print(f"{'L':>3} {'ptq1':>5} {'q2_0':>5} {'q3_k':>5} {'unseen':>6} {'bpw':>6}   GPTQ/RTN err ratio (ptq1 q2 q3)   rel err @q2")
+    print(f"{'L':>3} {'ptq1':>5} {'iq2':>5} {'q2_0':>5} {'q3_k':>5} {'unseen':>6} {'bpw':>6}   GPTQ/RTN err ratio (ptq1 q2 q3)   rel err @q2")
     amap = {}
     for L in sorted(stats):
         ks = [k for k, it in enumerate(items) if it[0] == L]
         c = {t: sum(items[k][3][sel[k]][0] == t for k in ks) for t in TIERS}
         bits = sum(items[k][3][sel[k]][2] for k in ks) * 8 / sum((GU + DN) if items[k][2] == "all" else (GU if items[k][2] == "gu" else DN) for k in ks)
         ex = stats[L]["experts"].values()
-        r = [np.nansum([s.get(f"e_{t}", np.nan) for s in ex]) / max(np.nansum([s.get(f"rtn_{t}", np.nan) for s in ex]), 1e-30) for t in TIERS]
+        r = [np.nansum([s.get(f"e_{t}", np.nan) for s in ex]) / max(np.nansum([s.get(f"rtn_{t}", np.nan) for s in ex]), 1e-30)
+             for t in ("ptq1", "q2_0", "q3_k")]
         relq2 = np.nansum([s.get("e_q2_0", np.nan) for s in ex]) / max(sum(s.get("y_energy", 0) for s in ex), 1e-30)
-        print(f"{L:>3} {c['ptq1']:>5} {c['q2_0']:>5} {c['q3_k']:>5} {sum(items[k][4] for k in ks):>6} {bits:>6.3f}   "
+        print(f"{L:>3} {c['ptq1']:>5} {c['iq2xxs']:>5} {c['q2_0']:>5} {c['q3_k']:>5} {sum(items[k][4] for k in ks):>6} {bits:>6.3f}   "
               f"{r[0]:.3f} {r[1]:.3f} {r[2]:.3f}                  {relq2:.4f}")
         for k in ks:
             it = items[k]
             amap.setdefault(str(L), {}).setdefault(str(it[1]), {})[it[2]] = it[3][sel[k]][0]
     if a.out:
         json.dump({"layers": sorted(stats), "per_proj": a.per_proj, "budget_bytes": budget, "used_bytes": used,
-                   "proxy_err_all_q2": q2_err, "proxy_err_mixed": mixed_err, "args": vars(a), "map": amap},
+                   "proxy_err_all_q2": q2_err, "proxy_err_mixed": mixed_err,
+                   "args": {k: v for k, v in vars(a).items() if k != "hot"}, "map": amap},
                   open(a.out, "w"))
         print("wrote", a.out)
 

@@ -8,6 +8,8 @@ Types (ggml ids):
   Q2_0   42   64 weights:  fp16 d, qs[16] 2-bit (00=-1 01=0 10=+1 11=+2)       18 B   (the default expert tier)
   Q3_K   11  256 weights:  hmask[32] qs[64] scales[12] (6-bit, sc+32) fp16 d  110 B   (sensitive experts)
   PTQ1_0 143 128 weights:  qs[24] base-3 (5 trits/byte), qh[2] (4), fp16 d    28 B   (weakest experts; llama-tq's type)
+  IQ2_XXS 16 256 weights:  fp16 d, 8 x (u32 grid indices, u32 signs + ls)     66 B   (ggml's codebook 2-bit; v41_iq2.py
+                           quantizes and encodes it: its "scales" are the codebook choices, not encode_tier's)
 
 Every expert encoder takes what v41_gptq produces: the quantized VALUES Q [R, C] (codes x scale, exactly
 representable) and the per-group scales S [R, C/G] in their stored format (v41_gptq.search_scales).  The codes are
@@ -19,15 +21,15 @@ tools/v41/tests/test_v41_formats.py.
 """
 import numpy as np
 
-Q8_0, Q3_K, Q2_0, PTQ1_0 = 8, 11, 42, 143
+Q8_0, Q3_K, Q2_0, PTQ1_0, IQ2_XXS = 8, 11, 42, 143, 16
 F32, F16, I8, I32 = 0, 1, 24, 26
-TIER_TYPE = {"ptq1": PTQ1_0, "q2_0": Q2_0, "q3_k": Q3_K}
+TIER_TYPE = {"ptq1": PTQ1_0, "q2_0": Q2_0, "q3_k": Q3_K, "iq2xxs": IQ2_XXS}
 TYPE_TIER = {v: k for k, v in TIER_TYPE.items()}
 # (weights per block, bytes per block)
 BLOCK = {F32: (1, 4), F16: (1, 2), I8: (1, 1), I32: (1, 4), Q8_0: (32, 34), Q2_0: (64, 18), Q3_K: (256, 110),
-         PTQ1_0: (128, 28)}
+         PTQ1_0: (128, 28), IQ2_XXS: (256, 66)}
 TYPE_NAME = {F32: "F32", F16: "F16", I8: "I8", I32: "I32", Q8_0: "Q8_0", Q2_0: "Q2_0", Q3_K: "Q3_K",
-             PTQ1_0: "PTQ1_0"}
+             PTQ1_0: "PTQ1_0", IQ2_XXS: "IQ2_XXS"}
 
 
 def row_bytes(t, n):

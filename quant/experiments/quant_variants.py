@@ -12,6 +12,7 @@ Variants:
   iq2xxs    llama.cpp IQ2_XXS (2.0625 bpw): 8-weight vectors from its 256-entry grid with sign patterns, 4-bit
             scale per 32 x fp16 per 256; static scales, then GPTQ with block-of-8 error feedback
   had+iq2xxs
+  iq2n, iq2nr  IQ2_XXS by the native quantizer (v41_iq2.py), iq2nr with 2 rounds of scale refit
 
 usage: python quant_variants.py DUMPDIR GRIDS.json [--variants base,refit,...] [--limit N]
 """
@@ -171,6 +172,17 @@ class IQ2XXS:
         return Q
 
 
+class IQ2Native:
+    """IQ2_XXS by the native quantizer (v41_iq2.py): same rules as IQ2XXS; `iters` rounds of least-squares scale refit
+    + GPTQ (iq2nr: 2, then a final refit)."""
+    def __init__(self, iters):
+        self.iters = iters
+
+    def gptq(self, W, H, damp):
+        import v41_iq2
+        return v41_iq2.quantize(W.float().contiguous(), H.float(), damp, self.iters)[0]
+
+
 # ---------------------------------------------------------------- IQ1_S / IQ1_M
 
 class IQ1:
@@ -300,7 +312,9 @@ def main():
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     grids = json.load(open(a.grids))
-    iq = {"iq2xxs": IQ2XXS(grids), "iq1s": IQ1(grids, "s"), "iq1m": IQ1(grids, "m")}
+    iq = {"iq2xxs": IQ2XXS(grids), "iq2n": IQ2Native(0), "iq2nr": IQ2Native(2)}
+    if "iq1s_grid" in grids:   # IQ1 grids only in the IQ1 grids file
+        iq.update({"iq1s": IQ1(grids, "s"), "iq1m": IQ1(grids, "m")})
     files = sorted(glob.glob(os.path.join(a.dump, "*.pt")))
     if a.limit:
         files = files[:a.limit]
@@ -320,8 +334,10 @@ def main():
             for t in tier_list:
                 t0 = time.time()
                 q1, q3, q2 = quant_pair(W1, W3, W2, H1, H2, v, (t, t), iq, a.damp)
-                rel = float((expert_f(xv, q1, q3, q2, gv, lim) - Y).square().sum()) / ye
-                r = {"file": os.path.basename(f), "ex": dmp["ex"], "n_eval": len(xv), "variant": v, "tier": t, "rel": rel,
+                err = float((expert_f(xv, q1, q3, q2, gv, lim) - Y).square().sum())
+                rel = err / ye
+                # abs: squared output error per held-out token (decoder layers' relative errors are tiny; compare both)
+                r = {"file": os.path.basename(f), "ex": dmp["ex"], "n_eval": len(xv), "variant": v, "tier": t, "rel": rel, "abs": err / len(xv),
                      "s": round(time.time() - t0, 1)}
                 rows.append(r)
                 print(json.dumps(r), flush=True)
@@ -332,11 +348,13 @@ def main():
     agg = defaultdict(list)
     for r in rows:
         agg[(r["variant"], r["tier"])].append(r)
-    print("\nvariant         tier     mean rel   token-weighted   n")
+    print("\nvariant         tier     mean rel   token-weighted   abs per token (token-weighted)   n")
     for (v, t), rs in sorted(agg.items()):
         m = sum(r["rel"] for r in rs) / len(rs)
-        w = sum(r["rel"] * r["n_eval"] for r in rs) / sum(r["n_eval"] for r in rs)
-        print(f"{v:<15} {t:<7} {m:9.4f} {w:14.4f} {len(rs):5d}")
+        nt = sum(r["n_eval"] for r in rs)
+        w = sum(r["rel"] * r["n_eval"] for r in rs) / nt
+        ab = sum(r["abs"] * r["n_eval"] for r in rs) / nt
+        print(f"{v:<15} {t:<7} {m:9.4f} {w:14.4f} {ab:20.6g} {len(rs):14d}")
 
 
 if __name__ == "__main__":
