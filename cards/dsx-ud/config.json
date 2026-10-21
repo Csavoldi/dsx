@@ -1,0 +1,28 @@
+{
+  "base_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  "format": "dsx GGUF, 4 shards (llama.cpp split naming); load the first",
+  "runtime": "https://github.com/lxe/dsx",
+  "quantization": {
+    "routed_experts": "Unsloth UD-IQ1_M tensors, unchanged (unsloth/DeepSeek-V4.1-Flash-1017-GGUF revision 60ad3651): IQ1_S, IQ2_XXS, IQ2_XS, IQ2_S per tensor",
+    "dense": "Q8_0 (from dsx 2-bit v4b)",
+    "engram": "not included; read from the official checkpoint's model-00047/00048 shards",
+    "rotation": "none"
+  },
+  "files": {
+    "gguf": [
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00001-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00002-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00003-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00004-of-00004.gguf"
+    ],
+    "expert_rank": "expert-rank.json",
+    "vision": "vision.safetensors"
+  },
+  "quality": {
+    "eval": "Lucebox 1017 set, 8 x 1024 tokens vs FP8 top-256 log-probs",
+    "kl": 0.2703,
+    "top1": 0.790,
+    "perplexity": 10.13,
+    "defer_rank_3": {"kl": 0.2833, "top1": 0.784, "perplexity": 10.24}
+  }
+}

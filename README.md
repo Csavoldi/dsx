@@ -1,30 +1,37 @@
 # dsx
 
 [![Model: dsx-2bit](https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--2bit-yellow)](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit)
+[![Model: dsx-ud](https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--ud-yellow)](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://www.rust-lang.org/)
 [![CUDA 13](https://img.shields.io/badge/CUDA-13-76B900?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
 
 Run [DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017) (552B MoE + 196B Engram)
 at full routing on a desktop with two RTX 3090s, 128 GB of RAM and an NVMe drive. dsx is a Rust + CUDA engine built
-for this one model, and it runs its own 2-bit quant
-([lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit)).
+for this one model. It runs two builds:
 
-| 2x RTX 3090, 128 GB DDR4 | |
-|---|---:|
-| Decode, prose | 28.9 tok/s |
-| Decode, 3K-token agent prompt | 28.7 tok/s |
-| Prefill, 3K / 8K tokens | 301 / 470 tok/s |
-| KL vs the FP8 model (Lucebox eval) | 0.373 |
-| Top-1 agreement with the FP8 model | 74.4% |
-| Perplexity (FP8 model: 8.56) | 10.68 |
+- [**lxe/DeepSeek-V4.1-Flash-1017-dsx-ud**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud): Unsloth's
+  UD-IQ1_M routed experts with dsx's Q8_0 dense weights and the official FP8 Engram. The better quality.
+- [lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit): dsx's own
+  2-bit quant (GPTQ, Hadamard rotation, per-expert tiers).
+
+| 2x RTX 3090, 128 GB DDR4 | dsx-ud | dsx-ud, `--defer-rank 3` | dsx-2bit |
+|---|---:|---:|---:|
+| Size (+ official Engram shards) | 142 GB | 142 GB | 148 GB |
+| Decode, 3K-token agent prompt | 28.5 tok/s | 32.4 tok/s | 29.5 tok/s |
+| Prefill, 3K tokens | 283 tok/s | 283 tok/s | 290 tok/s |
+| KL vs the FP8 model (Lucebox eval) | 0.270 | 0.283 | 0.373 |
+| Top-1 agreement with the FP8 model | 79.0% | 78.4% | 74.4% |
+| Perplexity (FP8 model: 8.56) | 10.13 | 10.24 | 10.68 |
+
+For comparison, Unsloth's UD-IQ1_M in llama.cpp on the same machine: KL 0.275, top-1 78.8%, 12.3 tok/s decode.
 
 ## Quick start
 
-Download the quant, plus the Engram tables and tokenizer from the official checkpoint:
+Download the build, plus the Engram tables and tokenizer from the official checkpoint:
 
 ```bash
-hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit --local-dir dsx-2bit
+hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-ud --local-dir dsx-ud
 hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
   --include model.safetensors.index.json \
             model-00047-of-00048.safetensors \
@@ -38,14 +45,18 @@ Build for your GPU (`CUDA_ARCHS` from the table under [Requirements](#requiremen
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 
 ./target/release/dsx-server \
-  --model dsx-2bit/DeepSeek-V4.1-Flash-1017-dsx-2bit-00001-of-00004.gguf \
+  --model dsx-ud/DeepSeek-V4.1-Flash-1017-dsx-ud-00001-of-00004.gguf \
   --engram v41-1017 \
   --tokenizer v41-1017/tokenizer.json \
-  --rank dsx-2bit/expert-rank.json \
+  --rank dsx-ud/expert-rank.json \
   --ctx 131072 \
   --arena-gb 110 \
+  --defer-rank 3 \
   --host 0.0.0.0 --port 8090
 ```
+
+`--defer-rank 3` trades a little quality for speed (see the table); leave it out for the best quality. For dsx's own
+quant, use `dsx-2bit` and its file names in place of `dsx-ud`.
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI client at `http://localhost:8090/v1` (Anthropic
 clients at `http://localhost:8090`):

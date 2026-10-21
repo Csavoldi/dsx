@@ -17,6 +17,14 @@ compares with other engines for this model family. Measurements: [FINDINGS.md](.
 
 KL: Lucebox's 1017 eval set, 8 x 1024 tokens against the FP8 model's top-256 log-probs.
 
+IQ formats for the dsx-ud build (Unsloth UD-IQ1_M's experts, KL 0.270 at 142 GB):
+
+| Technique | Source | Measured effect |
+|---|---|---|
+| ggml's IQ1_S, IQ2_XXS, IQ2_XS, IQ2_S as expert types: CPU kernels, GPU decode tiles, prefill dequant | [llama.cpp](https://github.com/ggml-org/llama.cpp) formats and tables | 28-39 GB/s on 16 CPU threads; 1.6-2.5x Q2_0's GPU tile time |
+| IQ1_S's +-1/8 shift as one madd per 256 weights against per-16 activation sums | dsx | IQ1_S CPU 28 -> 35 GB/s |
+| One GGUF from dsx's dense weights and another GGUF's routed experts (`quant/hybrid_gguf.py`) | dsx | KL 0.270 vs 0.275 for the same experts in llama.cpp |
+
 ## Runtime (2x RTX 3090 + 128 GB DDR4: ~29 tok/s decode, 300-470 tok/s prefill)
 
 | Technique | Measured effect |
