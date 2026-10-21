@@ -36,7 +36,7 @@ fn rand_rows(ty: GType, nr: usize, cols: usize, rng: &mut Rng) -> Vec<u8> {
     v.truncate(n);
     let (_, bs) = ty.block();
     let (at, d) = match ty {
-        GType::Q2_0 | GType::Q8_0 => (0, 0.02),
+        GType::Q2_0 | GType::Q8_0 | GType::Iq2Xxs | GType::Iq2Xs | GType::Iq2S | GType::Iq1S => (0, 0.02),
         GType::Ptq1_0 => (26, 0.02),
         _ => (108, 0.001),
     };
@@ -120,7 +120,7 @@ fn main() {
     // in-cache single-thread kernel rate on a P-core: the compute ceiling per thread
     dsx::cpu::pool::pin_to(0);
     println!("in-cache kernel rate, 1 thread on a P-core (64 rows x 5120, L2-resident)");
-    for ty in [Q2_0, Ptq1_0, Q3K, Q8_0] {
+    for ty in [Q2_0, Ptq1_0, Q3K, Q8_0, Iq2Xxs, Iq2Xs, Iq2S, Iq1S] {
         let rows = rand_rows(ty, 64, DIM, &mut rng);
         let mut line = format!("  {ty:?}:");
         for t in [1usize, 6] {
@@ -148,7 +148,7 @@ fn main() {
         "format", "threads", "T=1 GB/s (ms)", "T=6 GB/s (ms)"
     );
     let only = std::env::args().find_map(|a| a.strip_prefix("fmt=").map(str::to_string));
-    for ty in [Q2_0, Ptq1_0, Q3K, Q8_0] {
+    for ty in [Q2_0, Ptq1_0, Q3K, Q8_0, Iq2Xxs, Iq2Xs, Iq2S, Iq1S] {
         if only.as_ref().is_some_and(|o| *o != format!("{ty:?}")) {
             continue;
         }
@@ -181,17 +181,23 @@ fn main() {
         (Ptq1_0, Ptq1_0),
         (Q2_0, Ptq1_0),
     ];
-    let exs = make(&mix, nexp, &mut rng);
-    let ew = views(&exs);
-    let per6: f64 = ew.iter().map(|e| e.bytes()).sum::<usize>() as f64 / ew.len() as f64 * 6.0 / 1e6;
-    println!("  {per6:.1} MB of weights per layer call");
-    for th in [8usize, 16] {
-        let mut moe = CpuMoe::new(Pool::new(&cpus(th), Duration::from_millis(5)));
-        for t in [1usize, 6] {
-            let (g, ms) = layer_rate(&mut moe, &ew, t, 3, &mut rng);
-            println!("  {th:2} threads T={t}: {ms:.3} ms per layer ({g:.1} GB/s)");
+    // the same mix with IQ2_XXS in place of Q2_0 (the codebook 2-bit tier)
+    let mix_iq = mix.map(|(a, b)| (if a == Q2_0 { Iq2Xxs } else { a }, if b == Q2_0 { Iq2Xxs } else { b }));
+    for (name, m) in [("Q2_0", mix), ("IQ2_XXS", mix_iq)] {
+        let exs = make(&m, nexp, &mut rng);
+        let ew = views(&exs);
+        let per6: f64 = ew.iter().map(|e| e.bytes()).sum::<usize>() as f64 / ew.len() as f64 * 6.0 / 1e6;
+        println!("  2-bit tier {name}: {per6:.1} MB of weights per layer call");
+        for th in [8usize, 16] {
+            let mut moe = CpuMoe::new(Pool::new(&cpus(th), Duration::from_millis(5)));
+            for t in [1usize, 6] {
+                let (g, ms) = layer_rate(&mut moe, &ew, t, 3, &mut rng);
+                println!("  {th:2} threads T={t}: {ms:.3} ms per layer ({g:.1} GB/s)");
+            }
         }
     }
+    let exs = make(&mix, nexp, &mut rng);
+    let ew = views(&exs);
 
     // the same 2 experts (~18 MB, under the 25 MB L3) as all 6 of a call: weights come from cache after the first call,
     // the ceiling for a prefetch-into-L3 scheme

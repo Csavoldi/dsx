@@ -13,7 +13,7 @@ fn random_bytes(n: usize, seed: &mut u64) -> Vec<u8> {
 /// sane fp16 scales (random bytes there make inf/NaN, which costs nothing but reads badly)
 fn fix_scales(ty: GType, w: &mut [u8]) {
     let (_, b) = ty.block();
-    let at = match ty { GType::Ptq1_0 => 26, GType::Q3K => 108, _ => 0 };
+    let at = match ty { GType::Ptq1_0 => 26, GType::Q3K => 108, _ => 0 }; // Q2_0, Q8_0, IQ2_XXS: d first
     let h = half::f16::from_f32(0.01).to_le_bytes();
     for blk in w.chunks_exact_mut(b) {
         blk[at..at + 2].copy_from_slice(&h);
@@ -31,7 +31,8 @@ fn time(g: &Gpu, n: usize, mut f: impl FnMut()) -> f64 {
     t.elapsed().as_secs_f64() / n as f64
 }
 
-const FORMATS: [(GType, &str); 3] = [(GType::Q2_0, "gemv_q2_0"), (GType::Ptq1_0, "gemv_ptq1_0"), (GType::Q3K, "gemv_q3_k")];
+const FORMATS: [(GType, Option<&str>); 7] =
+    [(GType::Q2_0, Some("gemv_q2_0")), (GType::Ptq1_0, Some("gemv_ptq1_0")), (GType::Q3K, Some("gemv_q3_k")), (GType::Iq2Xxs, None), (GType::Iq1S, None), (GType::Iq2Xs, None), (GType::Iq2S, None)];
 
 #[test]
 #[ignore]
@@ -57,19 +58,20 @@ fn expert_gemv_speed() {
             }).collect();
             let mut it = 0usize;
             let (xq, xd, xs) = (g.alloc(8 * k).unwrap(), g.alloc(8 * k / 64).unwrap(), g.alloc(8 * k / 32).unwrap());
-            let (ko, kq, kf) = (g.kernel(old).unwrap(), g.kernel("quant_act").unwrap(), g.kernel("xgemv").unwrap());
+            let (ko, kq, kf) = (old.map(|o| g.kernel(o).unwrap()), g.kernel("quant_act").unwrap(), g.kernel("xgemv").unwrap());
             let mut line = format!("{what:8} {:7} {:5.1} MB:", format!("{ty:?}"), bytes as f64 / 1e6);
             for t in [1usize, 6] {
-                let old_s = time(&g, 20, || {
+                // IQ2_XXS has no old GGUF-block kernel
+                let old_s = ko.map_or(f64::NAN, |ko| time(&g, 20, || {
                     it += 1;
                     g.launch(ko, ((rows as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(dw[it % nc].ptr), Arg::P(dx.ptr), Arg::P(dy.ptr), Arg::I(rows as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::I(k as i32), Arg::I(rows as i32)]).unwrap()
-                });
+                }));
                 let q_s = time(&g, 20, || {
-                    g.launch(kq, ((k / 256) as u32, t as u32, 1), 256, 0, &[Arg::P(dx.ptr), Arg::I(k as i32), Arg::P(xq.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr), Arg::P(0), Arg::P(0), Arg::I(0), Arg::I(0), Arg::I(0), Arg::I(0), Arg::P(0)]).unwrap()
+                    g.launch(kq, ((k / 256) as u32, t as u32, 1), 256, 0, &[Arg::P(dx.ptr), Arg::I(k as i32), Arg::P(xq.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr), Arg::P(0), Arg::P(0), Arg::I(0), Arg::I(0), Arg::I(0), Arg::I(0), Arg::P(0), Arg::I(0)]).unwrap()
                 });
                 let new_s = time(&g, 20, || {
                     it += 1;
-                    g.launch(kf, ((rows as u32).div_ceil(16), 1, 1), 32 * KS, 0, &[Arg::I(repacked_id(ty).unwrap()), Arg::P(dr[it % nc].ptr), Arg::I(rows as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::P(xq.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr), Arg::P(dy.ptr)]).unwrap()
+                    g.launch(kf, ((rows as u32).div_ceil(16), 1, 1), 32 * KS, dsx::experts::tile_smem(ty), &[Arg::I(repacked_id(ty).unwrap()), Arg::P(dr[it % nc].ptr), Arg::I(rows as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::P(xq.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr), Arg::P(dy.ptr)]).unwrap()
                 });
                 let gbs = |s: f64| bytes as f64 / s / 1e9;
                 line += &format!("  T={t}: old {:4.0} us {:4.0} GB/s, new {:4.0} us {:4.0} GB/s (+quant {:.0} us)", old_s * 1e6, gbs(old_s), new_s * 1e6, gbs(new_s), q_s * 1e6);

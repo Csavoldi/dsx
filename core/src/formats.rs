@@ -121,6 +121,73 @@ pub fn dequant_row(t: GType, raw: &[u8], out: &mut [f32]) {
                 }
             }
         }
+        GType::Iq2Xxs => {
+            // fp16 d, then per 32 weights two u32: 4 grid indices (bytes), then 4 x 7-bit sign indices + 4-bit scale ls
+            // (bits 28..32); weight = grid magnitude * d * (0.5 + ls) / 4, negated where the sign pattern's bit is set
+            use crate::iqgrid::{IQ2XXS_GRID, KSIGNS_IQ2XS};
+            for (b, blk) in raw.chunks_exact(66).enumerate() {
+                let d = f16_at(blk, 0);
+                for ib in 0..8 {
+                    let w = |k: usize| u32::from_le_bytes(blk[2 + 8 * ib + 4 * k..][..4].try_into().unwrap());
+                    let (g, s) = (w(0), w(1));
+                    let db = d * (0.5 + (s >> 28) as f32) * 0.25;
+                    for l in 0..4 {
+                        let grid = IQ2XXS_GRID[(g >> (8 * l)) as usize & 255].to_le_bytes();
+                        let signs = KSIGNS_IQ2XS[(s >> (7 * l)) as usize & 127];
+                        for j in 0..8 {
+                            let v = db * grid[j] as f32;
+                            out[256 * b + 32 * ib + 8 * l + j] = if signs >> j & 1 != 0 { -v } else { v };
+                        }
+                    }
+                }
+            }
+        }
+        GType::Iq1S => {
+            // fp16 d, qs[32] (low 8 bits of each 8-weight group's grid index), qh[8] u16 per 32 weights: bits 3l..3l+3 the
+            // index's high 3 bits for group l, bits 12..15 scale s, bit 15 the shift's sign; weight = d (2s + 1) (grid +- 1/8)
+            use crate::iqgrid::IQ1S_GRID;
+            for (b, blk) in raw.chunks_exact(50).enumerate() {
+                let d = f16_at(blk, 0);
+                for ib in 0..8 {
+                    let qh = u16::from_le_bytes([blk[34 + 2 * ib], blk[35 + 2 * ib]]) as usize;
+                    let dl = d * (2 * ((qh >> 12) & 7) + 1) as f32;
+                    let delta = if qh & 0x8000 != 0 { -0.125 } else { 0.125 };
+                    for l in 0..4 {
+                        let grid = IQ1S_GRID[blk[2 + 4 * ib + l] as usize | ((qh >> (3 * l)) & 7) << 8].to_le_bytes();
+                        for j in 0..8 {
+                            out[256 * b + 32 * ib + 8 * l + j] = dl * (grid[j] as i8 as f32 + delta);
+                        }
+                    }
+                }
+            }
+        }
+        GType::Iq2Xs | GType::Iq2S => {
+            // IQ2_XS: d, qs u16[32] (9-bit grid index, 7-bit ksigns index), scales[8]; IQ2_S: d, qs[32] (grid index low
+            // bytes), signs[32], qh[8] (2 high index bits per group), scales[8]. Both: per 16 weights d (0.5 + s) / 4
+            use crate::iqgrid::{IQ2S_GRID, IQ2XS_GRID, KSIGNS_IQ2XS};
+            let bs = if t == GType::Iq2Xs { 74 } else { 82 };
+            for (b, blk) in raw.chunks_exact(bs).enumerate() {
+                let d = f16_at(blk, 0);
+                for ib in 0..8 {
+                    let sc = blk[bs - 8 + ib];
+                    for l in 0..4 {
+                        let db = d * (0.5 + (if l < 2 { sc & 15 } else { sc >> 4 }) as f32) * 0.25;
+                        let (grid, signs) = if t == GType::Iq2Xs {
+                            let q = u16::from_le_bytes([blk[2 + 2 * (4 * ib + l)], blk[3 + 2 * (4 * ib + l)]]) as usize;
+                            (IQ2XS_GRID[q & 511], KSIGNS_IQ2XS[q >> 9])
+                        } else {
+                            let idx = blk[2 + 4 * ib + l] as usize | ((blk[66 + ib] as usize) << (8 - 2 * l) & 0x300);
+                            (IQ2S_GRID[idx], blk[34 + 4 * ib + l])
+                        };
+                        let g = grid.to_le_bytes();
+                        for j in 0..8 {
+                            let v = db * g[j] as f32;
+                            out[256 * b + 32 * ib + 8 * l + j] = if signs >> j & 1 != 0 { -v } else { v };
+                        }
+                    }
+                }
+            }
+        }
         GType::I8 | GType::I32 => panic!("{t:?} is not a weight format"),
         GType::Fp8B32 | GType::Fp4 => panic!("{t:?} needs its scales: dequant_row_scaled"),
     }
@@ -166,6 +233,22 @@ mod tests {
         dequant_row(GType::Q2_0, &blk, &mut out);
         assert_eq!(&out[..4], &[-0.5, 0.0, 0.5, 1.0]);
         assert_eq!(out[4], -0.5);
+    }
+
+    #[test]
+    fn iq2_xxs_layout() {
+        // group 0 of block 0: grid 1 (0x080808080808082b, little-endian: weight 0 = 43, others 8), sign index 3 (ksigns 3: weights 0, 1
+        // negative), scale ls 1 -> db = d * 1.5 / 4; every other group: grid 0, signs 0, ls 1
+        let mut blk = vec![0u8; 66];
+        blk[..2].copy_from_slice(&h(1.0));
+        for ib in 0..8 {
+            blk[2 + 8 * ib + 4..][..4].copy_from_slice(&(1u32 << 28 | if ib == 0 { 3 } else { 0 }).to_le_bytes());
+        }
+        blk[2] = 1;
+        let mut out = vec![0f32; 256];
+        dequant_row(GType::Iq2Xxs, &blk, &mut out);
+        assert_eq!(&out[..8], &[-16.125, -3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]);
+        assert!(out[8..].iter().all(|&v| v == 3.0));
     }
 
     #[test]

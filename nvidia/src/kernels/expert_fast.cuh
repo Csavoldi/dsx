@@ -20,13 +20,29 @@
 //                           byte i bit 4 (h & 1) + s = NOT hmask bit (chunk h); then per 256-block the 12 ggml scale bytes,
 //                           then d f16. q = low | (nh ? 0xfc : 0) as int8 = the signed 3-bit value
 //   2008 Q8_0   (8.5 bpw)   qs [rows][k/64][q][16 B]: byte 4s + i = weight 16s + 4q + i; then d f16 [rows][k/32]
+//   2016 IQ2_XXS (2.06 bpw) ggml's 8 bytes per 32-block unchanged, [rows][k/32] (u32 grid indices, u32 signs + scale);
+//                           then d f16 [rows][k/256]. Format and tables: ggml (iq2grid.cuh)
+//   2019 IQ1_S  (1.56 bpw)  [rows][k/256][48 B]: qs[32] (low index bytes), qh u16[8]; then d f16 [rows][k/256]
+//   2017 IQ2_XS (2.31 bpw)  [rows][k/256][64 B]: qs u16[32] (9-bit grid + 7-bit sign index); then scales[8]
+//                           [rows][k/256][8 B]; then d f16 [rows][k/256]
+//   2022 IQ2_S  (2.56 bpw)  [rows][k/256][64 B]: qs[32] (low index bytes), signs[32]; then [rows][k/256][16 B]:
+//                           qh[8] (2 high index bits per group), scales[8]; then d f16 [rows][k/256]
+//   (the GGUF block bytes, d split out so each block's codes start 16-byte aligned)
 #pragma once
+#include "iq2grid.cuh"
 
 #define RP_Q8 2008
 #define RP_Q2 2042
 #define RP_T1 2143
 #define RP_Q3 2011
-#define PLAN_W 10  // plan entry: expert, 0, pick index per token (-1 = not picked)
+#define RP_IQ2 2016
+#define RP_IQ2XS 2017
+#define RP_IQ1S 2019
+#define RP_IQ2S 2022
+#define PLAN_W 10
+// codebook tables of the IQ tiles: dynamic shared memory, sized at launch by the store's types (experts::tile_smem), so
+// kernels over other formats keep their occupancy
+extern __shared__ unsigned iq_tab[];  // plan entry: expert, 0, pick index per token (-1 = not picked)
 
 struct XQ {
   const int8_t *q;  // [v][k] permuted
@@ -302,6 +318,189 @@ __device__ __forceinline__ void tile_q8(const uint8_t *const (&m)[NM], int rows,
   }
 }
 
+// IQ2_XXS: x-block = 1 block = 8 k32 halves (one 32-block each). Lane q's bytes of a half are weights 4q..4q+3 and
+// 16 + 4q..+3: half q & 1 of codebook groups q >> 1 and 2 + (q >> 1). Grid halves and sign masks come from shared
+// tables; signs applied by (g ^ m) + (m & 1) per byte (one 32-bit add: magnitudes are <= 43, so no carries); integer scale 2 ls + 1 per half, d / 8 per block.
+// Every thread of the block must call this (the tables are filled with a __syncthreads).
+template <int NM>
+__device__ __forceinline__ void tile_iq2(const uint8_t *const (&m)[NM], int rows, int k, int ra, int rb, const XQ &x,
+                                         const Lane &L, float (&acc)[NM][4]) {
+  unsigned *G32 = iq_tab, *S32 = iq_tab + 512;
+  for (int i = threadIdx.x; i < 512; i += blockDim.x) G32[i] = (unsigned)(iq2xxs_grid[i >> 1] >> (32 * (i & 1)));
+  for (int i = threadIdx.x; i < 256; i += blockDim.x) {
+    unsigned b = ksigns_iq2xs[i >> 1] >> (4 * (i & 1)), v = 0;
+#pragma unroll
+    for (int j = 0; j < 4; j++) v |= ((b >> j) & 1u) * (0xffu << (8 * j));
+    S32[i] = v;
+  }
+  __syncthreads();
+  const int nb = k >> 8;
+  const size_t pd = (size_t)rows * nb * 64;
+  const int hf = L.q & 1, l0 = L.q >> 1, l1 = 2 + (L.q >> 1);
+  for (int xb = L.k0; xb < nb; xb += KS) {
+    int4 X[4];
+    float dx0, dx1;
+    load_x(x, k, xb, L, X, dx0, dx1);
+#pragma unroll
+    for (int j = 0; j < NM; j++) {
+      const uint8_t *pa = m[j] + ((size_t)ra * nb + xb) * 64, *pb = m[j] + ((size_t)rb * nb + xb) * 64;
+      float fa = __half2float(__ldg((const __half *)(m[j] + pd) + (size_t)ra * nb + xb));
+      float fb = __half2float(__ldg((const __half *)(m[j] + pd) + (size_t)rb * nb + xb));
+      int is[4] = {0, 0, 0, 0};
+#pragma unroll
+      for (int h = 0; h < 4; h++) {
+        int4 A = __ldg((const int4 *)pa + h), B = __ldg((const int4 *)pb + h);
+#pragma unroll
+        for (int e = 0; e < 2; e++) {
+          unsigned ga = (unsigned)(e ? A.z : A.x), sa = (unsigned)(e ? A.w : A.y);
+          unsigned gb = (unsigned)(e ? B.z : B.x), sb = (unsigned)(e ? B.w : B.y);
+          auto dec = [&](unsigned g, unsigned sg, int l) {
+            unsigned w = G32[2 * ((g >> (8 * l)) & 255) + hf], mk = S32[2 * ((sg >> (7 * l)) & 127) + hf];
+            return (w ^ mk) + (mk & 0x01010101u);  // -g where mk = 0xff: ~g + 1, no carries (g <= 43)
+          };
+          int c[4] = {0, 0, 0, 0};
+          mma32(c, dec(ga, sa, l0), dec(gb, sb, l0), dec(ga, sa, l1), dec(gb, sb, l1), e ? X[h].z : X[h].x, e ? X[h].w : X[h].y);
+          int la = 2 * (int)(sa >> 28) + 1, lb = 2 * (int)(sb >> 28) + 1;
+          is[0] += la * c[0];
+          is[1] += la * c[1];
+          is[2] += lb * c[2];
+          is[3] += lb * c[3];
+        }
+      }
+      acc[j][0] += 0.125f * fa * dx0 * (float)is[0];
+      acc[j][1] += 0.125f * fa * dx1 * (float)is[1];
+      acc[j][2] += 0.125f * fb * dx0 * (float)is[2];
+      acc[j][3] += 0.125f * fb * dx1 * (float)is[3];
+    }
+  }
+}
+
+// IQ1_S: x-block = 1 block, one k32 mma per 32-block. A weight is d (2s + 1) (g + delta), g in {-1, 0, 1}, delta =
+// +-1/8: the A bytes are 8 g + 8 delta (exact int8, -9..9): 8 g (bytes -8 / 0 / 8) from the grid, plus or minus 1
+// per byte (the -1 case biased by 0x80 so no byte borrows); integer scale 2 s + 1 per 32-block, d / 8 per block.
+template <int NM>
+__device__ __forceinline__ void tile_iq1s(const uint8_t *const (&m)[NM], int rows, int k, int ra, int rb, const XQ &x,
+                                          const Lane &L, float (&acc)[NM][4]) {
+  const int nb = k >> 8;
+  const size_t pd = (size_t)rows * nb * 48;
+  const int hf = L.q & 1, l0 = L.q >> 1, l1 = 2 + (L.q >> 1);
+  for (int xb = L.k0; xb < nb; xb += KS) {
+    int4 X[4];
+    float dx0, dx1;
+    load_x(x, k, xb, L, X, dx0, dx1);
+#pragma unroll
+    for (int j = 0; j < NM; j++) {
+      const int4 *pa = (const int4 *)(m[j] + ((size_t)ra * nb + xb) * 48), *pb = (const int4 *)(m[j] + ((size_t)rb * nb + xb) * 48);
+      int4 A0 = __ldg(pa), A1 = __ldg(pa + 1), A2 = __ldg(pa + 2), B0 = __ldg(pb), B1 = __ldg(pb + 1), B2 = __ldg(pb + 2);
+      float fa = __half2float(__ldg((const __half *)(m[j] + pd) + (size_t)ra * nb + xb));
+      float fb = __half2float(__ldg((const __half *)(m[j] + pd) + (size_t)rb * nb + xb));
+      int is[4] = {0, 0, 0, 0};
+#pragma unroll
+      for (int ib = 0; ib < 8; ib++) {
+        unsigned qa = (unsigned)comp4(ib < 4 ? A0 : A1, ib & 3), qb = (unsigned)comp4(ib < 4 ? B0 : B1, ib & 3);
+        unsigned ha = ((unsigned)comp4(A2, ib >> 1) >> (16 * (ib & 1))) & 0xffff, hb = ((unsigned)comp4(B2, ib >> 1) >> (16 * (ib & 1))) & 0xffff;
+        auto dec = [&](unsigned qs, unsigned qh, int l) {
+          // grid half through L1 (16 KB, no shared copy: filling one per block cost as much as the weights); bytes
+          // -1 / 0 / 1 -> 8 g: bit 0 gives 8, the sign bit adds 0xf0
+          unsigned g = __ldg((const unsigned *)iq1s_grid + 2 * (((qs >> (8 * l)) & 255) | ((qh >> (3 * l)) & 7) << 8) + hf);
+          unsigned w = ((g & 0x01010101u) << 3) | (((g >> 7) & 0x01010101u) * 0xf0u);
+          return (qh & 0x8000) ? (((w ^ 0x80808080u) - 0x01010101u) ^ 0x80808080u) : w + 0x01010101u;
+        };
+        int c[4] = {0, 0, 0, 0};
+        mma32(c, dec(qa, ha, l0), dec(qb, hb, l0), dec(qa, ha, l1), dec(qb, hb, l1), (ib & 1) ? X[ib >> 1].z : X[ib >> 1].x,
+              (ib & 1) ? X[ib >> 1].w : X[ib >> 1].y);
+        int la = 2 * (int)((ha >> 12) & 7) + 1, lb = 2 * (int)((hb >> 12) & 7) + 1;
+        is[0] += la * c[0];
+        is[1] += la * c[1];
+        is[2] += lb * c[2];
+        is[3] += lb * c[3];
+      }
+      acc[j][0] += 0.125f * fa * dx0 * (float)is[0];
+      acc[j][1] += 0.125f * fa * dx1 * (float)is[1];
+      acc[j][2] += 0.125f * fb * dx0 * (float)is[2];
+      acc[j][3] += 0.125f * fb * dx1 * (float)is[3];
+    }
+  }
+}
+
+// IQ2_XS / IQ2_S: x-block = 1 block; a scale per 16 weights, so one k16 mma per 16 (sub-block s of 32-block ib = groups
+// 2s, 2s + 1; lane q's bytes are group 2s + (q >> 1), half q & 1). Magnitudes 8 / 25 / 43 from a shared grid table,
+// signs by (g ^ m) + (m & 1); integer scale 2 sc + 1 per 16, d / 8 per block. IQ2_XS: 9-bit grid index and 7-bit
+// parity sign index per group (u16); IQ2_S: 10-bit grid index (qs byte + 2 qh bits) and a full sign byte.
+template <int NM, bool S>
+__device__ __forceinline__ void tile_iq2xs(const uint8_t *const (&m)[NM], int rows, int k, int ra, int rb, const XQ &x,
+                                           const Lane &L, float (&acc)[NM][4]) {
+  constexpr int NG = S ? 1024 : 512;
+  unsigned *G32 = iq_tab, *S32 = iq_tab + 2 * NG;
+  for (int i = threadIdx.x; i < 2 * NG; i += blockDim.x) G32[i] = (unsigned)((S ? iq2s_grid[i >> 1] : iq2xs_grid[i >> 1]) >> (32 * (i & 1)));
+  for (int i = threadIdx.x; i < 256; i += blockDim.x) {
+    unsigned b = ksigns_iq2xs[i >> 1] >> (4 * (i & 1));
+    S32[i] = (((b & 15) * 0x00204081u) & 0x01010101u) * 0xffu;
+  }
+  __syncthreads();
+  const int nb = k >> 8;
+  const size_t p2 = (size_t)rows * nb * 64, pd = p2 + (size_t)rows * nb * (S ? 16 : 8);
+  const int hf = L.q & 1;
+  for (int xb = L.k0; xb < nb; xb += KS) {
+    int4 X[4];
+    float dx0, dx1;
+    load_x(x, k, xb, L, X, dx0, dx1);
+#pragma unroll
+    for (int j = 0; j < NM; j++) {
+      const int4 *pa = (const int4 *)(m[j] + ((size_t)ra * nb + xb) * 64), *pb = (const int4 *)(m[j] + ((size_t)rb * nb + xb) * 64);
+      int4 A[4] = {__ldg(pa), __ldg(pa + 1), __ldg(pa + 2), __ldg(pa + 3)}, B[4] = {__ldg(pb), __ldg(pb + 1), __ldg(pb + 2), __ldg(pb + 3)};
+      int4 EA, EB;  // IQ2_S: qh[8], scales[8]; IQ2_XS: scales[8] (x, y)
+      if (S) {
+        EA = __ldg((const int4 *)(m[j] + p2) + (size_t)ra * nb + xb);
+        EB = __ldg((const int4 *)(m[j] + p2) + (size_t)rb * nb + xb);
+      } else {
+        int2 a2 = __ldg((const int2 *)(m[j] + p2) + (size_t)ra * nb + xb), b2 = __ldg((const int2 *)(m[j] + p2) + (size_t)rb * nb + xb);
+        EA = make_int4(a2.x, a2.y, 0, 0);
+        EB = make_int4(b2.x, b2.y, 0, 0);
+      }
+      float fa = __half2float(__ldg((const __half *)(m[j] + pd) + (size_t)ra * nb + xb));
+      float fb = __half2float(__ldg((const __half *)(m[j] + pd) + (size_t)rb * nb + xb));
+      int is[4] = {0, 0, 0, 0};
+#pragma unroll
+      for (int ib = 0; ib < 8; ib++) {
+        // scale byte of the 32-block (low nibble: sub 0, high: sub 1)
+        unsigned sca = ((unsigned)comp4(EA, (S ? 2 : 0) + (ib >> 2)) >> (8 * (ib & 3))) & 255;
+        unsigned scb = ((unsigned)comp4(EB, (S ? 2 : 0) + (ib >> 2)) >> (8 * (ib & 3))) & 255;
+#pragma unroll
+        for (int sub = 0; sub < 2; sub++) {
+          const int l = 2 * sub + (L.q >> 1);  // this lane's group
+          auto dec = [&](const int4 (&W)[4], const int4 &E) {
+            unsigned w, mk;
+            if (S) {
+              unsigned qs = ((unsigned)comp4(W[ib >> 2], ib & 3) >> (8 * l)) & 255;
+              unsigned qh = ((unsigned)comp4(E, ib >> 2) >> (8 * (ib & 3))) & 255;
+              unsigned sg = ((unsigned)comp4(W[2 + (ib >> 2)], ib & 3) >> (8 * l)) & 255;
+              w = G32[2 * (qs | ((qh << (8 - 2 * l)) & 0x300)) + hf];
+              mk = ((((sg >> (4 * hf)) & 15) * 0x00204081u) & 0x01010101u) * 0xffu;
+            } else {
+              unsigned q = ((unsigned)comp4(W[ib >> 1], 2 * (ib & 1) + (l >> 1)) >> (16 * (l & 1))) & 0xffff;
+              w = G32[2 * (q & 511) + hf];
+              mk = S32[2 * (q >> 9) + hf];
+            }
+            return (w ^ mk) + (mk & 0x01010101u);
+          };
+          int c[4];
+          mma16(c, dec(A, EA), dec(B, EB), comp4(X[ib >> 1], 2 * (ib & 1) + sub));
+          int la = 2 * (int)((sca >> (4 * sub)) & 15) + 1, lb = 2 * (int)((scb >> (4 * sub)) & 15) + 1;
+          is[0] += la * c[0];
+          is[1] += la * c[1];
+          is[2] += lb * c[2];
+          is[3] += lb * c[3];
+        }
+      }
+      acc[j][0] += 0.125f * fa * dx0 * (float)is[0];
+      acc[j][1] += 0.125f * fa * dx1 * (float)is[1];
+      acc[j][2] += 0.125f * fb * dx0 * (float)is[2];
+      acc[j][3] += 0.125f * fb * dx1 * (float)is[3];
+    }
+  }
+}
+
 template <int NM>
 __device__ __forceinline__ void tile_dot(int ty, const uint8_t *const (&m)[NM], int rows, int k, int ra, int rb,
                                          const XQ &x, const Lane &L, float (&acc)[NM][4]) {
@@ -309,6 +508,10 @@ __device__ __forceinline__ void tile_dot(int ty, const uint8_t *const (&m)[NM], 
   else if (ty == RP_T1) tile_t1<NM>(m, rows, k, ra, rb, x, L, acc);
   else if (ty == RP_Q3) tile_q3<NM>(m, rows, k, ra, rb, x, L, acc);
   else if (ty == RP_Q8) tile_q8<NM>(m, rows, k, ra, rb, x, L, acc);
+  else if (ty == RP_IQ2) tile_iq2<NM>(m, rows, k, ra, rb, x, L, acc);
+  else if (ty == RP_IQ1S) tile_iq1s<NM>(m, rows, k, ra, rb, x, L, acc);
+  else if (ty == RP_IQ2XS) tile_iq2xs<NM, false>(m, rows, k, ra, rb, x, L, acc);
+  else if (ty == RP_IQ2S) tile_iq2xs<NM, true>(m, rows, k, ra, rb, x, L, acc);
 }
 
 // ---------------------------------------------------------------- activations
@@ -588,6 +791,22 @@ extern "C" __global__ void repack_expert(int ty, const uint8_t *src, uint8_t *ds
     for (int j = 0; j < 12; j++) dst[rows * nb * 96 + bid * 12 + j] = s[96 + j];
     dst[rows * nb * 108 + bid * 2] = s[108];
     dst[rows * nb * 108 + bid * 2 + 1] = s[109];
+  } else if (ty == 19 || ty == 17 || ty == 22) {  // IQ1_S / IQ2_XS / IQ2_S: d moves out, the rest stays in order
+    const int bs = ty == 19 ? 50 : ty == 17 ? 74 : 82, body = ty == 19 ? 48 : 64, tail = bs - 2 - body;
+    size_t nb = k / 256;
+    if (bid >= rows * nb) return;
+    const uint8_t *s = src + bid * bs;
+    for (int j = 0; j < body; j++) dst[bid * body + j] = s[2 + j];
+    for (int j = 0; j < tail; j++) dst[rows * nb * body + bid * tail + j] = s[2 + body + j];
+    dst[rows * nb * (body + tail) + bid * 2] = s[0];
+    dst[rows * nb * (body + tail) + bid * 2 + 1] = s[1];
+  } else if (ty == 16) {  // IQ2_XXS: d moves out, the 64 code bytes stay in order
+    size_t nb = k / 256;
+    if (bid >= rows * nb) return;
+    const uint8_t *s = src + bid * 66;
+    for (int j = 0; j < 64; j++) dst[bid * 64 + j] = s[2 + j];
+    dst[rows * nb * 64 + bid * 2] = s[0];
+    dst[rows * nb * 64 + bid * 2 + 1] = s[1];
   } else if (ty == 8) {  // Q8_0: thread per 32-block
     size_t nb = k / 32;
     if (bid >= rows * nb) return;
@@ -635,6 +854,19 @@ __device__ float rp_weight(int t, const uint8_t *w, int rows, int k, int r, int 
     else if (grp == 2) sc = (a >> 4) | (((tmp >> 4) & 3) << 4);
     else sc = (cc >> 4) | (((tmp >> 6) & 3) << 4);
     return ld_h(w + rows * nb * 108 + ((size_t)r * nb + b) * 2) * (float)(sc - 32) * (float)(low - 4 * neg);
+  } else if (t == RP_IQ1S || t == RP_IQ2XS || t == RP_IQ2S) {  // rebuild the GGUF block, then the reference decoder
+    const int bs = t == RP_IQ1S ? 50 : t == RP_IQ2XS ? 74 : 82, body = t == RP_IQ1S ? 48 : 64, tail = bs - 2 - body;
+    size_t nb = k / 256, b = (size_t)r * nb + c / 256;
+    uint8_t blk[82];
+    blk[0] = w[rows * nb * (body + tail) + b * 2];
+    blk[1] = w[rows * nb * (body + tail) + b * 2 + 1];
+    for (int j = 0; j < body; j++) blk[2 + j] = w[b * body + j];
+    for (int j = 0; j < tail; j++) blk[2 + body + j] = w[rows * nb * body + b * tail + j];
+    return t == RP_IQ1S ? iq1s_value(blk, c & 255) : t == RP_IQ2XS ? iq2xs_value(blk, c & 255) : iq2s_value(blk, c & 255);
+  } else if (t == RP_IQ2) {
+    size_t nb = k / 256, b = c / 256;
+    const uint8_t *p = w + ((size_t)r * nb + b) * 64 + ((c & 255) >> 5) * 8;
+    return iq2_value(p, ld_h(w + rows * nb * 64 + ((size_t)r * nb + b) * 2), c & 31);
   } else {  // RP_Q8
     size_t u = c / 64;
     int8_t v = (int8_t)w[(((size_t)r * (k / 64) + u) * 4 + q) * 16 + 4 * g + i];

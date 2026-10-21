@@ -5,6 +5,7 @@
 pub mod dspark;
 pub mod formats;
 pub mod gguf;
+pub mod iqgrid;
 pub mod model;
 pub mod numerics;
 pub mod safetensors;

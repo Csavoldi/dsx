@@ -2,7 +2,7 @@
 //! routed experts spread over VRAM, a RAM arena and the file. The shared parts (config, readers, formats, CPU
 //! reference, server) are in `dsx-core` and re-exported here under their old paths.
 
-pub use dsx_core::{dspark, formats, gguf, model, numerics, safetensors};
+pub use dsx_core::{dspark, formats, gguf, iqgrid, model, numerics, safetensors};
 
 #[cfg(feature = "cuda")]
 pub mod attn;

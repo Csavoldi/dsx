@@ -80,6 +80,8 @@ pub struct GpuExperts {
     lim: f32,
     rot: u64,
     pub bytes: usize,
+    /// dynamic shared memory of the fast kernels: the largest codebook table among the store's types
+    smem: u32,
     /// weights repacked for the fast kernels (expert_fast.cuh); None = raw GGUF blocks (DSX_OLD_MOE=1)
     fast: Option<Fast>,
     /// adaptive residency (enable_swaps): in-flight replacements
@@ -116,9 +118,22 @@ fn gemv_name(t: GType) -> Result<&'static str> {
     })
 }
 
+/// Dynamic shared memory the fast kernels need for `t`'s codebook tables (expert_fast.cuh iq_tab), bytes.
+pub fn tile_smem(t: GType) -> u32 {
+    4 * match t {
+        GType::Iq1S => 0, // its grid is read through L1
+        GType::Iq2S => 2048 + 256,
+        GType::Iq2Xs => 1024 + 256,
+        GType::Iq2Xxs => 512 + 256,
+        _ => 0,
+    }
+}
+
 /// Type id of `t` repacked for the fast kernels (expert_fast.cuh), the same bytes per weight.
 pub fn repacked_id(t: GType) -> Result<i32> {
-    gemv_name(t)?;
+    if !matches!(t, GType::Iq2Xxs | GType::Iq1S | GType::Iq2Xs | GType::Iq2S) {
+        gemv_name(t)?; // IQ2_XXS has only the fast (repacked) kernels
+    }
     Ok(2000 + t as u32 as i32)
 }
 
@@ -176,8 +191,14 @@ impl GpuExperts {
                 off += al(b.len()) as u64;
                 Ok(p)
             };
-            gemv_name(x.gu)?;
-            gemv_name(x.dn)?;
+            for t in [x.gu, x.dn] {
+                // a kernel exists for the layout; raw IQ stores (DSX_OLD_MOE) only have prefill's dequant_f16 so far
+                if fast {
+                    repacked_id(t)?;
+                } else if !matches!(t, GType::Iq1S | GType::Iq2Xs | GType::Iq2S | GType::Iq2Xxs) {
+                    gemv_name(t)?;
+                }
+            }
             let (gp, up, dp) = (put(x.gate, x.gu, c.inter, c.dim)?, put(x.up, x.gu, c.inter, c.dim)?, put(x.down, x.dn, c.dim, c.inter)?);
             slots.insert((*l, *e), Slot { gate: gp, up, down: dp, gu: x.gu, dn: x.dn });
         }
@@ -224,6 +245,7 @@ impl GpuExperts {
         } else {
             None
         };
+        let smem = slots.values().flat_map(|s| [tile_smem(s.gu), tile_smem(s.dn)]).max().unwrap_or(0);
         Ok(GpuExperts {
             buf,
             tab,
@@ -244,6 +266,7 @@ impl GpuExperts {
             lim: c.lim,
             rot: c.rot,
             bytes: total,
+            smem,
             fast,
             swap: None,
         })
@@ -455,7 +478,7 @@ impl GpuExperts {
             self.k["moe_gu_fast"],
             ((inter as u32).div_ceil(16), (t * k) as u32, 1),
             32 * KS,
-            0,
+            self.smem,
             &[tab, Arg::I(l as i32), e, Arg::P(f.plan.ptr), Arg::P(wts), Arg::I(k as i32), Arg::P(self.buf.ptr), Arg::P(f.xq.ptr), Arg::P(f.xd.ptr), Arg::P(f.xs.ptr), Arg::P(f.h.ptr), Arg::I(inter as i32), Arg::I(dim as i32), Arg::F(self.lim)],
         )?;
         g.launch(
@@ -469,7 +492,7 @@ impl GpuExperts {
             self.k["moe_down_fast"],
             ((dim as u32).div_ceil(16), (t * k) as u32, 1),
             32 * KS,
-            0,
+            self.smem,
             &[tab, Arg::I(l as i32), e, Arg::P(f.plan.ptr), Arg::I(k as i32), Arg::P(self.buf.ptr), Arg::P(f.hq.ptr), Arg::P(f.hd.ptr), Arg::P(f.hs.ptr), Arg::P(out), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(t as i32), Arg::P(f.part.ptr), Arg::P(f.cnt.ptr)],
         )
     }

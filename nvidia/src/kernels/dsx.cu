@@ -1166,6 +1166,15 @@ extern "C" __global__ void dequant_f16(int t, const uint8_t *w, const uint8_t *s
     const uint8_t *blk = w + (size_t)r * (k / 64) * 18 + (c / 64) * 18;
     int i = c % 64;
     v = ld_h(blk) * (float)(((blk[2 + i / 4] >> (2 * (i % 4))) & 3) - 1);
+  } else if (t == 16) {  // IQ2_XXS
+    const uint8_t *blk = w + (size_t)r * (k / 256) * 66 + (c / 256) * 66;
+    v = iq2_value(blk + 2 + ((c & 255) >> 5) * 8, ld_h(blk), c & 31);
+  } else if (t == 19) {  // IQ1_S
+    v = iq1s_value(w + (size_t)r * (k / 256) * 50 + (c / 256) * 50, c & 255);
+  } else if (t == 17) {  // IQ2_XS
+    v = iq2xs_value(w + (size_t)r * (k / 256) * 74 + (c / 256) * 74, c & 255);
+  } else if (t == 22) {  // IQ2_S
+    v = iq2s_value(w + (size_t)r * (k / 256) * 82 + (c / 256) * 82, c & 255);
   } else if (t == 143) {  // PTQ1_0
     const uint8_t *blk = w + (size_t)r * (k / 128) * 28 + (c / 128) * 28;
     int i = c % 128, byte, n;

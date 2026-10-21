@@ -388,6 +388,7 @@ fn experts_of(g: &Gguf, l: usize, cfg: &Config) -> Result<Vec<Expert>> {
         42 => "q2_0",
         11 => "q3_k",
         143 => "ptq1_0",
+        16 => "iq2_xxs",
         _ => "?",
     };
     let gu = types("ffn_exps_gu_type")?;

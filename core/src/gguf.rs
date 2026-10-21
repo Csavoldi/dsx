@@ -61,6 +61,14 @@ pub enum GType {
     Q8_0 = 8,
     Q3K = 11,
     Q6K = 14,
+    /// ggml IQ2_XXS: 8-weight groups from a 256-entry codebook with sign patterns, 4-bit scale per 32, fp16 per 256
+    Iq2Xxs = 16,
+    /// ggml IQ1_S: 8-weight ternary groups from a 2048-entry codebook, 3-bit scale and +-1/8 shift per 32, fp16 per 256
+    Iq1S = 19,
+    /// ggml IQ2_XS: 9-bit codebook index + 7-bit sign pattern per 8 weights, two 4-bit scales per 32, fp16 per 256
+    Iq2Xs = 17,
+    /// ggml IQ2_S: 10-bit codebook index and an 8-bit sign byte per 8 weights, two 4-bit scales per 32, fp16 per 256
+    Iq2S = 22,
     I8 = 24,
     I32 = 26,
     BF16 = 30,
@@ -80,6 +88,10 @@ impl GType {
             8 => GType::Q8_0,
             11 => GType::Q3K,
             14 => GType::Q6K,
+            16 => GType::Iq2Xxs,
+            19 => GType::Iq1S,
+            17 => GType::Iq2Xs,
+            22 => GType::Iq2S,
             24 => GType::I8,
             26 => GType::I32,
             30 => GType::BF16,
@@ -98,6 +110,10 @@ impl GType {
             GType::Q8_0 => (32, 34),
             GType::Q3K => (256, 110),
             GType::Q6K => (256, 210),
+            GType::Iq2Xxs => (256, 66),
+            GType::Iq1S => (256, 50),
+            GType::Iq2Xs => (256, 74),
+            GType::Iq2S => (256, 82),
             GType::Q2_0 => (64, 18),
             GType::Ptq1_0 => (128, 28),
             GType::Fp8B32 => (1, 1),

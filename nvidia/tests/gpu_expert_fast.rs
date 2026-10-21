@@ -18,7 +18,7 @@ fn random_rows(ty: GType, rows: usize, cols: usize, seed: &mut u64) -> Vec<u8> {
     let nb = rows * cols / w;
     let mut v: Vec<u8> = (0..nb * b).map(|_| rng(seed) as u8).collect();
     let at = match ty {
-        GType::Q8_0 | GType::Q2_0 => 0,
+        GType::Q8_0 | GType::Q2_0 | GType::Iq2Xxs | GType::Iq1S | GType::Iq2Xs | GType::Iq2S => 0,
         GType::Ptq1_0 => 26,
         GType::Q3K => 108,
         _ => unreachable!(),
@@ -72,7 +72,7 @@ struct QBufs {
 fn quant(g: &Gpu, x: u64, k: usize, nvec: usize) -> QBufs {
     let b = QBufs { q: g.alloc(nvec * k).unwrap(), d: g.alloc(nvec * k / 64).unwrap(), s: g.alloc(nvec * k / 32).unwrap() };
     g.launch(g.kernel("quant_act").unwrap(), ((k / 256) as u32, nvec as u32, 1), 256, 0,
-        &[Arg::P(x), Arg::I(k as i32), Arg::P(b.q.ptr), Arg::P(b.d.ptr), Arg::P(b.s.ptr), Arg::P(0), Arg::P(0), Arg::I(0), Arg::I(0), Arg::I(0), Arg::I(0), Arg::P(0)]).unwrap();
+        &[Arg::P(x), Arg::I(k as i32), Arg::P(b.q.ptr), Arg::P(b.d.ptr), Arg::P(b.s.ptr), Arg::P(0), Arg::P(0), Arg::I(0), Arg::I(0), Arg::I(0), Arg::I(0), Arg::P(0), Arg::I(0)]).unwrap();
     b
 }
 
@@ -80,7 +80,7 @@ fn quant(g: &Gpu, x: u64, k: usize, nvec: usize) -> QBufs {
 fn fast_gemv_matches_cpu() {
     let g = Gpu::new(0).unwrap();
     let mut seed = 0x1234_5678_9abc_def0u64;
-    for ty in [GType::Q8_0, GType::Q2_0, GType::Ptq1_0, GType::Q3K] {
+    for ty in [GType::Q8_0, GType::Q2_0, GType::Ptq1_0, GType::Q3K, GType::Iq2Xxs, GType::Iq1S, GType::Iq2Xs, GType::Iq2S] {
         for (rows, k) in [(200usize, 5120usize), (136, 2304)] {
             let w = random_rows(ty, rows, k, &mut seed);
             let rb = ty.row_bytes(k);
@@ -99,6 +99,12 @@ fn fast_gemv_matches_cpu() {
             let got16: Vec<half::f16> = g.download(w16.ptr, rows * k).unwrap();
             let bad = wf.iter().zip(&got16).filter(|(a, b)| (**a - b.to_f32()).abs() > 1e-3 * a.abs() + 1e-7).count();
             assert_eq!(bad, 0, "{ty:?} dequant_f16 of the repacked layout");
+            // and of the raw GGUF blocks (experts streamed from RAM in prefill)
+            g.launch(g.kernel("dequant_f16").unwrap(), ((k as u32).div_ceil(256), rows as u32, 1), 256, 0,
+                &[Arg::I(ty as u32 as i32), Arg::P(src.ptr), Arg::P(0), Arg::P(w16.ptr), Arg::I(rows as i32), Arg::I(k as i32)]).unwrap();
+            let got16: Vec<half::f16> = g.download(w16.ptr, rows * k).unwrap();
+            let bad = wf.iter().zip(&got16).filter(|(a, b)| (**a - b.to_f32()).abs() > 1e-3 * a.abs() + 1e-7).count();
+            assert_eq!(bad, 0, "{ty:?} dequant_f16 of the raw blocks");
             for t in [1usize, 3, 6] {
                 let x = random_x(t * k, 1.0, &mut seed);
                 let xq = quantized(&x);
@@ -115,7 +121,7 @@ fn fast_gemv_matches_cpu() {
                 let dx = g.upload(&x).unwrap();
                 let qb = quant(&g, dx.ptr, k, t);
                 let dy = g.alloc(t * rows * 4).unwrap();
-                g.launch(g.kernel("xgemv").unwrap(), ((rows as u32).div_ceil(16), 1, 1), 32 * KS, 0,
+                g.launch(g.kernel("xgemv").unwrap(), ((rows as u32).div_ceil(16), 1, 1), 32 * KS, dsx::experts::tile_smem(ty),
                     &[Arg::I(id), Arg::P(dst.ptr), Arg::I(rows as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::P(qb.q.ptr), Arg::P(qb.d.ptr), Arg::P(qb.s.ptr), Arg::P(dy.ptr)]).unwrap();
                 let got: Vec<f32> = g.download(dy.ptr, t * rows).unwrap();
                 let (eq, ef) = (err(&want_q, &got), err(&want, &got));
@@ -238,5 +244,78 @@ fn moe_fast_matches_moe_gu_down() {
         new.run_device_fast(&g, 0, new.sel.ptr, new.wts.ptr, k, t, new.x.ptr, new.out.ptr).unwrap();
         let z: Vec<f32> = g.download(new.out.ptr, t * c.dim).unwrap();
         assert!(z.iter().all(|&v| v == 0.0));
+    }
+}
+
+/// moe_*_fast over a store that mixes the codebook formats with scalar ones (codebook tables in dynamic shared memory)
+/// against the CPU emulation of quant_act + moe_*_fast; the old moe_gu / moe_down have no IQ kernels.
+#[test]
+fn moe_fast_iq_matches_cpu() {
+    let g = Gpu::new(0).unwrap();
+    let mut seed = 0x51ed_270b_27b9_d1a3u64;
+    let c = ExpCfg { n_layers: 2, n_experts: 14, inter: 2304, dim: 5120, lim: 10.0, rot: 0 };
+    let kinds = [(GType::Iq1S, GType::Iq2Xxs), (GType::Iq2Xxs, GType::Iq2S), (GType::Iq2Xs, GType::Iq2Xs), (GType::Iq1S, GType::Q2_0), (GType::Ptq1_0, GType::Iq2S)];
+    let mats: Vec<(GType, GType, Vec<u8>, Vec<u8>, Vec<u8>)> = (0..10)
+        .map(|e| {
+            let (gu, dn) = kinds[e % kinds.len()];
+            (gu, dn, random_rows(gu, c.inter, c.dim, &mut seed), random_rows(gu, c.inter, c.dim, &mut seed), random_rows(dn, c.dim, c.inter, &mut seed))
+        })
+        .collect();
+    let items: Vec<((usize, usize), RawExpert)> =
+        mats.iter().enumerate().map(|(e, m)| ((1, e), RawExpert { gate: &m.2, up: &m.3, down: &m.4, gu: m.0, dn: m.1 })).collect();
+    let new = GpuExperts::build(&g, c, &items, true).unwrap();
+    let k = 6;
+    for t in [1usize, 3, 6] {
+        let mut sel = vec![0i32; t * k];
+        for tt in 0..t {
+            let mut picked = vec![];
+            while picked.len() < k {
+                let e = (rng(&mut seed) % 14) as i32;
+                if !picked.contains(&e) {
+                    picked.push(e);
+                }
+            }
+            sel[tt * k..(tt + 1) * k].copy_from_slice(&picked);
+        }
+        let wts: Vec<f32> = (0..t * k).map(|_| 0.05 + (rng(&mut seed) % 100) as f32 * 0.003).collect();
+        let x: Vec<f32> = random_x(t * c.dim, 1.0, &mut seed);
+        g.htod_sync(new.sel.ptr, &sel).unwrap();
+        g.htod_sync(new.wts.ptr, &wts).unwrap();
+        g.htod_sync(new.x.ptr, &x).unwrap();
+        new.run_device_fast(&g, 1, new.sel.ptr, new.wts.ptr, k, t, new.x.ptr, new.out.ptr).unwrap();
+        let got: Vec<f32> = g.download(new.out.ptr, t * c.dim).unwrap();
+        let mut emu = vec![0f32; t * c.dim];
+        let xq: Vec<Vec<f32>> = (0..t).map(|tt| quantized(&x[tt * c.dim..(tt + 1) * c.dim])).collect();
+        for (e, m) in mats.iter().enumerate() {
+            let users: Vec<(usize, usize)> = (0..t).filter_map(|tt| sel[tt * k..(tt + 1) * k].iter().position(|&s| s == e as i32).map(|j| (tt, j))).collect();
+            if users.is_empty() {
+                continue;
+            }
+            let xs: Vec<&[f32]> = users.iter().map(|&(tt, _)| xq[tt].as_slice()).collect();
+            let (gt, ut) = (mat_dots(m.0, &m.2, c.inter, c.dim, &xs), mat_dots(m.0, &m.3, c.inter, c.dim, &xs));
+            let hs: Vec<Vec<f32>> = users
+                .iter()
+                .enumerate()
+                .map(|(n, &(tt, j))| {
+                    let h: Vec<f32> = (0..c.inter)
+                        .map(|r| {
+                            let (gv, uv) = (gt[n][r].min(c.lim), ut[n][r].clamp(-c.lim, c.lim));
+                            bf16r(gv / (1.0 + (-gv).exp()) * uv * wts[tt * k + j])
+                        })
+                        .collect();
+                    quantized(&h)
+                })
+                .collect();
+            let hr: Vec<&[f32]> = hs.iter().map(|v| v.as_slice()).collect();
+            let o = mat_dots(m.1, &m.4, c.dim, c.inter, &hr);
+            for (n, &(tt, _)) in users.iter().enumerate() {
+                for r in 0..c.dim {
+                    emu[tt * c.dim + r] += o[n][r];
+                }
+            }
+        }
+        let ee = err(&emu, &got);
+        eprintln!("moe IQ T={t}: vs the CPU emulation of quant_act + moe_*_fast: max err {ee:.1e} (of rms)");
+        assert!(ee < 1e-3, "moe_*_fast semantics with IQ types");
     }
 }
