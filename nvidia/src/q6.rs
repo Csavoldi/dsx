@@ -1,6 +1,24 @@
 //! Dense weights requantized to 6 bits at load (Q8_0 -> ggml's Q6_K algorithm), stored in planes the GPU reads
 //! with aligned vector loads: per row, low nibbles [k/2], high 2-bit codes [k/4], int8 sub-scales per 16 [k/16],
 //! fp16 super-scale per 256 [k/256]. 6.56 bits/weight, like Q6_K.
+//!
+//! Code order (`put` / `code`): each 32-bit word of `lo` holds 8 weights, byte j = weights j (low nibble) and j + 4
+//! (high nibble); each word of `hi` holds 16, byte j = the high 2 bits of weights j, j + 4, j + 8, j + 12 (bits 0, 2,
+//! 4, 6). So `lo_word & 0x0f0f0f0f | (hi_word << 4) & 0x30303030` is 4 whole codes in byte order: the GPU builds 4
+//! codes in 3 instructions and turns each into a float with a byte permute instead of an int conversion.
+
+/// store 6-bit code c of weight g (lo, hi zeroed first)
+#[inline]
+pub fn put(lo: &mut [u8], hi: &mut [u8], g: usize, c: u8) {
+    lo[(g >> 3) * 4 + (g & 3)] |= (c & 15) << (4 * ((g >> 2) & 1));
+    hi[(g >> 4) * 4 + (g & 3)] |= (c >> 4) << (2 * ((g >> 2) & 3));
+}
+
+/// 6-bit code of weight g
+#[inline]
+pub fn code(lo: &[u8], hi: &[u8], g: usize) -> u8 {
+    ((lo[(g >> 3) * 4 + (g & 3)] >> (4 * ((g >> 2) & 1))) & 15) | (((hi[(g >> 4) * 4 + (g & 3)] >> (2 * ((g >> 2) & 3))) & 3) << 4)
+}
 
 fn nearest_int(f: f32) -> i32 {
     f.round_ties_even() as i32
@@ -90,20 +108,10 @@ pub fn quantize_row(x: &[f32], lo: &mut [u8], hi: &mut [u8], sc: &mut [i8], d: &
                 }
             }
         }
-        for i in 0..256 {
-            let g = b * 256 + i;
-            let c = codes[i];
-            if g % 2 == 0 {
-                lo[g / 2] = c & 15;
-            } else {
-                lo[g / 2] |= (c & 15) << 4;
-            }
-            let sh = 2 * (g % 4);
-            if sh == 0 {
-                hi[g / 4] = c >> 4;
-            } else {
-                hi[g / 4] |= (c >> 4) << sh;
-            }
+        lo[b * 128..b * 128 + 128].fill(0);
+        hi[b * 64..b * 64 + 64].fill(0);
+        for (i, &c) in codes.iter().enumerate() {
+            put(lo, hi, b * 256 + i, c);
         }
     }
 }
@@ -131,8 +139,7 @@ pub fn from_q6k_row(raw: &[u8], lo: &mut [u8], hi: &mut [u8], sc: &mut [i8], d: 
                 ];
                 for (m, &c) in codes.iter().enumerate() {
                     let g = b * 256 + 128 * half + 32 * m + l;
-                    lo[g / 2] |= (c & 15) << (4 * (g % 2));
-                    hi[g / 4] |= (c >> 4) << (2 * (g % 4));
+                    put(lo, hi, g, c);
                 }
             }
         }
@@ -176,7 +183,7 @@ pub fn dequant5(lo: &[u8], hb: &[u8], sm: &[u8], dd: &[u16], g: usize) -> f32 {
 
 /// Decoded weight (reference for tests and the CPU side)
 pub fn dequant(lo: &[u8], hi: &[u8], sc: &[i8], d: &[u16], g: usize) -> f32 {
-    let c = ((lo[g / 2] >> (4 * (g % 2))) & 15) | (((hi[g / 4] >> (2 * (g % 4))) & 3) << 4);
+    let c = code(lo, hi, g);
     half::f16::from_bits(d[g / 256]).to_f32() * sc[g / 16] as f32 * (c as i32 - 32) as f32
 }
 

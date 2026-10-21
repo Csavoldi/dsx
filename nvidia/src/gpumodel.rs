@@ -263,7 +263,7 @@ pub struct Placement {
 pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
-    "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6p4", "gemv_q5p4",
+    "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
     "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
@@ -1012,19 +1012,35 @@ impl<'m> GpuModel<'m> {
         self.gemv_rows_ld(w, r0, n, x, w.cols, y, n, t)
     }
 
+    /// Q6: 8 lanes per row (gemv_q6s8, 64 rows per block) for many rows of short k: more chunks per lane, and
+    /// k / 32 need not split over 32 lanes (3090: q_b 32768 x 1280 85 -> 71 us, o_a 8 x 1024 x 4096 58 -> 48 us; o_b,
+    /// the head and small matrices stay on 32 lanes)
+    fn q6_s8(n: usize, k: usize) -> bool {
+        n >= 4096 && k <= 4096 && (k / 32) % 8 == 0
+    }
+
+    /// rows from which Q5_K planes use the 4-row kernel (gemv_q5p4); Q6: from 512 rows (gemv_q6g4)
     const PLANES_R4_MIN: usize = 2048;
 
     fn gemv_rows_q6(&self, w: &DMat, r0: usize, n: usize, x: u64, y: u64, t: usize) -> Result<()> {
         let ([lo, hi, sc, d], kn, _) = w.planes(r0);
         let k = w.cols;
         // 4 rows per warp once there are enough rows to fill the GPU (fewer blocks hurt small matrices)
-        let (kn, rpb) = if n >= Self::PLANES_R4_MIN { (if kn == "gemv_q6p" { "gemv_q6p4" } else { "gemv_q5p4" }, 16) } else { (kn, 4) };
+        let r4 = if kn == "gemv_q6p" { n >= 512 } else { n >= Self::PLANES_R4_MIN };
+        let (kn, rpb) = if kn == "gemv_q6p" && Self::q6_s8(n, k) {
+            ("gemv_q6s8", 64)
+        } else if r4 {
+            (if kn == "gemv_q6p" { "gemv_q6g4" } else { "gemv_q5p4" }, 16)
+        } else {
+            (kn, 4)
+        };
         self.g.launch(
             self.k[kn],
             ((n as u32).div_ceil(rpb), 1, 1),
             128,
             0,
-            &[Arg::P(lo), Arg::P(x), Arg::P(y), Arg::I(n as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::I(k as i32), Arg::I(n as i32), Arg::P(hi), Arg::P(sc), Arg::P(d)],
+            // gemv_q6g's trailing (rows per group, x group stride): one group (the others ignore extra arguments)
+            &[Arg::P(lo), Arg::P(x), Arg::P(y), Arg::I(n as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::I(k as i32), Arg::I(n as i32), Arg::P(hi), Arg::P(sc), Arg::P(d), Arg::I(n as i32), Arg::I(0)],
         )
     }
 
@@ -1236,6 +1252,18 @@ impl<'m> GpuModel<'m> {
         if l.o_a.q8r {
             let (wp, sp, _) = l.o_a.ptrs(0);
             self.g.launch(self.k["gemv_q8g"], (((c.o_groups * c.o_lora) as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(wp), Arg::P(self.o.ptr), Arg::P(self.r.ptr), Arg::I((c.o_groups * c.o_lora) as i32), Arg::I(gsz as i32), Arg::I(c.o_lora as i32), Arg::I(gsz as i32), Arg::P(sp)])?;
+        } else if l.o_a.q6.is_some() && l.o_a.ty != GType::Q5K && c.o_lora % 16 == 0 {
+            // 6-bit planes: every group in one launch (group gi's rows read o's slice gi)
+            let ([lo, hi, sc, d], _, _) = l.o_a.planes(0);
+            let rows = c.o_groups * c.o_lora;
+            let (kn, rpb) = if Self::q6_s8(rows, gsz) { ("gemv_q6s8", 64) } else { ("gemv_q6g4", 16) };
+            self.g.launch(
+                self.k[kn],
+                ((rows as u32).div_ceil(rpb), 1, 1),
+                128,
+                0,
+                &[Arg::P(lo), Arg::P(self.o.ptr), Arg::P(self.r.ptr), Arg::I(rows as i32), Arg::I(gsz as i32), Arg::I(1), Arg::I(gsz as i32), Arg::I(rows as i32), Arg::P(hi), Arg::P(sc), Arg::P(d), Arg::I(c.o_lora as i32), Arg::I(gsz as i32)],
+            )?;
         } else {
             for gi in 0..c.o_groups {
                 self.gemv_rows(&l.o_a, gi * c.o_lora, c.o_lora, self.o.ptr + (gi * gsz * 4) as u64, self.r.ptr + (gi * c.o_lora * 4) as u64)?;

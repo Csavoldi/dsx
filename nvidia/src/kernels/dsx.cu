@@ -1720,45 +1720,92 @@ extern "C" __global__ void hc_reduce(const float *part, float *mixes, int hcd, i
   }
 }
 
-// ---------------------------------------------------------------- 6-bit dense weights (q6.rs plane layout)
-// Per row r: lo nibbles at lo + r*k/2, hi 2-bit codes at hi + r*k/4, int8 sub-scales at sc + r*k/16, f16 at d + r*k/256.
-// One warp per row, a lane takes 32 consecutive weights per step (16 B of nibbles + 8 B of high bits). T <= 8.
-extern "C" __global__ void gemv_q6p(const uint8_t *__restrict__ lo, const float *__restrict__ x, float *__restrict__ y, int rows,
-                                    int k, int T, int ldx, int ldy, const uint8_t *__restrict__ hi, const int8_t *__restrict__ sc,
-                                    const __half *__restrict__ d) {
-  int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
-  if (r >= rows) return;
-  const uint8_t *lr = lo + (size_t)r * (k / 2), *hr = hi + (size_t)r * (k / 4);
-  const int8_t *sr = sc + (size_t)r * (k / 16);
-  const __half *dr = d + (size_t)r * (k / 256);
-  float acc[MAXT] = {0};
-  for (int i = lane * 32; i < k; i += 1024) {
-    uint4 l16 = __ldg((const uint4 *)(lr + i / 2));
-    uint2 h8 = __ldg((const uint2 *)(hr + i / 4));
-    const uint8_t *lb = (const uint8_t *)&l16, *hb = (const uint8_t *)&h8;
-    float dd = __half2float(dr[i / 256]);
-    float s0 = dd * sr[i / 16], s1 = dd * sr[i / 16 + 1];
-    float w[32];
+// ---------------------------------------------------------------- 6-bit dense weights (q6.rs planes)
+// Per row r: lo at lo + r*k/2 (u32 word = 8 weights, byte j = weights j | j+4 << 4), hi at hi + r*k/4 (u32 word = 16
+// weights, byte j = high bits of j, j+4, j+8, j+12), int8 sub-scales per 16 at sc + r*k/16, f16 per 256 at d + r*k/256.
+// A lane takes 32 consecutive weights per step: 4 codes come from one lo word and one hi word in 3 ops, and a code
+// becomes a float by a byte permute into 2^23 + c (no int conversion, which runs at quarter rate on the 3090).
+// LPR lanes per row (32, or 8 when k / 32 chunks don't split evenly over 32 lanes, e.g. q_b's k = 1280: 40 chunks
+// = 5 per lane of 8), PRW rows per lane group, 4 warps per block. Rows grouped: row r reads x + (r / rpg) * xgs (o_a's
+// groups each read their slice of o, one launch); rpg = rows, xgs = 0 for a plain GEMV. rpg % PRW == 0. T <= 8.
+__device__ __forceinline__ float q6f(unsigned q, int b) {  // byte b of q as a float code - 32
+  return __int_as_float(__byte_perm(q, 0x4B000000u, 0x7540 | b)) - 8388640.f;  // 2^23 + c - (2^23 + 32)
+}
+template <int PRW, int LPR>
+__device__ __forceinline__ void gemv_q6(const uint8_t *__restrict__ lo, const float *__restrict__ x, float *__restrict__ y, int rows,
+                                        int k, int T, int ldx, int ldy, const uint8_t *__restrict__ hi, const int8_t *__restrict__ sc,
+                                        const __half *__restrict__ d, int rpg, int xgs) {
+  const int lane = (threadIdx.x & 31) % LPR;
+  const int r0 = ((blockIdx.x * 4 + (threadIdx.x >> 5)) * (32 / LPR) + (threadIdx.x & 31) / LPR) * PRW;
+  const bool live = r0 < rows;  // no early return: the lane group's shuffles need every lane
+  x += (size_t)(min(r0, rows - 1) / rpg) * xgs;
+  float acc[PRW][MAXT];
 #pragma unroll
-    for (int j = 0; j < 32; j++) {
-      int c = ((lb[j / 2] >> (4 * (j & 1))) & 15) | (((hb[j / 4] >> (2 * (j & 3))) & 3) << 4);
-      w[j] = (float)(c - 32) * (j < 16 ? s0 : s1);
+  for (int rr = 0; rr < PRW; rr++)
+    for (int t = 0; t < MAXT; t++) acc[rr][t] = 0.f;
+  for (int i = lane * 32; live && i < k; i += 32 * LPR) {
+    uint4 L[PRW];
+    uint2 H[PRW];
+    float s0[PRW], s1[PRW];
+#pragma unroll
+    for (int rr = 0; rr < PRW; rr++) {
+      int r = min(r0 + rr, rows - 1);
+      L[rr] = __ldg((const uint4 *)(lo + (size_t)r * (k / 2) + i / 2));
+      H[rr] = __ldg((const uint2 *)(hi + (size_t)r * (k / 4) + i / 4));
+      float dd = __half2float(d[(size_t)r * (k / 256) + i / 256]);
+      unsigned short s2 = __ldg((const unsigned short *)(sc + (size_t)r * (k / 16) + i / 16));
+      s0[rr] = dd * (float)(int8_t)(s2 & 255);
+      s1[rr] = dd * (float)(int8_t)(s2 >> 8);
     }
     for (int t = 0; t < T; t++) {
       const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
-      float s = 0.f;
+      float4 xv[8];
 #pragma unroll
-      for (int q = 0; q < 8; q++) {
-        float4 v = xp[q];
-        s += w[4 * q] * v.x + w[4 * q + 1] * v.y + w[4 * q + 2] * v.z + w[4 * q + 3] * v.w;
+      for (int q = 0; q < 8; q++) xv[q] = xp[q];
+#pragma unroll
+      for (int rr = 0; rr < PRW; rr++) {
+        float p[2] = {0.f, 0.f};
+#pragma unroll
+        for (int w = 0; w < 4; w++) {  // weights 8w .. 8w + 7
+          unsigned lw = w == 0 ? L[rr].x : w == 1 ? L[rr].y : w == 2 ? L[rr].z : L[rr].w;
+          unsigned hw = (w < 2 ? H[rr].x : H[rr].y) >> (4 * (w & 1));
+          unsigned q0 = (lw & 0x0f0f0f0fu) | ((hw << 4) & 0x30303030u), q1 = ((lw >> 4) & 0x0f0f0f0fu) | ((hw << 2) & 0x30303030u);
+          float4 a = xv[2 * w], b = xv[2 * w + 1];
+          p[w >> 1] += q6f(q0, 0) * a.x + q6f(q0, 1) * a.y + q6f(q0, 2) * a.z + q6f(q0, 3) * a.w + q6f(q1, 0) * b.x + q6f(q1, 1) * b.y +
+                       q6f(q1, 2) * b.z + q6f(q1, 3) * b.w;
+        }
+        acc[rr][t] += s0[rr] * p[0] + s1[rr] * p[1];
       }
-      acc[t] += s;
     }
   }
-  for (int t = 0; t < T; t++) {
-    float s = warp_sum(acc[t]);
-    if (lane == 0) y[(size_t)t * ldy + r] = s;
-  }
+#pragma unroll
+  for (int rr = 0; rr < PRW; rr++)
+    for (int t = 0; t < T; t++) {
+      float s = acc[rr][t];
+#pragma unroll
+      for (int o = LPR / 2; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
+      if (lane == 0 && r0 + rr < rows) y[(size_t)t * ldy + r0 + rr] = s;
+    }
+}
+#define Q6_ARGS                                                                                                        \
+  const uint8_t *__restrict__ lo, const float *__restrict__ x, float *__restrict__ y, int rows, int k, int T, int ldx, \
+      int ldy, const uint8_t *__restrict__ hi, const int8_t *__restrict__ sc, const __half *__restrict__ d
+// 1 row per warp: grid ceil(rows / 4), block 128
+extern "C" __global__ void gemv_q6p(Q6_ARGS) { gemv_q6<1, 32>(lo, x, y, rows, k, T, ldx, ldy, hi, sc, d, rows, 0); }
+// 4 / 8 rows per warp, grouped: grid ceil(rows / (4 * PRW)), block 128
+extern "C" __global__ void gemv_q6g4(Q6_ARGS, int rpg, int xgs) { gemv_q6<4, 32>(lo, x, y, rows, k, T, ldx, ldy, hi, sc, d, rpg, xgs); }
+extern "C" __global__ void gemv_q6g8(Q6_ARGS, int rpg, int xgs) { gemv_q6<8, 32>(lo, x, y, rows, k, T, ldx, ldy, hi, sc, d, rpg, xgs); }
+// 8 lanes per row, 4 rows per lane group (16 rows per warp): grid ceil(rows / 64), block 128; for k / 32 % 8 == 0
+extern "C" __global__ void gemv_q6s8(Q6_ARGS, int rpg, int xgs) { gemv_q6<4, 8>(lo, x, y, rows, k, T, ldx, ldy, hi, sc, d, rpg, xgs); }
+
+// q6 planes -> f16 for prefill GEMMs: one thread per weight
+extern "C" __global__ void dequant_q6p_f16(const uint8_t *lo, const uint8_t *hi, const int8_t *sc, const __half *d, __half *out,
+                                           int rows, int k) {
+  int r = blockIdx.y, c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= k) return;
+  size_t g = (size_t)r * k + c;
+  int q = ((lo[(g >> 3) * 4 + (g & 3)] >> (4 * ((g >> 2) & 1))) & 15) | (((hi[(g >> 4) * 4 + (g & 3)] >> (2 * ((g >> 2) & 3))) & 3) << 4);
+  out[g] = __float2half(__half2float(d[g / 256]) * (float)sc[g / 16] * (float)(q - 32));
 }
 
 // ---------------------------------------------------------------- llama.cpp Q5_K as 5-bit planes (q6.rs from_q5k_row)
@@ -1800,56 +1847,8 @@ extern "C" __global__ void gemv_q5p(const uint8_t *__restrict__ lo, const float 
   }
 }
 
-// The plane GEMVs with 4 rows per warp (16 per block of 128): each x load serves 4 rows. With one row per warp a lane
-// reads 128 B of f32 x per 22-26 B of weights, which bounds gemv_q6p / gemv_q5p by L1 traffic on the 3090.
+// Q5_K planes with 4 rows per warp (16 per block of 128): each x load serves 4 rows
 #define PR 4
-extern "C" __global__ void gemv_q6p4(const uint8_t *__restrict__ lo, const float *__restrict__ x, float *__restrict__ y, int rows,
-                                     int k, int T, int ldx, int ldy, const uint8_t *__restrict__ hi, const int8_t *__restrict__ sc,
-                                     const __half *__restrict__ d) {
-  int r0 = (blockIdx.x * 4 + (threadIdx.x >> 5)) * PR, lane = threadIdx.x & 31;
-  if (r0 >= rows) return;
-  float acc[PR][MAXT];
-#pragma unroll
-  for (int rr = 0; rr < PR; rr++)
-    for (int t = 0; t < MAXT; t++) acc[rr][t] = 0.f;
-  for (int i = lane * 32; i < k; i += 1024) {
-    uint4 l16[PR];
-    uint2 h8[PR];
-    float s0[PR], s1[PR];
-#pragma unroll
-    for (int rr = 0; rr < PR; rr++) {
-      int r = min(r0 + rr, rows - 1);
-      l16[rr] = __ldg((const uint4 *)(lo + (size_t)r * (k / 2) + i / 2));
-      h8[rr] = __ldg((const uint2 *)(hi + (size_t)r * (k / 4) + i / 4));
-      float dd = __half2float(d[(size_t)r * (k / 256) + i / 256]);
-      s0[rr] = dd * sc[(size_t)r * (k / 16) + i / 16];
-      s1[rr] = dd * sc[(size_t)r * (k / 16) + i / 16 + 1];
-    }
-    for (int t = 0; t < T; t++) {
-      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
-#pragma unroll
-      for (int q = 0; q < 8; q++) {
-        float4 v = xp[q];
-#pragma unroll
-        for (int rr = 0; rr < PR; rr++) {
-          unsigned lw = q < 4 ? (q < 2 ? l16[rr].x : l16[rr].y) : (q < 6 ? l16[rr].z : l16[rr].w);
-          unsigned hw = q < 4 ? h8[rr].x : h8[rr].y;
-          unsigned l2 = lw >> (16 * (q & 1)), h1 = hw >> (8 * (q & 3));
-          float c0 = (float)((int)((l2 & 15) | ((h1 & 3) << 4)) - 32), c1 = (float)((int)(((l2 >> 4) & 15) | (((h1 >> 2) & 3) << 4)) - 32);
-          float c2 = (float)((int)(((l2 >> 8) & 15) | (((h1 >> 4) & 3) << 4)) - 32), c3 = (float)((int)(((l2 >> 12) & 15) | (((h1 >> 6) & 3) << 4)) - 32);
-          acc[rr][t] += (q < 4 ? s0[rr] : s1[rr]) * (c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w);
-        }
-      }
-    }
-  }
-#pragma unroll
-  for (int rr = 0; rr < PR; rr++)
-    for (int t = 0; t < T; t++) {
-      float s = warp_sum(acc[rr][t]);
-      if (lane == 0 && r0 + rr < rows) y[(size_t)t * ldy + r0 + rr] = s;
-    }
-}
-
 extern "C" __global__ void gemv_q5p4(const uint8_t *__restrict__ lo, const float *__restrict__ x, float *__restrict__ y, int rows,
                                      int k, int T, int ldx, int ldy, const uint8_t *__restrict__ hb, const uint8_t *__restrict__ sm,
                                      const __half *__restrict__ dd) {
@@ -1913,15 +1912,6 @@ extern "C" __global__ void dequant_q5p_f16(const uint8_t *lo, const uint8_t *hb,
   out[g] = __float2half(__half2float(dd[g / 256 * 2]) * (float)sm[g / 32 * 2] * (float)q - __half2float(dd[g / 256 * 2 + 1]) * (float)sm[g / 32 * 2 + 1]);
 }
 
-// q6 planes -> f16 for prefill GEMMs: one thread per weight; planes laid out as above (k-major per row)
-extern "C" __global__ void dequant_q6p_f16(const uint8_t *lo, const uint8_t *hi, const int8_t *sc, const __half *d, __half *out,
-                                           int rows, int k) {
-  int r = blockIdx.y, c = blockIdx.x * blockDim.x + threadIdx.x;
-  if (c >= k) return;
-  size_t g = (size_t)r * k + c;
-  int q = ((lo[g / 2] >> (4 * (g & 1))) & 15) | (((hi[g / 4] >> (2 * (g & 3))) & 3) << 4);
-  out[g] = __float2half(__half2float(d[g / 256]) * (float)sc[g / 16] * (float)(q - 32));
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Vision tower (DeepSeek ViT + aligner), prefill-time only. Activations f32, GEMM inputs bf16.
