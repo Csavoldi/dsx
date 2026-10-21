@@ -8,23 +8,26 @@
 
 Run [DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017) (552B MoE + 196B Engram)
 at full routing on a desktop with two RTX 3090s, 128 GB of RAM and an NVMe drive. dsx is a Rust + CUDA engine built
-for this one model. It runs two builds:
+for this one model. It runs three builds:
 
 - [**lxe/DeepSeek-V4.1-Flash-1017-dsx-ud**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud): Unsloth's
-  UD-IQ1_M routed experts with dsx's Q8_0 dense weights and the official FP8 Engram. The better quality.
+  UD-IQ1_M routed experts with dsx's Q8_0 dense weights and the official FP8 Engram. The best quality.
+- [unsloth/DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) `UD-IQ1_M`,
+  as downloaded: the smallest download, Engram included.
 - [lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit): dsx's own
   2-bit quant (GPTQ, Hadamard rotation, per-expert tiers).
 
-| 2x RTX 3090, 128 GB DDR4 | dsx-ud | dsx-ud, `--defer-rank 3` | dsx-2bit |
+| 2x RTX 3090, 128 GB DDR4 | dsx-ud | Unsloth UD-IQ1_M as-is | dsx-2bit |
 |---|---:|---:|---:|
-| Size (+ official Engram shards) | 142 GB | 142 GB | 148 GB |
-| Decode, 3K-token agent prompt | 28.5 tok/s | 32.4 tok/s | 29.5 tok/s |
-| Prefill, 3K tokens | 283 tok/s | 283 tok/s | 290 tok/s |
-| KL vs the FP8 model (Lucebox eval) | 0.270 | 0.283 | 0.373 |
-| Top-1 agreement with the FP8 model | 79.0% | 78.4% | 74.4% |
-| Perplexity (FP8 model: 8.56) | 10.13 | 10.24 | 10.68 |
+| Download | 142 GB + 203 GB official Engram | 250 GB | 148 GB + 203 GB official Engram |
+| Decode, 3K-token prompt | 27-28.5 tok/s | 27-29.5 tok/s | 29.5 tok/s |
+| Decode with `--defer-rank 3` | 31.5 tok/s | 31-31.7 tok/s | 35.7 tok/s |
+| KL vs the FP8 model (Lucebox eval) | 0.270 (0.283 with deferral) | 0.277 | 0.373 |
+| Top-1 agreement with the FP8 model | 79.0% | 78.0% | 74.4% |
+| Perplexity (FP8 model: 8.56) | 10.13 | 10.11 | 10.68 |
 
 For comparison, Unsloth's UD-IQ1_M in llama.cpp on the same machine: KL 0.275, top-1 78.8%, 12.3 tok/s decode.
+Unsloth's file needs no `--engram`: dsx reads its Engram table from the GGUF.
 
 ## Quick start
 
