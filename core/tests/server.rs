@@ -119,6 +119,19 @@ async fn openai_chat_nonstream() {
         "messages": [{"role": "user", "content": "Hello"}]})).await;
     assert_eq!(r["choices"][0]["message"]["content"], MOCK_REPLY);
     assert!(r["choices"][0]["message"]["reasoning_content"].is_null());
+    // llama.cpp's switches (its web UI sends chat_template_kwargs.enable_thinking) do the same
+    for off in [json!({"chat_template_kwargs": {"enable_thinking": false}}), json!({"thinking": false}),
+                json!({"chat_template_kwargs": {"reasoning_effort": "none"}})] {
+        let mut b = json!({"model": "m", "messages": [{"role": "user", "content": "Hello"}]});
+        b.as_object_mut().unwrap().extend(off.as_object().unwrap().clone());
+        let r = post_json(&base, "/v1/chat/completions", b).await;
+        assert_eq!(r["choices"][0]["message"]["content"], MOCK_REPLY, "{off}");
+        assert!(r["choices"][0]["message"]["reasoning_content"].is_null(), "{off}");
+    }
+    // an explicit thinking object wins over chat_template_kwargs
+    let r = post_json(&base, "/v1/chat/completions", json!({"model": "m", "thinking": {"type": "enabled"},
+        "chat_template_kwargs": {"enable_thinking": false}, "messages": [{"role": "user", "content": "Hello"}]})).await;
+    assert_eq!(r["choices"][0]["message"]["reasoning_content"], MOCK_REASONING);
 }
 
 #[tokio::test(flavor = "multi_thread")]

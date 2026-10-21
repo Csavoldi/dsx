@@ -214,11 +214,34 @@ fn parse_with_model<T: DeserializeOwned>(st: &AppState, body: &[u8]) -> Result<T
     serde_json::from_value(v).map_err(|e| ConversionError::bad_request(format!("invalid JSON request: {e}")))
 }
 
+/// llama.cpp's thinking switches on a chat request, mapped to the DeepSeek fields when those are absent:
+/// chat_template_kwargs.enable_thinking (llama.cpp's web UI) or a boolean "thinking" -> thinking.type, and
+/// chat_template_kwargs.reasoning_effort -> reasoning_effort
+fn llama_thinking_compat(body: &[u8]) -> Result<Vec<u8>, ConversionError> {
+    let mut v: serde_json::Value = parse(body)?;
+    let Some(o) = v.as_object_mut() else { return Ok(body.to_vec()) };
+    let kwargs = o.get("chat_template_kwargs").cloned().unwrap_or_default();
+    let on = match o.get("thinking") {
+        Some(t) => t.as_bool(),
+        None => kwargs["enable_thinking"].as_bool(),
+    };
+    if let Some(on) = on {
+        o.insert("thinking".into(), json!({"type": if on { "enabled" } else { "disabled" }}));
+    }
+    if !o.contains_key("reasoning_effort") {
+        if let Some(effort) = kwargs["reasoning_effort"].as_str() {
+            o.insert("reasoning_effort".into(), json!(effort));
+        }
+    }
+    Ok(serde_json::to_vec(&v).expect("a JSON value serializes"))
+}
+
 // ---- routes
 
 async fn chat_completions(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let e = |err| ApiError(Proto::OpenAi, err);
     let hes = hesitation_override(&body);
+    let body = llama_thinking_compat(&body).map_err(e)?;
     let req: ChatCompletionRequest = parse_with_model(&st, &body).map_err(e)?;
     let (seed, include_usage) = (req.seed, req.include_usage());
     let conv = req.convert(ConversionOptions::default()).map_err(e)?;
