@@ -424,7 +424,8 @@ pub struct Layer {
 /// every Engram layer's rows in layer order (llama.cpp's per_layer_token_embd, e.g. IQ4_NL).
 pub enum EngramTables {
     Fp8 { st: SafeTensors, names: Vec<(String, String)> },
-    Table { mat: Mat, row0: Vec<usize> },
+    /// `_file`: the GGUF holding the table when it is not the model's own (--engram FILE.gguf), kept mapped
+    Table { mat: Mat, row0: Vec<usize>, _file: Option<Gguf> },
 }
 
 /// One Engram layer's rows (`EngramTables::layer`).
@@ -440,7 +441,7 @@ impl EngramTables {
                 let (wn, sn) = &names[li];
                 EngramLayer::Fp8 { w: st.bytes(st.get(wn)?), s: st.bytes(st.get(sn)?), dim }
             }
-            EngramTables::Table { mat, row0 } => EngramLayer::Table { mat, row0: row0[li] },
+            EngramTables::Table { mat, row0, .. } => EngramLayer::Table { mat, row0: row0[li] },
         })
     }
 }
@@ -588,19 +589,30 @@ impl Model {
                 engram_qk,
             });
         }
-        let engram = match g.tensors.get("per_layer_token_embd.weight") {
-            Some(t) => {
-                // one table, layers' rows in layer order (llama.cpp); --engram is not needed
-                let mut row0 = vec![];
-                let mut acc = 0usize;
-                for &r in &cfg.engram_rows {
-                    row0.push(acc);
-                    acc += r as usize;
-                }
-                anyhow::ensure!(acc == t.n_rows() && t.row_len() == cfg.engram_dim, "per_layer_token_embd: {} x {} for {acc} rows of {}", t.n_rows(), t.row_len(), cfg.engram_dim);
-                Some(EngramTables::Table { mat: Mat::from_gguf(&g, t), row0 })
+        // one table with every layer's rows in layer order (llama.cpp's per_layer_token_embd, e.g. Unsloth's IQ4_NL)
+        let table = |eg: &Gguf, t: &TensorInfo| -> Result<(Mat, Vec<usize>)> {
+            let mut row0 = vec![];
+            let mut acc = 0usize;
+            for &r in &cfg.engram_rows {
+                row0.push(acc);
+                acc += r as usize;
             }
-            None => engram_dir.map(|d| engram_tables(&cfg, d)).transpose()?,
+            anyhow::ensure!(acc == t.n_rows() && t.row_len() == cfg.engram_dim, "per_layer_token_embd: {} x {} for {acc} rows of {}", t.n_rows(), t.row_len(), cfg.engram_dim);
+            Ok((Mat::from_gguf(eg, t), row0))
+        };
+        let engram = match (engram_dir, g.tensors.get("per_layer_token_embd.weight")) {
+            // --engram FILE.gguf: the table from another GGUF (e.g. Unsloth's shard holding it), over the model's own
+            (Some(d), _) if d.is_file() => {
+                let eg = Gguf::open(d)?;
+                let t = eg.get("per_layer_token_embd.weight")?.clone();
+                let (mat, row0) = table(&eg, &t)?;
+                Some(EngramTables::Table { mat, row0, _file: Some(eg) })
+            }
+            (_, Some(t)) => {
+                let (mat, row0) = table(&g, t)?;
+                Some(EngramTables::Table { mat, row0, _file: None })
+            }
+            (d, None) => d.map(|d| engram_tables(&cfg, d)).transpose()?,
         };
         Ok(Model {
             embed: m("token_embd.weight")?,

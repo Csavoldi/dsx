@@ -317,6 +317,10 @@ mod tests {
             (Q2_0, Q2_0),
             (Ptq1_0, Ptq1_0),
             (Q8_0, Q8_0),
+            (Iq1S, Iq2Xxs),
+            (Iq2Xxs, Iq2Xs),
+            (Iq2S, Iq1S),
+            (Iq2Xs, Iq2S),
         ]
         .iter()
         .map(|&(gu, dn)| Ex {

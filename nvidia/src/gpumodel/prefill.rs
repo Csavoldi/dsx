@@ -9,8 +9,6 @@
 
 use super::*;
 use crate::gguf::GType;
-use crate::model::{e8m0_to_f32, fp8_e4m3_to_f32};
-use crate::numerics::round_bf16;
 
 /// staging buffers for streamed experts (copies run ahead of compute by up to NSTAGE - 1 experts)
 const NSTAGE: usize = 4;
@@ -329,7 +327,7 @@ impl GpuModel<'_> {
         }
         let m = self.m;
         let c = &m.cfg;
-        let (d, hc, hd, nh, w) = (c.dim, c.hc, c.head_dim, c.n_heads, c.window);
+        let (d, hc, nh, w) = (c.dim, c.hc, c.n_heads, c.window);
         let tn = tokens.len();
         assert!(tn <= pb.tmax);
         let p0 = self.pos;
@@ -642,10 +640,10 @@ impl GpuModel<'_> {
     #[allow(clippy::too_many_arguments)]
     fn gemm_q6(&self, pb: &PrefillBufs, w: &DMat, r0: usize, rows: usize, k: usize, x: u64, ldx: usize, y: u64, ldy: usize, n: usize) -> Result<()> {
         let g = &self.g;
-        let (hi, sc, d) = w.q6.as_ref().unwrap();
+        let ([lo, hi, sc, d], _, dk) = w.planes(r0);
         let kk = w.cols;
         g.launch(self.k["pack_f16"], ((k as u32).div_ceil(256), n as u32, 1), 256, 0, &[Arg::P(x), Arg::I(ldx as i32), Arg::P(pb.act16.ptr), Arg::I(k as i32)])?;
-        g.launch(self.k["dequant_q6p_f16"], ((kk as u32).div_ceil(256), rows as u32, 1), 256, 0, &[Arg::P(w.buf.ptr + (r0 * kk / 2) as u64), Arg::P(hi.ptr + (r0 * kk / 4) as u64), Arg::P(sc.ptr + (r0 * kk / 16) as u64), Arg::P(d.ptr + (r0 * kk / 256 * 2) as u64), Arg::P(pb.w16.ptr), Arg::I(rows as i32), Arg::I(kk as i32)])?;
+        g.launch(self.k[dk], ((kk as u32).div_ceil(256), rows as u32, 1), 256, 0, &[Arg::P(lo), Arg::P(hi), Arg::P(sc), Arg::P(d), Arg::P(pb.w16.ptr), Arg::I(rows as i32), Arg::I(kk as i32)])?;
         g.gemm_f16(pb.act16.ptr, pb.w16.ptr, y, n, k, rows, ldy)
     }
 
@@ -819,9 +817,9 @@ impl GpuModel<'_> {
         let sd = &l.sh_down;
         if sd.q6.is_some() {
             // h16 is already f16: dequant + GEMM directly
-            let (hi, sc, d) = sd.q6.as_ref().unwrap();
+            let ([lo, hi, sc, d], _, dk) = sd.planes(0);
             let kk = sd.cols;
-            self.g.launch(self.k["dequant_q6p_f16"], ((kk as u32).div_ceil(256), sd.rows as u32, 1), 256, 0, &[Arg::P(sd.buf.ptr), Arg::P(hi.ptr), Arg::P(sc.ptr), Arg::P(d.ptr), Arg::P(pb.w16.ptr), Arg::I(sd.rows as i32), Arg::I(kk as i32)])?;
+            self.g.launch(self.k[dk], ((kk as u32).div_ceil(256), sd.rows as u32, 1), 256, 0, &[Arg::P(lo), Arg::P(hi), Arg::P(sc), Arg::P(d), Arg::P(pb.w16.ptr), Arg::I(sd.rows as i32), Arg::I(kk as i32)])?;
         }
         let (sdw, sds, sdid) = sd.ptrs(0);
         if sd.q6.is_none() {

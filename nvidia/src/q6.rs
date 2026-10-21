@@ -139,6 +139,41 @@ pub fn from_q6k_row(raw: &[u8], lo: &mut [u8], hi: &mut [u8], sc: &mut [i8], d: 
     }
 }
 
+/// One row of llama.cpp Q5_K blocks (k % 256 == 0) -> 5-bit planes, exactly: lo nibbles (k/2), the 5th bit (k/8,
+/// bit g % 8 of byte g / 8), a (scale, min) byte pair per 32 weights (k/16) and the fp16 (d, dmin) pair per 256 (k/256 u16
+/// pairs); weight = d * scale * code - dmin * min, as ggml's dequantize_row_q5_K.
+pub fn from_q5k_row(raw: &[u8], lo: &mut [u8], hb: &mut [u8], sm: &mut [u8], dd: &mut [u16]) {
+    lo.fill(0);
+    hb.fill(0);
+    for (b, blk) in raw.chunks_exact(176).enumerate() {
+        dd[2 * b] = u16::from_le_bytes([blk[0], blk[1]]);
+        dd[2 * b + 1] = u16::from_le_bytes([blk[2], blk[3]]);
+        let (sc, qh, qs) = (&blk[4..16], &blk[16..48], &blk[48..176]);
+        for j in 0..8 {
+            let (s, m) = if j < 4 { (sc[j] & 63, sc[j + 4] & 63) } else { ((sc[j + 4] & 0xF) | ((sc[j - 4] >> 6) << 4), (sc[j + 4] >> 4) | ((sc[j] >> 6) << 4)) };
+            sm[2 * (b * 8 + j)] = s;
+            sm[2 * (b * 8 + j) + 1] = m;
+        }
+        for c in 0..4 {
+            for l in 0..32 {
+                let codes = [(qs[32 * c + l] & 0xF) | (((qh[l] >> (2 * c)) & 1) << 4), (qs[32 * c + l] >> 4) | (((qh[l] >> (2 * c + 1)) & 1) << 4)];
+                for (h, &q) in codes.iter().enumerate() {
+                    let g = b * 256 + 64 * c + 32 * h + l;
+                    lo[g / 2] |= (q & 15) << (4 * (g % 2));
+                    hb[g / 8] |= (q >> 4) << (g % 8);
+                }
+            }
+        }
+    }
+}
+
+/// Decoded weight of the 5-bit planes (reference for tests)
+pub fn dequant5(lo: &[u8], hb: &[u8], sm: &[u8], dd: &[u16], g: usize) -> f32 {
+    let q = ((lo[g / 2] >> (4 * (g % 2))) & 15) | (((hb[g / 8] >> (g % 8)) & 1) << 4);
+    let (d, dmin) = (half::f16::from_bits(dd[g / 256 * 2]).to_f32(), half::f16::from_bits(dd[g / 256 * 2 + 1]).to_f32());
+    d * sm[g / 32 * 2] as f32 * q as f32 - dmin * sm[g / 32 * 2 + 1] as f32
+}
+
 /// Decoded weight (reference for tests and the CPU side)
 pub fn dequant(lo: &[u8], hi: &[u8], sc: &[i8], d: &[u16], g: usize) -> f32 {
     let c = ((lo[g / 2] >> (4 * (g % 2))) & 15) | (((hi[g / 4] >> (2 * (g % 4))) & 3) << 4);
@@ -171,6 +206,31 @@ mod tests {
         crate::formats::dequant_row(crate::gguf::GType::Q6K, &raw, &mut want);
         for g in 0..k {
             assert_eq!(dequant(&lo, &hi, &sc, &d, g), want[g], "weight {g}");
+        }
+    }
+
+    #[test]
+    fn q5k_repack_is_exact() {
+        let k = 512;
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut raw: Vec<u8> = (0..k / 256 * 176)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect();
+        for b in 0..k / 256 {
+            raw[b * 176..b * 176 + 2].copy_from_slice(&half::f16::from_f32(0.01).to_le_bytes());
+            raw[b * 176 + 2..b * 176 + 4].copy_from_slice(&half::f16::from_f32(0.003).to_le_bytes());
+        }
+        let (mut lo, mut hb, mut sm, mut dd) = (vec![0u8; k / 2], vec![0u8; k / 8], vec![0u8; k / 16], vec![0u16; k / 128]);
+        from_q5k_row(&raw, &mut lo, &mut hb, &mut sm, &mut dd);
+        let mut want = vec![0f32; k];
+        crate::formats::dequant_row(crate::gguf::GType::Q5K, &raw, &mut want);
+        for g in 0..k {
+            assert_eq!(dequant5(&lo, &hb, &sm, &dd, g), want[g], "weight {g}");
         }
     }
 

@@ -3,7 +3,7 @@
 
 use crate::gguf::GType;
 use crate::gpu::{Arg, Buf, Gpu, Kernel};
-use crate::model::{Mat, Model, dot, e8m0_to_f32, fp8_e4m3_to_f32, matvec};
+use crate::model::{Mat, Model, dot, matvec};
 use crate::numerics::{round_bf16, silu};
 use anyhow::{Result, bail};
 
@@ -27,6 +27,16 @@ struct DMat {
 }
 
 impl DMat {
+    /// plane weights (q6 or Q5_K) at row r0: [lo, hi, sc, d] pointers and the (GEMV, f16 dequant) kernels
+    fn planes(&self, r0: usize) -> ([u64; 4], &'static str, &'static str) {
+        let (hi, sc, d) = self.q6.as_ref().unwrap();
+        let k = self.cols;
+        if self.ty == GType::Q5K {
+            return ([self.buf.ptr + (r0 * k / 2) as u64, hi.ptr + (r0 * k / 8) as u64, sc.ptr + (r0 * k / 16) as u64, d.ptr + (r0 * k / 128 * 2) as u64], "gemv_q5p", "dequant_q5p_f16");
+        }
+        ([self.buf.ptr + (r0 * k / 2) as u64, hi.ptr + (r0 * k / 4) as u64, sc.ptr + (r0 * k / 16) as u64, d.ptr + (r0 * k / 256 * 2) as u64], "gemv_q6p", "dequant_q6p_f16")
+    }
+
     /// (weight pointer, scale pointer, dequant type id) for rows starting at r0
     fn ptrs(&self, r0: usize) -> (u64, u64, i32) {
         if self.q8r {
@@ -253,7 +263,7 @@ pub struct Placement {
 pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
-    "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16",
+    "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6p4", "gemv_q5p4",
     "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
@@ -307,18 +317,14 @@ impl<'m> GpuModel<'m> {
                 return Ok(DMat { buf: g.upload(&lo)?, scale: None, ty: w.ty, rows, cols: k, act_fp8: w.act_fp8, q8r: false, q6: Some((g.upload(&hi)?, g.upload(&sc)?, g.upload(&d)?)) });
             }
             if w.ty == GType::Q5K {
-                // llama.cpp Q5_K (shared experts in some layers): decoded to f16 for now (no Q5_K GEMV yet)
+                // llama.cpp Q5_K (shared experts in some layers): exact 5-bit planes (q6.rs from_q5k_row)
                 let (rows, k) = (w.rows, w.cols);
-                let mut h = vec![half::f16::ZERO; rows * k];
+                let (mut lo, mut hb, mut sm, mut dd) = (vec![0u8; rows * k / 2], vec![0u8; rows * k / 8], vec![0u8; rows * k / 16], vec![0u16; rows * k / 128]);
                 use rayon::prelude::*;
-                h.par_chunks_mut(k).enumerate().for_each(|(r, o)| {
-                    let mut x = vec![0f32; k];
-                    w.dequant(r, &mut x);
-                    for (o, v) in o.iter_mut().zip(&x) {
-                        *o = half::f16::from_f32(*v);
-                    }
+                lo.par_chunks_mut(k / 2).zip(hb.par_chunks_mut(k / 8)).zip(sm.par_chunks_mut(k / 16)).zip(dd.par_chunks_mut(k / 128)).enumerate().for_each(|(r, (((lo, hb), sm), dd))| {
+                    crate::q6::from_q5k_row(w.row(r), lo, hb, sm, dd);
                 });
-                return Ok(DMat { buf: g.upload(&h)?, scale: None, ty: GType::F16, rows, cols: k, act_fp8: false, q8r: false, q6: None });
+                return Ok(DMat { buf: g.upload(&lo)?, scale: None, ty: w.ty, rows, cols: k, act_fp8: false, q8r: false, q6: Some((g.upload(&hb)?, g.upload(&sm)?, g.upload(&dd)?)) });
             }
             if w.ty == GType::Q8_0 {
                 let (qs, d) = repack_q8(w.bytes(), w.rows, w.cols);
@@ -1006,15 +1012,19 @@ impl<'m> GpuModel<'m> {
         self.gemv_rows_ld(w, r0, n, x, w.cols, y, n, t)
     }
 
+    const PLANES_R4_MIN: usize = 2048;
+
     fn gemv_rows_q6(&self, w: &DMat, r0: usize, n: usize, x: u64, y: u64, t: usize) -> Result<()> {
-        let (hi, sc, d) = w.q6.as_ref().unwrap();
+        let ([lo, hi, sc, d], kn, _) = w.planes(r0);
         let k = w.cols;
+        // 4 rows per warp once there are enough rows to fill the GPU (fewer blocks hurt small matrices)
+        let (kn, rpb) = if n >= Self::PLANES_R4_MIN { (if kn == "gemv_q6p" { "gemv_q6p4" } else { "gemv_q5p4" }, 16) } else { (kn, 4) };
         self.g.launch(
-            self.k["gemv_q6p"],
-            ((n as u32).div_ceil(4), 1, 1),
+            self.k[kn],
+            ((n as u32).div_ceil(rpb), 1, 1),
             128,
             0,
-            &[Arg::P(w.buf.ptr + (r0 * k / 2) as u64), Arg::P(x), Arg::P(y), Arg::I(n as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::I(k as i32), Arg::I(n as i32), Arg::P(hi.ptr + (r0 * k / 4) as u64), Arg::P(sc.ptr + (r0 * k / 16) as u64), Arg::P(d.ptr + (r0 * k / 256 * 2) as u64)],
+            &[Arg::P(lo), Arg::P(x), Arg::P(y), Arg::I(n as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::I(k as i32), Arg::I(n as i32), Arg::P(hi), Arg::P(sc), Arg::P(d)],
         )
     }
 

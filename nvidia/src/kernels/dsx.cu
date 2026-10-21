@@ -1761,6 +1761,158 @@ extern "C" __global__ void gemv_q6p(const uint8_t *__restrict__ lo, const float 
   }
 }
 
+// ---------------------------------------------------------------- llama.cpp Q5_K as 5-bit planes (q6.rs from_q5k_row)
+// Per row r: lo nibbles at lo + r*k/2, 5th bits at hb + r*k/8, (scale, min) bytes per 32 at sm + r*k/16, f16 (d, dmin) at
+// dd + r*k/128. weight = d*scale*code - dmin*min. One warp per row, a lane takes one 32-weight sub-block per step. T <= 8.
+extern "C" __global__ void gemv_q5p(const uint8_t *__restrict__ lo, const float *__restrict__ x, float *__restrict__ y, int rows,
+                                    int k, int T, int ldx, int ldy, const uint8_t *__restrict__ hb, const uint8_t *__restrict__ sm,
+                                    const __half *__restrict__ dd) {
+  int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+  if (r >= rows) return;
+  const uint8_t *lr = lo + (size_t)r * (k / 2), *hr = hb + (size_t)r * (k / 8), *sr = sm + (size_t)r * (k / 16);
+  const __half *dr = dd + (size_t)r * (k / 128);
+  float acc[MAXT] = {0};
+  for (int i = lane * 32; i < k; i += 1024) {
+    uint4 l16 = __ldg((const uint4 *)(lr + i / 2));
+    unsigned h = __ldg((const unsigned *)(hr + i / 8));
+    uchar2 s2 = __ldg((const uchar2 *)(sr + i / 16));
+    half2 d2 = __ldg((const half2 *)(dr + i / 256 * 2));
+    float a = __low2float(d2) * (float)s2.x, b = __high2float(d2) * (float)s2.y;
+    const uint8_t *lb = (const uint8_t *)&l16;
+    float w[32];
+#pragma unroll
+    for (int j = 0; j < 32; j++) w[j] = (float)(((lb[j / 2] >> (4 * (j & 1))) & 15) | (((h >> j) & 1) << 4));
+    for (int t = 0; t < T; t++) {
+      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+      float s = 0.f, sx = 0.f;
+#pragma unroll
+      for (int q = 0; q < 8; q++) {
+        float4 v = xp[q];
+        s += w[4 * q] * v.x + w[4 * q + 1] * v.y + w[4 * q + 2] * v.z + w[4 * q + 3] * v.w;
+        sx += v.x + v.y + v.z + v.w;
+      }
+      acc[t] += a * s - b * sx;
+    }
+  }
+  for (int t = 0; t < T; t++) {
+    float s = warp_sum(acc[t]);
+    if (lane == 0) y[(size_t)t * ldy + r] = s;
+  }
+}
+
+// The plane GEMVs with 4 rows per warp (16 per block of 128): each x load serves 4 rows. With one row per warp a lane
+// reads 128 B of f32 x per 22-26 B of weights, which bounds gemv_q6p / gemv_q5p by L1 traffic on the 3090.
+#define PR 4
+extern "C" __global__ void gemv_q6p4(const uint8_t *__restrict__ lo, const float *__restrict__ x, float *__restrict__ y, int rows,
+                                     int k, int T, int ldx, int ldy, const uint8_t *__restrict__ hi, const int8_t *__restrict__ sc,
+                                     const __half *__restrict__ d) {
+  int r0 = (blockIdx.x * 4 + (threadIdx.x >> 5)) * PR, lane = threadIdx.x & 31;
+  if (r0 >= rows) return;
+  float acc[PR][MAXT];
+#pragma unroll
+  for (int rr = 0; rr < PR; rr++)
+    for (int t = 0; t < MAXT; t++) acc[rr][t] = 0.f;
+  for (int i = lane * 32; i < k; i += 1024) {
+    uint4 l16[PR];
+    uint2 h8[PR];
+    float s0[PR], s1[PR];
+#pragma unroll
+    for (int rr = 0; rr < PR; rr++) {
+      int r = min(r0 + rr, rows - 1);
+      l16[rr] = __ldg((const uint4 *)(lo + (size_t)r * (k / 2) + i / 2));
+      h8[rr] = __ldg((const uint2 *)(hi + (size_t)r * (k / 4) + i / 4));
+      float dd = __half2float(d[(size_t)r * (k / 256) + i / 256]);
+      s0[rr] = dd * sc[(size_t)r * (k / 16) + i / 16];
+      s1[rr] = dd * sc[(size_t)r * (k / 16) + i / 16 + 1];
+    }
+    for (int t = 0; t < T; t++) {
+      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+#pragma unroll
+      for (int q = 0; q < 8; q++) {
+        float4 v = xp[q];
+#pragma unroll
+        for (int rr = 0; rr < PR; rr++) {
+          unsigned lw = q < 4 ? (q < 2 ? l16[rr].x : l16[rr].y) : (q < 6 ? l16[rr].z : l16[rr].w);
+          unsigned hw = q < 4 ? h8[rr].x : h8[rr].y;
+          unsigned l2 = lw >> (16 * (q & 1)), h1 = hw >> (8 * (q & 3));
+          float c0 = (float)((int)((l2 & 15) | ((h1 & 3) << 4)) - 32), c1 = (float)((int)(((l2 >> 4) & 15) | (((h1 >> 2) & 3) << 4)) - 32);
+          float c2 = (float)((int)(((l2 >> 8) & 15) | (((h1 >> 4) & 3) << 4)) - 32), c3 = (float)((int)(((l2 >> 12) & 15) | (((h1 >> 6) & 3) << 4)) - 32);
+          acc[rr][t] += (q < 4 ? s0[rr] : s1[rr]) * (c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w);
+        }
+      }
+    }
+  }
+#pragma unroll
+  for (int rr = 0; rr < PR; rr++)
+    for (int t = 0; t < T; t++) {
+      float s = warp_sum(acc[rr][t]);
+      if (lane == 0 && r0 + rr < rows) y[(size_t)t * ldy + r0 + rr] = s;
+    }
+}
+
+extern "C" __global__ void gemv_q5p4(const uint8_t *__restrict__ lo, const float *__restrict__ x, float *__restrict__ y, int rows,
+                                     int k, int T, int ldx, int ldy, const uint8_t *__restrict__ hb, const uint8_t *__restrict__ sm,
+                                     const __half *__restrict__ dd) {
+  int r0 = (blockIdx.x * 4 + (threadIdx.x >> 5)) * PR, lane = threadIdx.x & 31;
+  if (r0 >= rows) return;
+  float acc[PR][MAXT];
+#pragma unroll
+  for (int rr = 0; rr < PR; rr++)
+    for (int t = 0; t < MAXT; t++) acc[rr][t] = 0.f;
+  for (int i = lane * 32; i < k; i += 1024) {
+    uint4 l16[PR];
+    unsigned h[PR];
+    float a[PR], b[PR];
+#pragma unroll
+    for (int rr = 0; rr < PR; rr++) {
+      int r = min(r0 + rr, rows - 1);
+      l16[rr] = __ldg((const uint4 *)(lo + (size_t)r * (k / 2) + i / 2));
+      h[rr] = __ldg((const unsigned *)(hb + (size_t)r * (k / 8) + i / 8));
+      uchar2 s2 = __ldg((const uchar2 *)(sm + (size_t)r * (k / 16) + i / 16));
+      half2 d2 = __ldg((const half2 *)(dd + (size_t)r * (k / 128) + i / 256 * 2));
+      a[rr] = __low2float(d2) * (float)s2.x;
+      b[rr] = __high2float(d2) * (float)s2.y;
+    }
+    for (int t = 0; t < T; t++) {
+      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+      float sx = 0.f, sw[PR];
+#pragma unroll
+      for (int rr = 0; rr < PR; rr++) sw[rr] = 0.f;
+#pragma unroll
+      for (int q = 0; q < 8; q++) {
+        float4 v = xp[q];
+        sx += v.x + v.y + v.z + v.w;
+#pragma unroll
+        for (int rr = 0; rr < PR; rr++) {
+          unsigned lw = q < 4 ? (q < 2 ? l16[rr].x : l16[rr].y) : (q < 6 ? l16[rr].z : l16[rr].w);
+          unsigned l2 = lw >> (16 * (q & 1)), h4 = h[rr] >> (4 * q);
+          float c0 = (float)((l2 & 15) | ((h4 & 1) << 4)), c1 = (float)(((l2 >> 4) & 15) | ((h4 & 2) << 3));
+          float c2 = (float)(((l2 >> 8) & 15) | ((h4 & 4) << 2)), c3 = (float)(((l2 >> 12) & 15) | ((h4 & 8) << 1));
+          sw[rr] += c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w;
+        }
+      }
+#pragma unroll
+      for (int rr = 0; rr < PR; rr++) acc[rr][t] += a[rr] * sw[rr] - b[rr] * sx;
+    }
+  }
+#pragma unroll
+  for (int rr = 0; rr < PR; rr++)
+    for (int t = 0; t < T; t++) {
+      float s = warp_sum(acc[rr][t]);
+      if (lane == 0 && r0 + rr < rows) y[(size_t)t * ldy + r0 + rr] = s;
+    }
+}
+
+// Q5_K planes -> f16 for prefill GEMMs: one thread per weight
+extern "C" __global__ void dequant_q5p_f16(const uint8_t *lo, const uint8_t *hb, const uint8_t *sm, const __half *dd, __half *out,
+                                           int rows, int k) {
+  int r = blockIdx.y, c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= k) return;
+  size_t g = (size_t)r * k + c;
+  int q = ((lo[g / 2] >> (4 * (g & 1))) & 15) | (((hb[g / 8] >> (g & 7)) & 1) << 4);
+  out[g] = __float2half(__half2float(dd[g / 256 * 2]) * (float)sm[g / 32 * 2] * (float)q - __half2float(dd[g / 256 * 2 + 1]) * (float)sm[g / 32 * 2 + 1]);
+}
+
 // q6 planes -> f16 for prefill GEMMs: one thread per weight; planes laid out as above (k-major per row)
 extern "C" __global__ void dequant_q6p_f16(const uint8_t *lo, const uint8_t *hi, const int8_t *sc, const __half *d, __half *out,
                                            int rows, int k) {

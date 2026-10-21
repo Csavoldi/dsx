@@ -400,11 +400,10 @@ __device__ __forceinline__ void tile_iq1s(const uint8_t *const (&m)[NM], int row
         unsigned qa = (unsigned)comp4(ib < 4 ? A0 : A1, ib & 3), qb = (unsigned)comp4(ib < 4 ? B0 : B1, ib & 3);
         unsigned ha = ((unsigned)comp4(A2, ib >> 1) >> (16 * (ib & 1))) & 0xffff, hb = ((unsigned)comp4(B2, ib >> 1) >> (16 * (ib & 1))) & 0xffff;
         auto dec = [&](unsigned qs, unsigned qh, int l) {
-          // grid half through L1 (16 KB, no shared copy: filling one per block cost as much as the weights); bytes
-          // -1 / 0 / 1 -> 8 g: bit 0 gives 8, the sign bit adds 0xf0
-          unsigned g = __ldg((const unsigned *)iq1s_grid + 2 * (((qs >> (8 * l)) & 255) | ((qh >> (3 * l)) & 7) << 8) + hf);
-          unsigned w = ((g & 0x01010101u) << 3) | (((g >> 7) & 0x01010101u) * 0xf0u);
-          return (qh & 0x8000) ? (((w ^ 0x80808080u) - 0x01010101u) ^ 0x80808080u) : w + 0x01010101u;
+          // grid half as g + 1 nibbles through L1 (8 KB, no shared copy: filling one per block cost as much as the
+          // weights); 8 (g + 1) + 0x80 - 7 (or - 9) stays in its byte, ^ 0x80 makes it the signed 8 g + 1 (or - 1)
+          unsigned n = (__ldg(iq1s_grid4 + (((qs >> (8 * l)) & 255) | ((qh >> (3 * l)) & 7) << 8)) >> (4 * hf)) & 0x0f0f0f0fu;
+          return ((n << 3) + ((qh & 0x8000) ? 0x77777777u : 0x79797979u)) ^ 0x80808080u;
         };
         int c[4] = {0, 0, 0, 0};
         mma32(c, dec(qa, ha, l0), dec(qb, hb, l0), dec(qa, ha, l1), dec(qb, hb, l1), (ib & 1) ? X[ib >> 1].z : X[ib >> 1].x,
