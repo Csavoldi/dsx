@@ -475,8 +475,8 @@ impl GpuModel<'_> {
         let m = self.m;
         let c = &m.cfg;
         let tabs = m.engram.as_ref().ok_or_else(|| anyhow::anyhow!("engram tables not loaded"))?;
-        let (wn, sn) = &tabs.names[eidx];
-        let (wb, sb) = (tabs.st.bytes(tabs.st.get(wn)?), tabs.st.bytes(tabs.st.get(sn)?));
+        let tab = tabs.layer(eidx, c.engram_dim)?;
+        let tab = &tab;
         let hd = c.engram_dim;
         let hist_len = self.engram_hist.len();
         let base = hist_len - tn; // history index of the chunk's first token
@@ -498,10 +498,7 @@ impl GpuModel<'_> {
                 sc.spawn(move || {
                     crate::cpu::pool::pin_to_set(&crate::cpu::pool::ALL_CPUS);
                     for (o, &row) in chunk.chunks_mut(hd).zip(idc) {
-                        let row = row as usize;
-                        for j in 0..hd {
-                            o[j] = round_bf16(fp8_e4m3_to_f32(wb[row * hd + j]) * e8m0_to_f32(sb[row * (hd / 32) + j / 32]));
-                        }
+                        tab.row(row as usize, o);
                     }
                 });
             }

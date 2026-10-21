@@ -108,6 +108,37 @@ pub fn quantize_row(x: &[f32], lo: &mut [u8], hi: &mut [u8], sc: &mut [i8], d: &
     }
 }
 
+/// One row of llama.cpp Q6_K blocks (k % 256 == 0) -> the same planes, exactly: Q6_K stores code q (0..63, value
+/// d * scale * (q - 32)) as low nibbles in ql (weights l, l + 32 of each 128-half; high nibbles weights l + 64, l + 96)
+/// and 2-bit pairs in qh, int8 scales per 16 consecutive weights, fp16 d per 256.
+pub fn from_q6k_row(raw: &[u8], lo: &mut [u8], hi: &mut [u8], sc: &mut [i8], d: &mut [u16]) {
+    lo.fill(0);
+    hi.fill(0);
+    for (b, blk) in raw.chunks_exact(210).enumerate() {
+        let (ql, qh) = (&blk[0..128], &blk[128..192]);
+        for (i, s) in blk[192..208].iter().enumerate() {
+            sc[b * 16 + i] = *s as i8;
+        }
+        d[b] = u16::from_le_bytes([blk[208], blk[209]]);
+        for half in 0..2 {
+            let (ql, qh) = (&ql[64 * half..], &qh[32 * half..]);
+            for l in 0..32 {
+                let codes = [
+                    (ql[l] & 0xF) | ((qh[l] & 3) << 4),
+                    (ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4),
+                    (ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4),
+                    (ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4),
+                ];
+                for (m, &c) in codes.iter().enumerate() {
+                    let g = b * 256 + 128 * half + 32 * m + l;
+                    lo[g / 2] |= (c & 15) << (4 * (g % 2));
+                    hi[g / 4] |= (c >> 4) << (2 * (g % 4));
+                }
+            }
+        }
+    }
+}
+
 /// Decoded weight (reference for tests and the CPU side)
 pub fn dequant(lo: &[u8], hi: &[u8], sc: &[i8], d: &[u16], g: usize) -> f32 {
     let c = ((lo[g / 2] >> (4 * (g % 2))) & 15) | (((hi[g / 4] >> (2 * (g % 4))) & 3) << 4);
@@ -117,6 +148,31 @@ pub fn dequant(lo: &[u8], hi: &[u8], sc: &[i8], d: &[u16], g: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn q6k_repack_is_exact() {
+        // random Q6_K blocks: the planes decode to exactly what ggml's dequantize_row_q6_K gives
+        let k = 512;
+        let mut seed = 0x2545f4914f6cdd1du64;
+        let mut raw: Vec<u8> = (0..k / 256 * 210)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect();
+        for b in 0..k / 256 {
+            raw[b * 210 + 208..b * 210 + 210].copy_from_slice(&half::f16::from_f32(0.01).to_le_bytes());
+        }
+        let (mut lo, mut hi, mut sc, mut d) = (vec![0u8; k / 2], vec![0u8; k / 4], vec![0i8; k / 16], vec![0u16; k / 256]);
+        from_q6k_row(&raw, &mut lo, &mut hi, &mut sc, &mut d);
+        let mut want = vec![0f32; k];
+        crate::formats::dequant_row(crate::gguf::GType::Q6K, &raw, &mut want);
+        for g in 0..k {
+            assert_eq!(dequant(&lo, &hi, &sc, &d, g), want[g], "weight {g}");
+        }
+    }
 
     #[test]
     fn q6_roundtrip_error() {

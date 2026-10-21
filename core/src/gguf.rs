@@ -60,7 +60,11 @@ pub enum GType {
     F16 = 1,
     Q8_0 = 8,
     Q3K = 11,
+    /// ggml Q5_K: 5-bit codes, 6-bit scales and mins per 32 (shared experts in llama.cpp mixes)
+    Q5K = 13,
     Q6K = 14,
+    /// ggml IQ4_NL: 4-bit indices into a fixed non-linear table, fp16 scale per 32 (llama.cpp's Engram tables)
+    Iq4Nl = 20,
     /// ggml IQ2_XXS: 8-weight groups from a 256-entry codebook with sign patterns, 4-bit scale per 32, fp16 per 256
     Iq2Xxs = 16,
     /// ggml IQ1_S: 8-weight ternary groups from a 2048-entry codebook, 3-bit scale and +-1/8 shift per 32, fp16 per 256
@@ -87,7 +91,9 @@ impl GType {
             1 => GType::F16,
             8 => GType::Q8_0,
             11 => GType::Q3K,
+            13 => GType::Q5K,
             14 => GType::Q6K,
+            20 => GType::Iq4Nl,
             16 => GType::Iq2Xxs,
             19 => GType::Iq1S,
             17 => GType::Iq2Xs,
@@ -109,7 +115,9 @@ impl GType {
             GType::I32 => (1, 4),
             GType::Q8_0 => (32, 34),
             GType::Q3K => (256, 110),
+            GType::Q5K => (256, 176),
             GType::Q6K => (256, 210),
+            GType::Iq4Nl => (32, 18),
             GType::Iq2Xxs => (256, 66),
             GType::Iq1S => (256, 50),
             GType::Iq2Xs => (256, 74),
@@ -287,6 +295,12 @@ impl Gguf {
     }
     pub fn f64(&self, key: &str) -> Result<f64> {
         self.kv.get(key).and_then(|v| v.as_f64()).with_context(|| format!("metadata {key}"))
+    }
+    pub fn arr_f64(&self, key: &str) -> Result<Vec<f64>> {
+        match self.kv.get(key) {
+            Some(Value::Arr(v)) => v.iter().map(|x| x.as_f64().context("non-numeric array item")).collect(),
+            _ => bail!("metadata array {key}"),
+        }
     }
     pub fn arr_u64(&self, key: &str) -> Result<Vec<u64>> {
         match self.kv.get(key) {

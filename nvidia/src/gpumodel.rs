@@ -296,6 +296,30 @@ impl<'m> GpuModel<'m> {
                 });
                 return Ok(DMat { buf: g.upload(&lo)?, scale: None, ty: w.ty, rows, cols: k, act_fp8: w.act_fp8, q8r: false, q6: Some((g.upload(&hi)?, g.upload(&sc)?, g.upload(&d)?)) });
             }
+            if w.ty == GType::Q6K {
+                // llama.cpp Q6_K (e.g. Unsloth's attention / head): the same codes, scales and d in the q6 planes, exact
+                let (rows, k) = (w.rows, w.cols);
+                let (mut lo, mut hi, mut sc, mut d) = (vec![0u8; rows * k / 2], vec![0u8; rows * k / 4], vec![0i8; rows * k / 16], vec![0u16; rows * k / 256]);
+                use rayon::prelude::*;
+                lo.par_chunks_mut(k / 2).zip(hi.par_chunks_mut(k / 4)).zip(sc.par_chunks_mut(k / 16)).zip(d.par_chunks_mut(k / 256)).enumerate().for_each(|(r, (((lo, hi), sc), d))| {
+                    crate::q6::from_q6k_row(w.row(r), lo, hi, sc, d);
+                });
+                return Ok(DMat { buf: g.upload(&lo)?, scale: None, ty: w.ty, rows, cols: k, act_fp8: w.act_fp8, q8r: false, q6: Some((g.upload(&hi)?, g.upload(&sc)?, g.upload(&d)?)) });
+            }
+            if w.ty == GType::Q5K {
+                // llama.cpp Q5_K (shared experts in some layers): decoded to f16 for now (no Q5_K GEMV yet)
+                let (rows, k) = (w.rows, w.cols);
+                let mut h = vec![half::f16::ZERO; rows * k];
+                use rayon::prelude::*;
+                h.par_chunks_mut(k).enumerate().for_each(|(r, o)| {
+                    let mut x = vec![0f32; k];
+                    w.dequant(r, &mut x);
+                    for (o, v) in o.iter_mut().zip(&x) {
+                        *o = half::f16::from_f32(*v);
+                    }
+                });
+                return Ok(DMat { buf: g.upload(&h)?, scale: None, ty: GType::F16, rows, cols: k, act_fp8: false, q8r: false, q6: None });
+            }
             if w.ty == GType::Q8_0 {
                 let (qs, d) = repack_q8(w.bytes(), w.rows, w.cols);
                 return Ok(DMat { buf: g.upload(&qs)?, scale: Some(g.upload(&d)?), ty: w.ty, rows: w.rows, cols: w.cols, act_fp8: w.act_fp8, q8r: true, q6: None });
@@ -1080,8 +1104,8 @@ impl<'m> GpuModel<'m> {
         let hd = c.engram_dim;
         let per = (c.engram_ngram - 1) * c.engram_heads;
         for eidx in 0..c.engram_layers.len() {
-            let (wn, sn) = &tabs.names[eidx];
-            let (wb, sb) = (tabs.st.bytes(tabs.st.get(wn)?), tabs.st.bytes(tabs.st.get(sn)?));
+            let tab = tabs.layer(eidx, hd)?;
+            let tab = &tab;
             let ids = m.engram_hashes_for(hist, eidx);
             let off = eidx * per * hd;
             // 8 plain threads (not rayon: its pool shares cores with the spinning CPU-expert workers); uncached rows
@@ -1096,9 +1120,7 @@ impl<'m> GpuModel<'m> {
                     sc.spawn(move || {
                         crate::cpu::pool::pin_to_set(&crate::cpu::pool::AUX_CPUS);
                         for (row, o) in grp {
-                            for j in 0..hd {
-                                o[j] = round_bf16(fp8_e4m3_to_f32(wb[row * hd + j]) * e8m0_to_f32(sb[row * (hd / 32) + j / 32]));
-                            }
+                            tab.row(row, o);
                         }
                     });
                 }

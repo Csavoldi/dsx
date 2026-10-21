@@ -64,6 +64,9 @@ pub struct Config {
 
 impl Config {
     pub fn from_gguf(g: &Gguf) -> Result<Config> {
+        if !g.kv.contains_key("deepseek41.config") {
+            return Config::from_llama_gguf(g); // llama.cpp's deepseek41 keys (e.g. Unsloth's GGUFs, as shipped)
+        }
         let k = |s: &str| format!("deepseek41.{s}");
         let u = |s: &str| g.u64(&k(s)).map(|v| v as usize);
         let f = |s: &str| g.f64(&k(s)).map(|v| v as f32);
@@ -128,6 +131,74 @@ impl Config {
                     Err(_) => vec![false; n],
                 }
             },
+        })
+    }
+}
+
+impl Config {
+    /// llama.cpp's deepseek41 metadata (convert_hf_to_gguf.py, PR #30817): the same model, other key names. Engram:
+    /// ple.layers / ngram_size / heads_per_ngram, head_vocab_sizes (the bucket primes, [layer][ngram - 1][head]),
+    /// layer_multipliers, engram.token_map and pad_token_id; each layer's rows are the sum of its heads' buckets.
+    pub fn from_llama_gguf(g: &Gguf) -> Result<Config> {
+        let k = |s: &str| format!("deepseek41.{s}");
+        let u = |s: &str| g.u64(&k(s)).map(|v| v as usize);
+        let f = |s: &str| g.f64(&k(s)).map(|v| v as f32);
+        let arr = |s: &str| g.arr_u64(&k(s)).map(|v| v.into_iter().map(|x| x as usize).collect::<Vec<_>>());
+        let n_layers = u("block_count")?;
+        let token_map: Vec<u32> = g.arr_u64(&k("engram.token_map"))?.into_iter().map(|v| v as u32).collect();
+        let (heads, ngram) = (u("ple.heads_per_ngram")?, u("ple.ngram_size")?);
+        let engram_layers = arr("ple.layers")?;
+        let primes = g.arr_u64(&k("ple.head_vocab_sizes"))?;
+        let per = (ngram - 1) * heads;
+        anyhow::ensure!(primes.len() == engram_layers.len() * per, "ple.head_vocab_sizes: {} entries for {} layers x {per} heads", primes.len(), engram_layers.len());
+        let mut compress_ratios = arr("attention.compress_ratios")?;
+        compress_ratios.truncate(n_layers); // the list also covers the MTP / DSpark blocks
+        Ok(Config {
+            vocab: token_map.len(),
+            dim: u("embedding_length")?,
+            inter: u("expert_feed_forward_length")?,
+            n_layers,
+            n_heads: u("attention.head_count")?,
+            head_dim: u("attention.key_length")?,
+            rope_dim: u("rope.dimension_count")?,
+            q_lora: u("attention.q_lora_rank")?,
+            o_lora: u("attention.output_lora_rank")?,
+            o_groups: u("attention.output_group_count")?,
+            n_experts: u("expert_count")?,
+            top_k: u("expert_used_count")?,
+            window: u("attention.sliding_window")?,
+            idx_heads: u("attention.indexer.head_count")?,
+            idx_dim: u("attention.indexer.key_length")?,
+            idx_topk: u("attention.indexer.top_k")?,
+            cand_layer: u("attention.indexer.candidate_source_layer")?,
+            cand_blocks: u("attention.indexer.candidate_top_k_blocks")?,
+            cand_block: u("attention.indexer.candidate_block_size")?,
+            hc: u("hyper_connection.count")?,
+            sinkhorn_iters: u("hyper_connection.sinkhorn_iterations")?,
+            hc_eps: f("hyper_connection.epsilon")?,
+            eps: f("attention.layer_norm_rms_epsilon")?,
+            swiglu_limit: *g.arr_f64(&k("swiglu_clamp_exp"))?.first().context("swiglu_clamp_exp")? as f32,
+            route_scale: f("expert_weights_scale")?,
+            rope_theta: f("rope.freq_base")?,
+            compress_rope_theta: f("attention.compress_rope_freq_base")?,
+            rope_factor: f("rope.scaling.factor")?,
+            beta_fast: f("rope.scaling.yarn_beta_fast")?,
+            beta_slow: f("rope.scaling.yarn_beta_slow")?,
+            original_seq_len: u("rope.scaling.original_context_length")?,
+            compress_ratios,
+            kv_sources: arr("attention.kv_source_layers")?,
+            index_sources: arr("attention.indexer.source_layers")?,
+            engram_rows: (0..engram_layers.len()).map(|i| primes[i * per..(i + 1) * per].iter().sum()).collect(),
+            engram_layers,
+            engram_heads: heads,
+            engram_dim: u("embedding_length_per_layer_input")?,
+            engram_ngram: ngram,
+            engram_pad: u("engram.pad_token_id")? as i64,
+            engram_token_map: token_map,
+            engram_primes: primes,
+            engram_multipliers: g.arr_u64(&k("ple.layer_multipliers"))?,
+            dspark_targets: arr("dspark.target_layers").unwrap_or_default(),
+            expert_rot: vec![false; n_layers],
         })
     }
 }
@@ -349,10 +420,43 @@ pub struct Layer {
     pub engram_qk: Option<Vec<f32>>, // q_weight * k_weight, [hc][dim]
 }
 
-pub struct EngramTables {
-    pub st: SafeTensors,
-    /// per engram layer: (weight tensor, scale tensor) names
-    pub names: Vec<(String, String)>,
+/// The Engram embedding rows: the checkpoint's FP8 rows with an E8M0 scale per 32, or one quantized GGUF table with
+/// every Engram layer's rows in layer order (llama.cpp's per_layer_token_embd, e.g. IQ4_NL).
+pub enum EngramTables {
+    Fp8 { st: SafeTensors, names: Vec<(String, String)> },
+    Table { mat: Mat, row0: Vec<usize> },
+}
+
+/// One Engram layer's rows (`EngramTables::layer`).
+pub enum EngramLayer<'a> {
+    Fp8 { w: &'a [u8], s: &'a [u8], dim: usize },
+    Table { mat: &'a Mat, row0: usize },
+}
+
+impl EngramTables {
+    pub fn layer(&self, li: usize, dim: usize) -> Result<EngramLayer<'_>> {
+        Ok(match self {
+            EngramTables::Fp8 { st, names } => {
+                let (wn, sn) = &names[li];
+                EngramLayer::Fp8 { w: st.bytes(st.get(wn)?), s: st.bytes(st.get(sn)?), dim }
+            }
+            EngramTables::Table { mat, row0 } => EngramLayer::Table { mat, row0: row0[li] },
+        })
+    }
+}
+
+impl EngramLayer<'_> {
+    /// row `r` of this layer -> out [dim] (FP8 x E8M0 is exact in bf16, rounded as the reference does)
+    pub fn row(&self, r: usize, out: &mut [f32]) {
+        match self {
+            EngramLayer::Fp8 { w, s, dim } => {
+                for j in 0..*dim {
+                    out[j] = round_bf16(fp8_e4m3_to_f32(w[r * dim + j]) * e8m0_to_f32(s[r * (dim / 32) + j / 32]));
+                }
+            }
+            EngramLayer::Table { mat, row0 } => mat.dequant(row0 + r, out),
+        }
+    }
 }
 
 /// Where the weights live: kept alive for as long as the Mats point into them.
@@ -421,7 +525,7 @@ fn engram_tables(cfg: &Config, dir: &Path) -> Result<EngramTables> {
     let want: Vec<&str> = names.iter().flat_map(|(a, b)| [a.as_str(), b.as_str()]).collect();
     let st = SafeTensors::open(dir, &want)?;
     st.advise_random();
-    Ok(EngramTables { st, names })
+    Ok(EngramTables::Fp8 { st, names })
 }
 
 fn ropes(cfg: &Config) -> (Rope, Rope) {
@@ -445,7 +549,7 @@ impl Model {
             let p = |s: &str| format!("blk.{l}.{s}");
             let engram_qk = match (ov(&p("engram_q_norm.weight"))?, ov(&p("engram_k_norm.weight"))?) {
                 (Some(q), Some(k)) => Some(q.iter().zip(&k).map(|(a, b)| a * b).collect()),
-                _ => None,
+                _ => ov(&p("engram_gate.weight"))?, // llama.cpp stores the product q_weight * k_weight
             };
             layers.push(Layer {
                 id: l,
@@ -484,7 +588,20 @@ impl Model {
                 engram_qk,
             });
         }
-        let engram = engram_dir.map(|d| engram_tables(&cfg, d)).transpose()?;
+        let engram = match g.tensors.get("per_layer_token_embd.weight") {
+            Some(t) => {
+                // one table, layers' rows in layer order (llama.cpp); --engram is not needed
+                let mut row0 = vec![];
+                let mut acc = 0usize;
+                for &r in &cfg.engram_rows {
+                    row0.push(acc);
+                    acc += r as usize;
+                }
+                anyhow::ensure!(acc == t.n_rows() && t.row_len() == cfg.engram_dim, "per_layer_token_embd: {} x {} for {acc} rows of {}", t.n_rows(), t.row_len(), cfg.engram_dim);
+                Some(EngramTables::Table { mat: Mat::from_gguf(&g, t), row0 })
+            }
+            None => engram_dir.map(|d| engram_tables(&cfg, d)).transpose()?,
+        };
         Ok(Model {
             embed: m("token_embd.weight")?,
             out_norm: v("output_norm.weight")?,
@@ -792,19 +909,12 @@ impl Model {
         let c = &self.cfg;
         let li = c.engram_layers.iter().position(|&x| x == l.id).unwrap();
         let tabs = self.engram.as_ref().context("engram tables not loaded (--engram DIR)")?;
-        let (wn, sn) = &tabs.names[li];
-        let (wt, scale_t) = (tabs.st.get(wn)?, tabs.st.get(sn)?);
-        let (wb, sb) = (tabs.st.bytes(wt), tabs.st.bytes(scale_t));
         let hd = c.engram_dim;
+        let tab = tabs.layer(li, hd)?;
         let ids = self.engram_hashes_for(&st.engram_hist, li);
         let mut e = vec![0f32; ids.len() * hd];
         for (k, &row) in ids.iter().enumerate() {
-            let row = row as usize;
-            for j in 0..hd {
-                let v = fp8_e4m3_to_f32(wb[row * hd + j]);
-                let s = e8m0_to_f32(sb[row * (hd / 32) + j / 32]);
-                e[k * hd + j] = round_bf16(v * s);
-            }
+            tab.row(row as usize, &mut e[k * hd..(k + 1) * hd]);
         }
         let kv = lin(self, l.engram_kv.as_ref().unwrap(), &e);
         let d = c.dim;

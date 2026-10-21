@@ -99,6 +99,44 @@ pub fn dequant_row(t: GType, raw: &[u8], out: &mut [f32]) {
                 }
             }
         }
+        GType::Q5K => {
+            // ggml block_q5_K: d, dmin (fp16), scales[12] (6-bit scale and min per 32, get_scale_min_k4 packing),
+            // qh[32] (5th bit), qs[128] (low nibbles); weight = d * sc * q - dmin * m
+            for (b, blk) in raw.chunks_exact(176).enumerate() {
+                let (d, dmin) = (f16_at(blk, 0), f16_at(blk, 2));
+                let (sc, qh, qs) = (&blk[4..16], &blk[16..48], &blk[48..176]);
+                let sm = |j: usize| -> (f32, f32) {
+                    if j < 4 {
+                        ((sc[j] & 63) as f32, (sc[j + 4] & 63) as f32)
+                    } else {
+                        (((sc[j + 4] & 0xF) | ((sc[j - 4] >> 6) << 4)) as f32, ((sc[j + 4] >> 4) | ((sc[j] >> 6) << 4)) as f32)
+                    }
+                };
+                let o = &mut out[256 * b..256 * b + 256];
+                for (c, j) in (0..256).step_by(64).enumerate() {
+                    let ((s1, m1), (s2, m2)) = (sm(2 * c), sm(2 * c + 1));
+                    let (u1, u2) = (1u8 << (2 * c), 2u8 << (2 * c));
+                    let ql = &qs[32 * c..32 * c + 32];
+                    for l in 0..32 {
+                        let hi1 = if qh[l] & u1 != 0 { 16 } else { 0 };
+                        let hi2 = if qh[l] & u2 != 0 { 16 } else { 0 };
+                        o[j + l] = d * s1 * ((ql[l] & 0xF) + hi1) as f32 - dmin * m1;
+                        o[j + 32 + l] = d * s2 * ((ql[l] >> 4) + hi2) as f32 - dmin * m2;
+                    }
+                }
+            }
+        }
+        GType::Iq4Nl => {
+            // ggml block_iq4_nl: fp16 d, qs[16]: weight j = d * K[qs[j] & 15], weight j + 16 = d * K[qs[j] >> 4]
+            const K: [i8; 16] = [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113];
+            for (b, blk) in raw.chunks_exact(18).enumerate() {
+                let d = f16_at(blk, 0);
+                for j in 0..16 {
+                    out[32 * b + j] = d * K[(blk[2 + j] & 15) as usize] as f32;
+                    out[32 * b + j + 16] = d * K[(blk[2 + j] >> 4) as usize] as f32;
+                }
+            }
+        }
         GType::Q6K => {
             // ggml block_q6_K: ql[128], qh[64], scales[16] (int8), d fp16
             for (b, blk) in raw.chunks_exact(210).enumerate() {
