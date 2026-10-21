@@ -11,7 +11,7 @@ what limits it? This document collects the analysis, measurements and results be
 |---|---|
 | Decode | ~29 tok/s on 2x RTX 3090 + 128 GB DDR4, exact routing (v4) |
 | Prefill | 301 tok/s (3K tokens), 470 tok/s (8K tokens) (v4) |
-| Quality | KL 0.373, top-1 74.4%, perplexity 10.68 vs the FP8 model's 8.56 (148 GB quant, v4b) |
+| Quality | KL 0.270, top-1 79.0%, perplexity 10.13 vs the FP8 model's 8.56 with Unsloth UD-IQ1_M's experts (142 GB, dsx-ud); dsx's own quant v4b: KL 0.373, top-1 74.4% (148 GB) |
 | Limit | the experts the CPU computes from RAM (33-36 GB/s on DDR4-3200), then the dense half on GPU0 |
 
 The levers that mattered, in order: keep every expert in VRAM or RAM (none on disk); rank VRAM residency by measured
@@ -172,7 +172,40 @@ Two allocation experiments at v4b's size, measured on one rented RTX PRO 6000 ne
 ppl 10.69 there): weighting each layer's error by its measured KL sensitivity (v5: noise injected per 5-layer group)
 gave 0.3759 / 74.2% / 10.65, no gain; Unsloth UD-IQ1_M's layout in our formats (v6: layers 0-19 mostly ternary, more
 bits in layers 20-39 and down projections) gave 0.400 / 73.7% / 11.08, worse. With our grids the early layers need the
-bits; Unsloth's edge at this size is its codebook formats.
+bits; Unsloth's edge is in its experts themselves (below).
+
+**A codebook tier (v7) and why UD-IQ1_M's experts win.** ggml's IQ2_XXS (8-weight groups from a 256-point codebook,
+2.06 bpw) quantized by our GPTQ beats our scalar tiers by 18-22% in held-out output error at equal bits (layers 5, 20,
+32, 39). As a fourth allocator tier (v7: 1,968 IQ2_XXS experts, none of the 3,238 VRAM-resident ones) it scored
+0.3765 / 74.2% / 10.65 against v5's 0.3759. Its realized layer errors fell 5-18% in layers 3-19 but doubled in layer 32:
+the screening compared IQ2_XXS against unrotated, unrefit scalar tiers, which overstates its advantage ~1.35x, and with
+that correction the allocator keeps only ~480 IQ2_XXS experts for a 0.6% gain. The tier and its kernels stay available
+(CPU 40.6 GB/s from RAM on the 12700K; GPU ~1.6x slower than Q2_0 on a 3090).
+
+Scoring the same 44-48 experts per layer on Lucebox's own text (its 8 x 1024 tokens through the reference model)
+showed what the calibration text hides. Token-weighted relative output error, calibration held-out → Lucebox:
+
+| Layer | Our Q2_0, rotated + refit (2.25 bpw) | Our ternary (1.75) | UD-IQ1_M's experts |
+|---:|---|---|---|
+| 5 | 0.092 → 0.153 | 0.141 → 0.232 | 0.174 → 0.198 (1.73 bpw) |
+| 20 | 0.157 → 0.232 | 0.235 → 0.345 | 0.156 → 0.154 (2.23 bpw) |
+| 32 | 0.231 → 0.281 | 0.341 → 0.414 | 0.258 → 0.261 (2.15 bpw) |
+| 39 | 0.102 → 0.161 | 0.153 → 0.239 | 0.129 → 0.146 (2.31 bpw) |
+
+Our experts lose 1.2-1.7x from calibration text to general text (whole allocations up to 2.9x); UD's lose 0.99-1.14x
+and beat ours on Lucebox text at equal bits. Ours also shrink their outputs: <ŷ, y>/<y, y> is 0.65-0.81 at 2 bits
+(0.93-0.95 at Q3_K), against 0.92-0.99 for UD's, and the error points against the expert's mean output. Breaking the
+pipeline down (layers 5 and 20): rounding without error feedback transfers perfectly but is poor and halves the
+outputs (ternary shrink 0.49); GPTQ roughly halves the calibration error, and about a third of that gain survives on
+Lucebox text; damping 10x transfers a little better at the same Lucebox error; Hessians from the corpus's web sequences
+alone change nothing (< 2%). The held-out sequences share no documents with the fit ones but come from the same pools.
+Correcting the shrink at run time helps only partly (a quarter-power gain: KL 0.373 → 0.365; the full 1/s: 0.384).
+
+ggml's stock quantizers do not reproduce UD's experts: with UD's exact layout and either our imatrix or Unsloth's
+published one they score 9-33% worse than UD on Lucebox text (about our level), and their IQ2_XXS blocks share only 6%
+of the fp16 scales and 71% of the grid indices with UD's. UD's weight-space error is even slightly larger than stock
+ggml's (L32 gate 0.131 vs 0.124), so their quantization optimizes something other than weight error. Loading UD's
+actual experts into dsx with our dense half gives KL 0.2703 / top-1 79.0% / ppl 10.13, better than UD in llama.cpp.
 
 Sharing the budget across layers gives sensitive layers (3-13, 17, 32) 2.2-2.75 bpw and most decoder layers ~1.76.
 Separate tiers for down and gate/up projections did not help. v2 is also faster: its smaller decoder-layer experts let
