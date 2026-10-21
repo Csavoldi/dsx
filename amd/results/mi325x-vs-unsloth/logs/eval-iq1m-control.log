@@ -1,0 +1,11 @@
+# Unsloth UD-IQ1_M same-pod control for eval-maya-s.log (same pod, build and flags as eval-iq1m.log, --n-cpu-moe 16): identical to eval-iq1m.log
+seq 0: running ppl 10.602 kl 0.2292 top1 0.8182
+seq 1: running ppl 8.827 kl 0.3004 top1 0.7977
+seq 2: running ppl 8.611 kl 0.2858 top1 0.7918
+seq 3: running ppl 9.236 kl 0.3046 top1 0.7871
+seq 4: running ppl 9.297 kl 0.2907 top1 0.7904
+seq 5: running ppl 9.739 kl 0.2811 top1 0.7880
+seq 6: running ppl 9.863 kl 0.2800 top1 0.7873
+seq 7: running ppl 10.112 kl 0.2747 top1 0.7875
+{"tokens": 8184, "nll": 2.313704, "ppl": 10.1118, "kl_top256": 0.274716, "top1_agree": 0.787512}
+{"from": 512, "tokens": 4096, "nll": 2.124442, "ppl": 8.3682, "kl_top256": 0.256687, "top1_agree": 0.791260}

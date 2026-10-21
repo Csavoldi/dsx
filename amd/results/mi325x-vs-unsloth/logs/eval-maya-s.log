@@ -1,0 +1,14 @@
+# Project Maya Maya-S (peasantsmith/DeepSeek-V4.1-Flash-1017-Maya-GGUF @ 276e0bad, Maya-S: model 178.2 GB + Engram Q6_K 161.3 GB), Lucebox 1017 eval with amd/tools/lucebox-eval, llama.cpp PR #30817 (b72050d), CUDA
+# one RTX PRO 6000 (96 GB) on RunPod, October 21, 2026: -ngl 999 --n-cpu-moe 24 -fa on --load-mode mmap --lazy-mode on -ot per_layer_token_embd.weight=CPU
+# Maya-S converted to the PR's Engram layout with amd/tools/maya2llama.py (headers rewritten; blk.1/14.engram_embd joined into per_layer_token_embd; no weight changed; 16 x 1 MB slices hash-match the HF files)
+# routed experts: gate/up IQ2_XXS, down IQ3_XXS (IQ2_S / IQ3_S in layers 0-3, 36-39); dense/shared/embeddings/output Q8_0
+seq 0: running ppl 10.229 kl 0.1603 top1 0.8563
+seq 1: running ppl 8.501 kl 0.2018 top1 0.8377
+seq 2: running ppl 8.168 kl 0.1949 top1 0.8299
+seq 3: running ppl 8.762 kl 0.2133 top1 0.8192
+seq 4: running ppl 8.741 kl 0.1992 top1 0.8248
+seq 5: running ppl 9.153 kl 0.1937 top1 0.8224
+seq 6: running ppl 9.260 kl 0.1959 top1 0.8211
+seq 7: running ppl 9.492 kl 0.1946 top1 0.8200
+{"tokens": 8184, "nll": 2.250490, "ppl": 9.4924, "kl_top256": 0.194627, "top1_agree": 0.820015}
+{"from": 512, "tokens": 4096, "nll": 2.098171, "ppl": 8.1512, "kl_top256": 0.189974, "top1_agree": 0.824707}
