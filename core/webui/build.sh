@@ -1,6 +1,7 @@
 #!/bin/bash
 # Rebuild webui/dist from llama.cpp's web UI (tools/ui, MIT) at a pinned commit. Needs git, node 20+, npm.
-# dsx-server embeds webui/dist at compile time and serves it at /.
+# dsx-server embeds webui/dist at compile time and serves it at /. logo.svg replaces llama.cpp's logo; the full
+# build (npm run build) also generates the favicons and app icons from it.
 set -euo pipefail
 COMMIT=${1:-547208d}
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -11,8 +12,9 @@ cd "$tmp/llama.cpp"
 git checkout -q "$COMMIT"
 git sparse-checkout set --no-cone /LICENSE '/tools/ui/*'
 cd tools/ui
+cp "$here/logo.svg" src/lib/assets/logo.svg
 npm ci --no-audit --no-fund
-npx vite build
+npm run build
 rm -rf "$here/dist"
 cp -r dist "$here/dist"
 cp ../../LICENSE "$here/LICENSE-llama.cpp"
