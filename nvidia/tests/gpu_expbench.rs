@@ -43,6 +43,10 @@ fn expert_gemv_speed() {
     // six experts' gate rows back to back; six experts' down rows
     for (rows, k, what) in [(2304usize * 6, 5120usize, "gate x6"), (5120 * 6, 2304, "down x6")] {
         for (ty, old) in FORMATS {
+            // DSX_BENCH_FMT=Iq2Xs, DSX_BENCH_SHAPE=gate: one format / shape (e.g. to profile it alone under ncu)
+            if std::env::var("DSX_BENCH_FMT").is_ok_and(|f| f != format!("{ty:?}")) || std::env::var("DSX_BENCH_SHAPE").is_ok_and(|w| !what.starts_with(w.as_str())) {
+                continue;
+            }
             let bytes = ty.row_bytes(k) * rows;
             let mut w = random_bytes(bytes, &mut seed);
             fix_scales(ty, &mut w);
@@ -71,7 +75,7 @@ fn expert_gemv_speed() {
                 });
                 let new_s = time(&g, 20, || {
                     it += 1;
-                    g.launch(kf, ((rows as u32).div_ceil(16), 1, 1), 32 * KS, dsx::experts::tile_smem(ty), &[Arg::I(repacked_id(ty).unwrap()), Arg::P(dr[it % nc].ptr), Arg::I(rows as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::P(xq.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr), Arg::P(dy.ptr)]).unwrap()
+                    g.launch(kf, ((rows as u32).div_ceil(16 * dsx::experts::ROWT), 1, 1), 32 * KS, dsx::experts::tile_smem(ty), &[Arg::I(repacked_id(ty).unwrap()), Arg::P(dr[it % nc].ptr), Arg::I(rows as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::P(xq.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr), Arg::P(dy.ptr)]).unwrap()
                 });
                 let gbs = |s: f64| bytes as f64 / s / 1e9;
                 line += &format!("  T={t}: old {:4.0} us {:4.0} GB/s, new {:4.0} us {:4.0} GB/s (+quant {:.0} us)", old_s * 1e6, gbs(old_s), new_s * 1e6, gbs(new_s), q_s * 1e6);
@@ -92,7 +96,10 @@ fn expert_moe_speed() {
     let nl = 6;
     let c = ExpCfg { n_layers: nl, n_experts: 8, inter: 2304, dim: 5120, lim: 10.0, rot: 0 };
     eprintln!("{}: 6 resident experts (gate+up+down), us per layer and GB/s of expert bytes read", g.name);
-    for (gu, dn) in [(GType::Q2_0, GType::Q2_0), (GType::Ptq1_0, GType::Ptq1_0), (GType::Q3K, GType::Q3K)] {
+    for (gu, dn) in [(GType::Q2_0, GType::Q2_0), (GType::Ptq1_0, GType::Ptq1_0), (GType::Q3K, GType::Q3K), (GType::Iq2Xxs, GType::Iq2Xxs), (GType::Iq1S, GType::Iq1S), (GType::Iq2Xs, GType::Iq2Xs), (GType::Iq2S, GType::Iq2S)] {
+        if std::env::var("DSX_BENCH_FMT").is_ok_and(|f| f != format!("{gu:?}")) {
+            continue;
+        }
         let mats: Vec<[Vec<u8>; 3]> = (0..6)
             .map(|_| {
                 let mut m = [random_bytes(gu.row_bytes(c.dim) * c.inter, &mut seed), random_bytes(gu.row_bytes(c.dim) * c.inter, &mut seed), random_bytes(dn.row_bytes(c.inter) * c.dim, &mut seed)];

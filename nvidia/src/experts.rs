@@ -41,7 +41,15 @@ pub struct ExpCfg {
 pub const MAXT: usize = 8;
 pub const MAXK: usize = 8;
 /// warps per block of the fast kernels (KS in expert_fast.cuh): they split a 16-row tile's x-blocks
-pub const KS: u32 = 2;
+/// 16-row tiles per block of the fast kernels (ROWT in expert_fast.cuh; build with DSX_ROWT=n)
+pub const ROWT: u32 = match option_env!("DSX_ROWT") {
+    Some(s) => (s.as_bytes()[0] - b'0') as u32,
+    None => 1,
+};
+pub const KS: u32 = match option_env!("DSX_KS") {
+    Some(s) => (s.as_bytes()[0] - b'0') as u32,
+    None => 2,
+};
 
 /// scratch of the fast path: x and h quantized (quant_act layout), h in f32, the call's plan, and moe_down_fast's
 /// per-entry partial sums and row-tile counters
@@ -476,7 +484,7 @@ impl GpuExperts {
         )?;
         g.launch(
             self.k["moe_gu_fast"],
-            ((inter as u32).div_ceil(16), (t * k) as u32, 1),
+            ((inter as u32).div_ceil(16 * ROWT), (t * k) as u32, 1),
             32 * KS,
             self.smem,
             &[tab, Arg::I(l as i32), e, Arg::P(f.plan.ptr), Arg::P(wts), Arg::I(k as i32), Arg::P(self.buf.ptr), Arg::P(f.xq.ptr), Arg::P(f.xd.ptr), Arg::P(f.xs.ptr), Arg::P(f.h.ptr), Arg::I(inter as i32), Arg::I(dim as i32), Arg::F(self.lim)],
@@ -490,7 +498,7 @@ impl GpuExperts {
         )?;
         g.launch(
             self.k["moe_down_fast"],
-            ((dim as u32).div_ceil(16), (t * k) as u32, 1),
+            ((dim as u32).div_ceil(16 * ROWT), (t * k) as u32, 1),
             32 * KS,
             self.smem,
             &[tab, Arg::I(l as i32), e, Arg::P(f.plan.ptr), Arg::I(k as i32), Arg::P(self.buf.ptr), Arg::P(f.hq.ptr), Arg::P(f.hd.ptr), Arg::P(f.hs.ptr), Arg::P(out), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(t as i32), Arg::P(f.part.ptr), Arg::P(f.cnt.ptr)],

@@ -42,7 +42,13 @@
 #define PLAN_W 10
 // codebook tables of the IQ tiles: dynamic shared memory, sized at launch by the store's types (experts::tile_smem), so
 // kernels over other formats keep their occupancy
-extern __shared__ unsigned iq_tab[];  // plan entry: expert, 0, pick index per token (-1 = not picked)
+extern __shared__ unsigned iq_tab[];
+// ABL (build with DSX_KDEFS=-DABL=n, timing experiments only; results are wrong): bit 1 drops the IQ codebook lookups
+// (the index stands in for the grid entry), 2 the sign lookups, 4 the weight loads (constants instead), 8 the mma (cheap
+// integer ops instead), 16 the shared-table fill
+#ifndef ABL
+#define ABL 0
+#endif  // plan entry: expert, 0, pick index per token (-1 = not picked)
 
 struct XQ {
   const int8_t *q;  // [v][k] permuted
@@ -50,16 +56,36 @@ struct XQ {
   const short *s;   // [v][k / 64] sums of q
 };
 
+// copy n words (n % 4 == 0, 16-byte aligned) of a codebook table into shared memory, 16 bytes per thread per step
+__device__ __forceinline__ void tab_copy(unsigned *dst, const void *src, int n) {
+  if (ABL & 16) return;
+  for (int i = threadIdx.x; i < n / 4; i += blockDim.x) ((uint4 *)dst)[i] = __ldg((const uint4 *)src + i);
+}
+
 __device__ __forceinline__ int comp4(const int4 &v, int i) { return i == 0 ? v.x : i == 1 ? v.y : i == 2 ? v.z : v.w; }
 __device__ __forceinline__ float h2f(unsigned v, int hi) { return __half2float(__ushort_as_half((unsigned short)(hi ? v >> 16 : v))); }
 
 __device__ __forceinline__ void mma32(int (&c)[4], unsigned a0, unsigned a1, unsigned a2, unsigned a3, int b0, int b1) {
+  if (ABL & 8) {
+    c[0] += a0 ^ b0;
+    c[1] += a1 ^ b1;
+    c[2] += a2 ^ b0;
+    c[3] += a3 ^ b1;
+    return;
+  }
   asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
                : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
                : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
 }
 __device__ __forceinline__ void mma16(int (&c)[4], unsigned a0, unsigned a1, int b0) {
   c[0] = c[1] = c[2] = c[3] = 0;
+  if (ABL & 8) {
+    c[0] = a0 ^ b0;
+    c[1] = a1 ^ b0;
+    c[2] = a0 + b0;
+    c[3] = a1 + b0;
+    return;
+  }
   asm volatile("mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};"
                : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
                : "r"(a0), "r"(a1), "r"(b0));
@@ -71,7 +97,14 @@ __device__ __forceinline__ void mma16(int (&c)[4], unsigned a0, unsigned a1, int
 struct Lane {
   int q, xv, c0, c1, k0;  // k0: first x-block (warps of a block split the x-blocks, stride KS)
 };
-#define KS 2  // warps per block = per 16-row tile
+// 16-row tiles per block of the fast kernels (build with DSX_ROWT=n; experts::ROWT follows): the IQ tiles fill their
+// shared codebook tables once per block, so more tiles per block amortize the fill
+#ifndef ROWT
+#define ROWT 1
+#endif
+#ifndef KS
+#define KS 2  // warps per block = per 16-row tile (build with DSX_KS=n to change; experts::KS follows)
+#endif
 
 // activations of x-block xb (256 weights): X[h] = this lane's 16 bytes of chunk h; dx of the C tokens
 __device__ __forceinline__ void load_x(const XQ &x, int k, int xb, const Lane &L, int4 (&X)[4], float &dx0, float &dx1) {
@@ -324,16 +357,14 @@ __device__ __forceinline__ void tile_q8(const uint8_t *const (&m)[NM], int rows,
 // Every thread of the block must call this (the tables are filled with a __syncthreads).
 template <int NM>
 __device__ __forceinline__ void tile_iq2(const uint8_t *const (&m)[NM], int rows, int k, int ra, int rb, const XQ &x,
-                                         const Lane &L, float (&acc)[NM][4]) {
+                                         const Lane &L, float (&acc)[NM][4], bool fill) {
   unsigned *G32 = iq_tab, *S32 = iq_tab + 512;
-  for (int i = threadIdx.x; i < 512; i += blockDim.x) G32[i] = (unsigned)(iq2xxs_grid[i >> 1] >> (32 * (i & 1)));
-  for (int i = threadIdx.x; i < 256; i += blockDim.x) {
-    unsigned b = ksigns_iq2xs[i >> 1] >> (4 * (i & 1)), v = 0;
-#pragma unroll
-    for (int j = 0; j < 4; j++) v |= ((b >> j) & 1u) * (0xffu << (8 * j));
-    S32[i] = v;
+  // the u64 grid is its 32-bit halves in order (little endian): plain copies
+  if (fill) {
+    tab_copy(G32, iq2xxs_grid, 512);
+    tab_copy(S32, ksigns_mask32, 256);
+    __syncthreads();
   }
-  __syncthreads();
   const int nb = k >> 8;
   const size_t pd = (size_t)rows * nb * 64;
   const int hf = L.q & 1, l0 = L.q >> 1, l1 = 2 + (L.q >> 1);
@@ -349,13 +380,15 @@ __device__ __forceinline__ void tile_iq2(const uint8_t *const (&m)[NM], int rows
       int is[4] = {0, 0, 0, 0};
 #pragma unroll
       for (int h = 0; h < 4; h++) {
-        int4 A = __ldg((const int4 *)pa + h), B = __ldg((const int4 *)pb + h);
+        int4 A = (ABL & 4) ? make_int4(xb + h, xb * 3 + j, xb ^ h, xb * 7) : __ldg((const int4 *)pa + h);
+        int4 B = (ABL & 4) ? make_int4(xb + 2 * h, xb * 5 + j, xb ^ 3 * h, xb * 9) : __ldg((const int4 *)pb + h);
 #pragma unroll
         for (int e = 0; e < 2; e++) {
           unsigned ga = (unsigned)(e ? A.z : A.x), sa = (unsigned)(e ? A.w : A.y);
           unsigned gb = (unsigned)(e ? B.z : B.x), sb = (unsigned)(e ? B.w : B.y);
           auto dec = [&](unsigned g, unsigned sg, int l) {
-            unsigned w = G32[2 * ((g >> (8 * l)) & 255) + hf], mk = S32[2 * ((sg >> (7 * l)) & 127) + hf];
+            unsigned gi = (g >> (8 * l)) & 255, si = (sg >> (7 * l)) & 127;
+            unsigned w = (ABL & 1) ? gi * 0x01010101u : G32[2 * gi + hf], mk = (ABL & 2) ? si * 0x01010101u : S32[2 * si + hf];
             return (w ^ mk) + (mk & 0x01010101u);  // -g where mk = 0xff: ~g + 1, no carries (g <= 43)
           };
           int c[4] = {0, 0, 0, 0};
@@ -391,7 +424,13 @@ __device__ __forceinline__ void tile_iq1s(const uint8_t *const (&m)[NM], int row
 #pragma unroll
     for (int j = 0; j < NM; j++) {
       const int4 *pa = (const int4 *)(m[j] + ((size_t)ra * nb + xb) * 48), *pb = (const int4 *)(m[j] + ((size_t)rb * nb + xb) * 48);
-      int4 A0 = __ldg(pa), A1 = __ldg(pa + 1), A2 = __ldg(pa + 2), B0 = __ldg(pb), B1 = __ldg(pb + 1), B2 = __ldg(pb + 2);
+      int4 A0, A1, A2, B0, B1, B2;
+      if (ABL & 4) {
+        A0 = make_int4(xb, xb * 3 + j, xb ^ 5, xb * 7); A1 = make_int4(xb + 1, xb * 5, xb ^ 9, xb * 11); A2 = make_int4(xb * 13, xb + j, xb ^ 17, xb * 19);
+        B0 = make_int4(xb + 2, xb * 23, xb ^ 29, xb * 31); B1 = make_int4(xb + 3, xb * 37, xb ^ 41, xb * 43); B2 = make_int4(xb * 47, xb + 4, xb ^ 53, xb * 59);
+      } else {
+        A0 = __ldg(pa), A1 = __ldg(pa + 1), A2 = __ldg(pa + 2), B0 = __ldg(pb), B1 = __ldg(pb + 1), B2 = __ldg(pb + 2);
+      }
       float fa = __half2float(__ldg((const __half *)(m[j] + pd) + (size_t)ra * nb + xb));
       float fb = __half2float(__ldg((const __half *)(m[j] + pd) + (size_t)rb * nb + xb));
       int is[4] = {0, 0, 0, 0};
@@ -402,7 +441,8 @@ __device__ __forceinline__ void tile_iq1s(const uint8_t *const (&m)[NM], int row
         auto dec = [&](unsigned qs, unsigned qh, int l) {
           // grid half as g + 1 nibbles through L1 (8 KB, no shared copy: filling one per block cost as much as the
           // weights); 8 (g + 1) + 0x80 - 7 (or - 9) stays in its byte, ^ 0x80 makes it the signed 8 g + 1 (or - 1)
-          unsigned n = (__ldg(iq1s_grid4 + (((qs >> (8 * l)) & 255) | ((qh >> (3 * l)) & 7) << 8)) >> (4 * hf)) & 0x0f0f0f0fu;
+          unsigned gi = ((qs >> (8 * l)) & 255) | ((qh >> (3 * l)) & 7) << 8;
+          unsigned n = ((ABL & 1) ? gi * 0x01010101u : __ldg(iq1s_grid4 + gi) >> (4 * hf)) & 0x0f0f0f0fu;
           return ((n << 3) + ((qh & 0x8000) ? 0x77777777u : 0x79797979u)) ^ 0x80808080u;
         };
         int c[4] = {0, 0, 0, 0};
@@ -428,15 +468,14 @@ __device__ __forceinline__ void tile_iq1s(const uint8_t *const (&m)[NM], int row
 // parity sign index per group (u16); IQ2_S: 10-bit grid index (qs byte + 2 qh bits) and a full sign byte.
 template <int NM, bool S>
 __device__ __forceinline__ void tile_iq2xs(const uint8_t *const (&m)[NM], int rows, int k, int ra, int rb, const XQ &x,
-                                           const Lane &L, float (&acc)[NM][4]) {
+                                           const Lane &L, float (&acc)[NM][4], bool fill) {
   constexpr int NG = S ? 1024 : 512;
   unsigned *G32 = iq_tab, *S32 = iq_tab + 2 * NG;
-  for (int i = threadIdx.x; i < 2 * NG; i += blockDim.x) G32[i] = (unsigned)((S ? iq2s_grid[i >> 1] : iq2xs_grid[i >> 1]) >> (32 * (i & 1)));
-  for (int i = threadIdx.x; i < 256; i += blockDim.x) {
-    unsigned b = ksigns_iq2xs[i >> 1] >> (4 * (i & 1));
-    S32[i] = (((b & 15) * 0x00204081u) & 0x01010101u) * 0xffu;
+  if (fill) {
+    tab_copy(G32, S ? (const void *)iq2s_grid : (const void *)iq2xs_grid, 2 * NG);
+    if (!S) tab_copy(S32, ksigns_mask32, 256);  // IQ2_S signs are a plain byte, expanded inline
+    __syncthreads();
   }
-  __syncthreads();
   const int nb = k >> 8;
   const size_t p2 = (size_t)rows * nb * 64, pd = p2 + (size_t)rows * nb * (S ? 16 : 8);
   const int hf = L.q & 1;
@@ -447,7 +486,12 @@ __device__ __forceinline__ void tile_iq2xs(const uint8_t *const (&m)[NM], int ro
 #pragma unroll
     for (int j = 0; j < NM; j++) {
       const int4 *pa = (const int4 *)(m[j] + ((size_t)ra * nb + xb) * 64), *pb = (const int4 *)(m[j] + ((size_t)rb * nb + xb) * 64);
-      int4 A[4] = {__ldg(pa), __ldg(pa + 1), __ldg(pa + 2), __ldg(pa + 3)}, B[4] = {__ldg(pb), __ldg(pb + 1), __ldg(pb + 2), __ldg(pb + 3)};
+      int4 A[4], B[4];
+#pragma unroll
+      for (int h = 0; h < 4; h++) {
+        A[h] = (ABL & 4) ? make_int4(xb + h, xb * 3 + j, xb ^ h, xb * 7 + h) : __ldg(pa + h);
+        B[h] = (ABL & 4) ? make_int4(xb + 2 * h, xb * 5 + j, xb ^ 3 * h, xb * 9 + h) : __ldg(pb + h);
+      }
       int4 EA, EB;  // IQ2_S: qh[8], scales[8]; IQ2_XS: scales[8] (x, y)
       if (S) {
         EA = __ldg((const int4 *)(m[j] + p2) + (size_t)ra * nb + xb);
@@ -474,12 +518,13 @@ __device__ __forceinline__ void tile_iq2xs(const uint8_t *const (&m)[NM], int ro
               unsigned qs = ((unsigned)comp4(W[ib >> 2], ib & 3) >> (8 * l)) & 255;
               unsigned qh = ((unsigned)comp4(E, ib >> 2) >> (8 * (ib & 3))) & 255;
               unsigned sg = ((unsigned)comp4(W[2 + (ib >> 2)], ib & 3) >> (8 * l)) & 255;
-              w = G32[2 * (qs | ((qh << (8 - 2 * l)) & 0x300)) + hf];
-              mk = ((((sg >> (4 * hf)) & 15) * 0x00204081u) & 0x01010101u) * 0xffu;
+              unsigned gi = qs | ((qh << (8 - 2 * l)) & 0x300);
+              w = (ABL & 1) ? gi * 0x01010101u : G32[2 * gi + hf];
+              mk = (ABL & 2) ? sg * 0x01010101u : ((((sg >> (4 * hf)) & 15) * 0x00204081u) & 0x01010101u) * 0xffu;
             } else {
               unsigned q = ((unsigned)comp4(W[ib >> 1], 2 * (ib & 1) + (l >> 1)) >> (16 * (l & 1))) & 0xffff;
-              w = G32[2 * (q & 511) + hf];
-              mk = S32[2 * (q >> 9) + hf];
+              w = (ABL & 1) ? (q & 511) * 0x01010101u : G32[2 * (q & 511) + hf];
+              mk = (ABL & 2) ? (q >> 9) * 0x01010101u : S32[2 * (q >> 9) + hf];
             }
             return (w ^ mk) + (mk & 0x01010101u);
           };
@@ -502,15 +547,15 @@ __device__ __forceinline__ void tile_iq2xs(const uint8_t *const (&m)[NM], int ro
 
 template <int NM>
 __device__ __forceinline__ void tile_dot(int ty, const uint8_t *const (&m)[NM], int rows, int k, int ra, int rb,
-                                         const XQ &x, const Lane &L, float (&acc)[NM][4]) {
+                                         const XQ &x, const Lane &L, float (&acc)[NM][4], bool fill = true) {
   if (ty == RP_Q2) tile_q2<NM>(m, rows, k, ra, rb, x, L, acc);
   else if (ty == RP_T1) tile_t1<NM>(m, rows, k, ra, rb, x, L, acc);
   else if (ty == RP_Q3) tile_q3<NM>(m, rows, k, ra, rb, x, L, acc);
   else if (ty == RP_Q8) tile_q8<NM>(m, rows, k, ra, rb, x, L, acc);
-  else if (ty == RP_IQ2) tile_iq2<NM>(m, rows, k, ra, rb, x, L, acc);
+  else if (ty == RP_IQ2) tile_iq2<NM>(m, rows, k, ra, rb, x, L, acc, fill);
   else if (ty == RP_IQ1S) tile_iq1s<NM>(m, rows, k, ra, rb, x, L, acc);
-  else if (ty == RP_IQ2XS) tile_iq2xs<NM, false>(m, rows, k, ra, rb, x, L, acc);
-  else if (ty == RP_IQ2S) tile_iq2xs<NM, true>(m, rows, k, ra, rb, x, L, acc);
+  else if (ty == RP_IQ2XS) tile_iq2xs<NM, false>(m, rows, k, ra, rb, x, L, acc, fill);
+  else if (ty == RP_IQ2S) tile_iq2xs<NM, true>(m, rows, k, ra, rb, x, L, acc, fill);
 }
 
 // ---------------------------------------------------------------- activations
@@ -607,17 +652,21 @@ __device__ __forceinline__ bool ks_sum(float (&acc)[NM][4]) {
 extern "C" __global__ void __launch_bounds__(32 * KS) xgemv(int ty, const uint8_t *w, int rows, int k, int T,
                                                             const int8_t *xq, const float *xd, const short *xs, float *y) {
   int lane = threadIdx.x & 31, g = lane >> 2;
-  int r0 = blockIdx.x * 16;
   Lane L{lane & 3, g < T ? g : -1, 2 * (lane & 3) < T ? 2 * (lane & 3) : -1, 2 * (lane & 3) + 1 < T ? 2 * (lane & 3) + 1 : -1, (int)threadIdx.x >> 5};
-  int ra = min(r0 + g, rows - 1), rb = min(r0 + g + 8, rows - 1);
   const uint8_t *m[1] = {w};
-  float acc[1][4] = {{0.f, 0.f, 0.f, 0.f}};
-  tile_dot<1>(ty, m, rows, k, ra, rb, XQ{xq, xd, xs}, L, acc);
-  if (!ks_sum<1>(acc)) return;
+  for (int tt = 0; tt < ROWT; tt++) {
+    int r0 = (blockIdx.x * ROWT + tt) * 16;
+    if (r0 >= rows) break;
+    int ra = min(r0 + g, rows - 1), rb = min(r0 + g + 8, rows - 1);
+    float acc[1][4] = {{0.f, 0.f, 0.f, 0.f}};
+    tile_dot<1>(ty, m, rows, k, ra, rb, XQ{xq, xd, xs}, L, acc, tt == 0);
+    if (ks_sum<1>(acc))
 #pragma unroll
-  for (int i = 0; i < 4; i++) {
-    int r = r0 + g + (i >> 1) * 8, t = (i & 1) ? L.c1 : L.c0;
-    if (t >= 0 && r < rows) y[(size_t)t * rows + r] = acc[0][i];
+      for (int i = 0; i < 4; i++) {
+        int r = r0 + g + (i >> 1) * 8, t = (i & 1) ? L.c1 : L.c0;
+        if (t >= 0 && r < rows) y[(size_t)t * rows + r] = acc[0][i];
+      }
+    if (ROWT > 1) __syncthreads();  // ks_sum's shared sums are rewritten by the next tile
   }
 }
 
@@ -632,21 +681,25 @@ extern "C" __global__ void __launch_bounds__(32 * KS) moe_gu_fast(const ExpSlot 
   if ((int)blockIdx.y >= plan[0]) return;
   const int *ent = plan + 1 + blockIdx.y * PLAN_W;
   int lane = threadIdx.x & 31, g = lane >> 2, q = lane & 3;
-  int r0 = blockIdx.x * 16;
   int j0 = ent[2 + 2 * q], j1 = ent[3 + 2 * q];
   Lane L{q, ent[2 + g] >= 0 ? g : -1, j0 >= 0 ? 2 * q : -1, j1 >= 0 ? 2 * q + 1 : -1, (int)threadIdx.x >> 5};
   ExpSlot s = tab[layer * E + ent[0]];
   const uint8_t *m[2] = {store + s.gate, store + s.up};
-  float acc[2][4] = {{0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}};
-  tile_dot<2>(s.gu, m, inter, dim, min(r0 + g, inter - 1), min(r0 + g + 8, inter - 1), XQ{xq, xd, xs}, L, acc);
-  if (!ks_sum<2>(acc)) return;
+  for (int tt = 0; tt < ROWT; tt++) {
+    int r0 = (blockIdx.x * ROWT + tt) * 16;
+    if (r0 >= inter) break;
+    float acc[2][4] = {{0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}};
+    tile_dot<2>(s.gu, m, inter, dim, min(r0 + g, inter - 1), min(r0 + g + 8, inter - 1), XQ{xq, xd, xs}, L, acc, tt == 0);
+    if (ks_sum<2>(acc))
 #pragma unroll
-  for (int i = 0; i < 4; i++) {
-    int r = r0 + g + (i >> 1) * 8, t = 2 * q + (i & 1), jt = (i & 1) ? j1 : j0;
-    if (jt >= 0 && r < inter) {
-      float gv = fminf(acc[0][i], lim), uv = fminf(fmaxf(acc[1][i], -lim), lim);
-      h[((size_t)t * K + jt) * inter + r] = bf16r(gv / (1.f + expf(-gv)) * uv * wts[t * K + jt]);
-    }
+      for (int i = 0; i < 4; i++) {
+        int r = r0 + g + (i >> 1) * 8, t = 2 * q + (i & 1), jt = (i & 1) ? j1 : j0;
+        if (jt >= 0 && r < inter) {
+          float gv = fminf(acc[0][i], lim), uv = fminf(fmaxf(acc[1][i], -lim), lim);
+          h[((size_t)t * K + jt) * inter + r] = bf16r(gv / (1.f + expf(-gv)) * uv * wts[t * K + jt]);
+        }
+      }
+    if (ROWT > 1) __syncthreads();
   }
 }
 
@@ -661,43 +714,48 @@ extern "C" __global__ void __launch_bounds__(32 * KS) moe_down_fast(const ExpSlo
   __shared__ int last;
   int n = plan[0], u = blockIdx.y;
   int lane = threadIdx.x & 31, g = lane >> 2, q = lane & 3;
-  int rt = blockIdx.x * 16;
-  if (n == 0) {  // nothing resident: zeros
-    if (u == 0)
-      for (int i = threadIdx.x; i < 16 * T; i += 32 * KS)
-        if (rt + (i & 15) < dim) out[(size_t)(i >> 4) * dim + rt + (i & 15)] = 0.f;
-    return;
-  }
-  if (u >= n) return;
-  const int *ent = plan + 1 + u * PLAN_W;
-  {
-    int j0 = ent[2 + 2 * q], j1 = ent[3 + 2 * q], jg = ent[2 + g];
-    Lane L{q, jg >= 0 ? g * K + jg : -1, j0 >= 0 ? 2 * q * K + j0 : -1, j1 >= 0 ? (2 * q + 1) * K + j1 : -1, (int)threadIdx.x >> 5};
-    ExpSlot s = tab[layer * E + ent[0]];
-    const uint8_t *m[1] = {store + s.down};
-    float acc[1][4] = {{0.f, 0.f, 0.f, 0.f}};
-    tile_dot<1>(s.dn, m, dim, inter, min(rt + g, dim - 1), min(rt + g + 8, dim - 1), XQ{hq, hd, hs}, L, acc);
-    if (ks_sum<1>(acc))
+  if (n > 0 && u >= n) return;
+  for (int tt = 0; tt < ROWT; tt++) {
+    int ti = blockIdx.x * ROWT + tt, rt = ti * 16;
+    if (rt >= dim) break;
+    if (n == 0) {  // nothing resident: zeros
+      if (u == 0)
+        for (int i = threadIdx.x; i < 16 * T; i += 32 * KS)
+          if (rt + (i & 15) < dim) out[(size_t)(i >> 4) * dim + rt + (i & 15)] = 0.f;
+      continue;
+    }
+    const int *ent = plan + 1 + u * PLAN_W;
+    {
+      int j0 = ent[2 + 2 * q], j1 = ent[3 + 2 * q], jg = ent[2 + g];
+      Lane L{q, jg >= 0 ? g * K + jg : -1, j0 >= 0 ? 2 * q * K + j0 : -1, j1 >= 0 ? (2 * q + 1) * K + j1 : -1, (int)threadIdx.x >> 5};
+      ExpSlot s = tab[layer * E + ent[0]];
+      const uint8_t *m[1] = {store + s.down};
+      float acc[1][4] = {{0.f, 0.f, 0.f, 0.f}};
+      tile_dot<1>(s.dn, m, dim, inter, min(rt + g, dim - 1), min(rt + g + 8, dim - 1), XQ{hq, hd, hs}, L, acc, tt == 0);
+      if (ks_sum<1>(acc))
 #pragma unroll
-      for (int i = 0; i < 4; i++) {
-        int r = rt + g + (i >> 1) * 8, t = 2 * q + (i & 1);
-        if (r < dim) part[((size_t)u * 8 + t) * dim + r] = acc[0][i];  // inactive tokens: 0
+        for (int i = 0; i < 4; i++) {
+          int r = rt + g + (i >> 1) * 8, t = 2 * q + (i & 1);
+          if (r < dim) part[((size_t)u * 8 + t) * dim + r] = acc[0][i];  // inactive tokens: 0
+        }
+    }
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) last = atomicAdd(cnt + ti, 1) == n - 1;
+    __syncthreads();
+    if (last) {
+      __threadfence();
+      for (int i = threadIdx.x; i < 16 * T; i += 32 * KS) {
+        int r = rt + (i & 15), t = i >> 4;
+        if (r >= dim) continue;
+        float v = 0.f;
+        for (int e = 0; e < n; e++) v += __ldcg(part + ((size_t)e * 8 + t) * dim + r);
+        out[(size_t)t * dim + r] = v;
       }
+      if (threadIdx.x == 0) cnt[ti] = 0;
+    }
+    if (ROWT > 1) __syncthreads();  // `last` and ks_sum's shared sums are rewritten by the next tile
   }
-  __threadfence();
-  __syncthreads();
-  if (threadIdx.x == 0) last = atomicAdd(cnt + blockIdx.x, 1) == n - 1;
-  __syncthreads();
-  if (!last) return;
-  __threadfence();
-  for (int i = threadIdx.x; i < 16 * T; i += 32 * KS) {
-    int r = rt + (i & 15), t = i >> 4;
-    if (r >= dim) continue;
-    float v = 0.f;
-    for (int e = 0; e < n; e++) v += __ldcg(part + ((size_t)e * 8 + t) * dim + r);
-    out[(size_t)t * dim + r] = v;
-  }
-  if (threadIdx.x == 0) cnt[blockIdx.x] = 0;
 }
 
 // ---------------------------------------------------------------- upload-time repacking

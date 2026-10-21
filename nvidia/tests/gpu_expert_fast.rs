@@ -121,7 +121,7 @@ fn fast_gemv_matches_cpu() {
                 let dx = g.upload(&x).unwrap();
                 let qb = quant(&g, dx.ptr, k, t);
                 let dy = g.alloc(t * rows * 4).unwrap();
-                g.launch(g.kernel("xgemv").unwrap(), ((rows as u32).div_ceil(16), 1, 1), 32 * KS, dsx::experts::tile_smem(ty),
+                g.launch(g.kernel("xgemv").unwrap(), ((rows as u32).div_ceil(16 * dsx::experts::ROWT), 1, 1), 32 * KS, dsx::experts::tile_smem(ty),
                     &[Arg::I(id), Arg::P(dst.ptr), Arg::I(rows as i32), Arg::I(k as i32), Arg::I(t as i32), Arg::P(qb.q.ptr), Arg::P(qb.d.ptr), Arg::P(qb.s.ptr), Arg::P(dy.ptr)]).unwrap();
                 let got: Vec<f32> = g.download(dy.ptr, t * rows).unwrap();
                 let (eq, ef) = (err(&want_q, &got), err(&want, &got));
