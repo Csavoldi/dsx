@@ -286,6 +286,14 @@ impl Gguf {
         self.tensors.get(name).with_context(|| format!("tensor {name} not in the model"))
     }
 
+    /// madvise(MADV_RANDOM) on one tensor's pages: no readahead, for tables read a row at a time (the Engram table;
+    /// with readahead each 210-byte Q6_K row fault read ~3x longer than an FP8 row from the safetensors shards)
+    pub fn advise_random(&self, t: &TensorInfo) {
+        let page = 4096u64;
+        let start = t.offset / page * page;
+        let _ = self.maps[t.shard].advise_range(memmap2::Advice::Random, start as usize, (t.offset + t.bytes - start) as usize);
+    }
+
     pub fn bytes(&self, t: &TensorInfo) -> &[u8] {
         &self.maps[t.shard][t.offset as usize..(t.offset + t.bytes) as usize]
     }

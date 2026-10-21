@@ -598,6 +598,7 @@ impl Model {
                 acc += r as usize;
             }
             anyhow::ensure!(acc == t.n_rows() && t.row_len() == cfg.engram_dim, "per_layer_token_embd: {} x {} for {acc} rows of {}", t.n_rows(), t.row_len(), cfg.engram_dim);
+            eg.advise_random(t);
             Ok((Mat::from_gguf(eg, t), row0))
         };
         let engram = match (engram_dir, g.tensors.get("per_layer_token_embd.weight")) {
