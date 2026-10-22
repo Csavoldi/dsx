@@ -15,14 +15,29 @@ tags:
 - gptq
 - consumer-gpu
 - rtx-3090
+- rtx-4090
+- rtx-5090
 ---
 
 # DeepSeek-V4.1-Flash-1017 · dsx 2-bit
 
 DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in 148 GB, built to run on two RTX 3090s and 128 GB of RAM with
-exact routing. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engine made for this model. For one AMD
-MI325X (256 GiB HBM) there is a near-lossless build: [lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4)
-(KL 0.049, 110-114 tok/s).
+exact routing. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engine made for this model. For the best quality on the same machine, use
+[dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud) (KL 0.269, one 305 GB download).
+
+## Which build
+
+| Build | Made for | Download | KL / top-1 vs FP8 | Decode |
+|---|---|---|---:|---:|
+| [**dsx-ud**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud) (recommended) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 305 GB, Engram and tokenizer inside | 0.269 / 78.9% | 27-29.5 tok/s (32-36 with `--defer-rank 3`) |
+| [dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 148 GB + the official Engram shards (203 GB) | 0.373 / 74.4% | ~29 tok/s (35.7 with `--defer-rank 3`) |
+| [dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4) | 1x AMD Instinct MI325X (256 GiB) | 270 GB + the official Engram shards (203 GB) | 0.049 / 90.6% | 110-114 tok/s |
+
+All three run on [dsx](https://github.com/lxe/dsx) and were measured on the same eval
+([Lucebox 1017](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF), 8 x 1,024 tokens against the FP8
+model's top-256 log-probs).
+
+## At a glance
 
 | | |
 |---|---|
@@ -31,6 +46,7 @@ MI325X (256 GiB HBM) there is a near-lossless build: [lxe/DeepSeek-V4.1-Flash-10
 | Routing | exact: no expert pruning, no router bias |
 | Quality vs FP8 | KL 0.373 · top-1 74.4% · perplexity 10.68 (FP8: 8.56) |
 | Speed, 2x RTX 3090 | ~29 tok/s decode · 300-470 tok/s prefill |
+| Hardware | 2x 24 GB NVIDIA GPU (RTX 3090 / 4090 / 5090), 128 GB RAM, AVX2 CPU, ~350 GB NVMe ([details](#hardware)) |
 | Runtime | [dsx](https://github.com/lxe/dsx) (OpenAI / Anthropic API, image input, web UI) |
 
 ## Quality
@@ -79,7 +95,7 @@ expert layout as this build (v4b); the RTX 5090 numbers come from the older buil
 | Decode, 3K-token agent prompt | 28.7 tok/s | 15.2 tok/s |
 | Prefill, 3K / 8K tokens | 301 / 470 tok/s | 93 / 172 tok/s |
 
-On the same 2x RTX 3090 machine, Unsloth's UD-IQ1_M in llama.cpp (PR #30817) runs at 12.3 tok/s decode and 109 tok/s
+On the same 2x RTX 3090 machine, Unsloth's UD-IQ1_M in llama.cpp (PR #30817) runs at 12.0 tok/s decode and 75-109 tok/s
 prefill on the 3K-token agent prompt.
 
 Decode speed comes down to how many experts fit in VRAM + RAM. Two 24 GB GPUs + 128 GB hold all of them; one 32 GB GPU
@@ -125,16 +141,30 @@ print(r.choices[0].message.content)
 Thinking is on by default; `"reasoning_effort": "none"` turns it off. Images go in as data URLs (`image_url`), or as
 base64 `image` blocks on the Anthropic endpoint; the web UI takes uploads.
 
-## Hardware sizing
+## Hardware
 
-VRAM + RAM should hold ~140 GB of experts.
+| | |
+|---|---|
+| GPU | NVIDIA, 24 GB of VRAM or more; two 24 GB cards measured |
+| RAM | 128 GB |
+| CPU | x86 with AVX2 (AVX-VNNI or AVX-512 VNNI preferred) |
+| Disk | ~350 GB (148 GB + the official Engram shards, 203 GB), NVMe |
+| Software | CUDA 13, Rust |
+
+| GPU | `CUDA_ARCHS` | Status |
+|---|---|---|
+| RTX 3090 | 86 | runs (the numbers on this card) |
+| RTX 4090 | 89 | runs |
+| RTX 5090 | 120 | runs |
+| A100 | 80 | builds, not run yet |
+| AMD | | not supported by this build; see [dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4) for the MI325X |
+
+VRAM + RAM should hold ~140 GB of experts:
 
 | Machine | Flags |
 |---|---|
 | 2x 24 GB GPU, 128 GB RAM | `--arena-gb 110` (GPUs are used automatically) |
 | 1x 32 GB GPU, 128 GB RAM | `--main-gb=-2.0 --arena-gb 80`, env `DSX_ADAPT=0` |
-
-Also needed: CUDA 13, Rust, an AVX2 CPU, ~350 GB of disk.
 
 ## How it was made
 

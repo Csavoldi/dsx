@@ -18,7 +18,7 @@ drive. It's an engine written in Rust and CUDA for this one model. The experts e
 the next ones in RAM where the CPU computes them, and the GPUs and CPU hand each layer back and forth without stalling
 each other.
 
-- **Fast:** 32-36 tokens/s writing the answer and 383 tokens/s reading a 3,000-token prompt on two RTX 3090s.
+- **Fast:** 32-36 tokens/s writing the answer and ~370 tokens/s reading a 3,000-token prompt on two RTX 3090s.
 - **Close to the original:** the same next token as the FP8 model 78-79% of the time on the Lucebox eval.
 - **One download:** one 305 GB GGUF in 5 shards, with the Engram table and tokenizer inside.
 - **Plugs into your tools:** OpenAI- and Anthropic-compatible API with streaming, ready for coding agents.
@@ -42,7 +42,7 @@ Against the FP8 model on the [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V
 
 | Machine | Decode (writing the answer) | Prefill (reading your prompt) |
 | --- | ---: | ---: |
-| **2x RTX 3090 24 GB**, i7-12700K, 128 GB DDR4 | **32-36 tokens/s** with `--defer-rank 3`; 27-29.5 without | 383 tokens/s (3,000-token prompt) |
+| **2x RTX 3090 24 GB**, i7-12700K, 128 GB DDR4 | **32-36 tokens/s** with `--defer-rank 3`; 27-29.5 without | ~370 tokens/s (3,000-token prompt) |
 
 A 340-token prompt is read in 4.0 s. On the same PC, the same expert weights run at 12 tokens/s in llama.cpp.
 

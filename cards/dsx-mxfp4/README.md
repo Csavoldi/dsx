@@ -23,7 +23,21 @@ tags:
 DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in 270 GB, built to run entirely from the HBM of one AMD Instinct
 MI325X with exact routing. Most routed experts keep the checkpoint's own MXFP4 weights; the least-used ones get a fitted
 3-bit codebook. Runs on [**dsx**](https://github.com/lxe/dsx)'s AMD runner (`amd/`, Rust + HIP). For a desktop with NVIDIA GPUs, see
-the 2-bit build: [lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit).
+[dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud).
+
+## Which build
+
+| Build | Made for | Download | KL / top-1 vs FP8 | Decode |
+|---|---|---|---:|---:|
+| [**dsx-ud**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud) (recommended) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 305 GB, Engram and tokenizer inside | 0.269 / 78.9% | 27-29.5 tok/s (32-36 with `--defer-rank 3`) |
+| [dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 148 GB + the official Engram shards (203 GB) | 0.373 / 74.4% | ~29 tok/s (35.7 with `--defer-rank 3`) |
+| [dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4) | 1x AMD Instinct MI325X (256 GiB) | 270 GB + the official Engram shards (203 GB) | 0.049 / 90.6% | 110-114 tok/s |
+
+All three run on [dsx](https://github.com/lxe/dsx) and were measured on the same eval
+([Lucebox 1017](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF), 8 x 1,024 tokens against the FP8
+model's top-256 log-probs).
+
+## At a glance
 
 | | |
 |---|---|
@@ -32,6 +46,7 @@ the 2-bit build: [lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/
 | Routing | exact: no expert pruning, no router bias |
 | Quality vs FP8 | KL 0.049 · top-1 90.6% · perplexity 8.71 (FP8: 8.56) |
 | Speed, 1x MI325X | 110-114 tok/s decode at 4K-256K context · 1,160-1,640 tok/s prefill |
+| Hardware | 1x AMD Instinct MI325X (gfx942, 256 GiB HBM), ROCm 7, ~160 GB RAM, ~475 GB disk ([details](#hardware)) |
 | Runtime | dsx `amd/` (OpenAI / Anthropic API, web UI) |
 
 ## Quality
@@ -45,7 +60,8 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 | **dsx MXFP4 + 3-bit** | **270 GB** | **0.049** | **90.6%** | **8.71** |
 | Lucebox ROCMFP23S | 179 GiB | 0.194 | 81.3% | 9.41 |
 | Lucebox ROCMFP 2.5 bpw | 158 GiB | 0.253 | 78.7% | 9.78 |
-| dsx 2-bit | 148 GB | 0.395 | 74.1% | 10.93 |
+| dsx-ud (NVIDIA desktop) | 142 GB | 0.269 | 78.9% | 10.13 |
+| dsx-2bit (NVIDIA desktop) | 148 GB | 0.373 | 74.4% | 10.68 |
 
 Sizes exclude the Engram tables (and, for the original, the vision and draft layers). Measured on these shards;
 another run gave KL 0.047: float atomics in the runner sum in varying order, which flips a few near-tied expert
@@ -94,8 +110,15 @@ Open `http://localhost:8090/` for the web UI, or point any OpenAI-compatible cli
 
 ## Hardware
 
-One GPU with 256 GiB of memory (AMD Instinct MI325X, gfx942); the weights take 271.6 GB of HBM with context up to
-256K tokens. The Engram tables (203 GB) are read from disk through the page cache, 48 rows per token; ~160 GB of RAM.
+| | |
+|---|---|
+| GPU | one AMD Instinct MI325X (gfx942, 256 GiB HBM3E); the weights take 271.6 GB of HBM with context up to 256K tokens |
+| RAM | ~160 GB (the Engram tables are read from disk through the page cache, 48 rows per token) |
+| Disk | ~475 GB: 270 GB of shards + the official Engram shards (203 GB) |
+| Software | ROCm 7, Rust |
+
+Other AMD GPUs and smaller memory are not supported by this build. For NVIDIA desktops, use
+[dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud).
 
 ## How it was made
 
