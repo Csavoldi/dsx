@@ -32,4 +32,6 @@ PY
 sed -i 's/^codebook_mul1_mult = 0x83DCD12D/codebook_mul1_mult = 0x3A2F/' "$DST/exllamav3/modules/quant/exl3_lib/quantize.py"
 grep -n "codebook_mul1_mult" "$DST/exllamav3/modules/quant/exl3_lib/quantize.py"
 grep -c "0x3A2F" "$Q"/quantize_tiles_kernel.cuh
+# 4. the dense fractional-K quantizer (K = 1.5 / 2.5 / 3.5): same indices as exllamav3's generic kernel, ~5x faster
+python3 "$(dirname "$0")/patch_qtf_opt.py" "$DST"
 echo "T16 tree ready: $DST"
