@@ -675,6 +675,73 @@ pub struct Arena {
     pub bytes: usize,
 }
 
+const DIO_ALIGN: usize = 4096;
+
+/// A page-aligned heap buffer (O_DIRECT needs aligned destinations).
+struct AlignedBuf {
+    ptr: *mut u8,
+    len: usize,
+}
+
+unsafe impl Send for AlignedBuf {}
+
+impl AlignedBuf {
+    fn new(len: usize) -> AlignedBuf {
+        let len = len.div_ceil(DIO_ALIGN) * DIO_ALIGN;
+        let ptr = unsafe { std::alloc::alloc(std::alloc::Layout::from_size_align(len, DIO_ALIGN).unwrap()) };
+        assert!(!ptr.is_null(), "alloc of {len} bytes failed");
+        AlignedBuf { ptr, len }
+    }
+}
+
+impl Drop for AlignedBuf {
+    fn drop(&mut self) {
+        unsafe { std::alloc::dealloc(self.ptr, std::alloc::Layout::from_size_align(self.len, DIO_ALIGN).unwrap()) };
+    }
+}
+
+/// Reads byte ranges of a mapped GGUF with O_DIRECT, bypassing the page cache: the range (a slice of one of the
+/// file's mmaps) is widened to 4 KiB boundaries, read into a bounce buffer and copied out.
+struct DirectReader {
+    files: Vec<(usize, usize, std::fs::File)>, // (map start, map len, file opened with O_DIRECT)
+}
+
+impl DirectReader {
+    fn open(g: &crate::gguf::Gguf) -> Result<DirectReader> {
+        use std::os::unix::fs::OpenOptionsExt;
+        const O_DIRECT: i32 = 0o40000; // x86_64 Linux
+        let mut files = vec![];
+        for (p, map) in g.paths.iter().zip(&g.maps) {
+            let f = std::fs::OpenOptions::new().read(true).custom_flags(O_DIRECT).open(p)?;
+            files.push((map.as_ptr() as usize, map.len(), f));
+        }
+        Ok(DirectReader { files })
+    }
+
+    fn read(&self, src: &[u8], dst: &mut [u8], bounce: &mut AlignedBuf) -> std::io::Result<()> {
+        use std::os::unix::fs::FileExt;
+        let p = src.as_ptr() as usize;
+        let Some((start, len, f)) = self.files.iter().find(|(s, n, _)| p >= *s && p + src.len() <= s + n) else {
+            return Err(std::io::Error::other("range not in the model's files"));
+        };
+        let off = p - start;
+        let a0 = off / DIO_ALIGN * DIO_ALIGN;
+        let a1 = ((off + src.len()).div_ceil(DIO_ALIGN) * DIO_ALIGN).min(len.div_ceil(DIO_ALIGN) * DIO_ALIGN);
+        assert!(a1 - a0 <= bounce.len);
+        let b = unsafe { std::slice::from_raw_parts_mut(bounce.ptr, a1 - a0) };
+        let mut done = 0;
+        while done < off + src.len() - a0 {
+            let n = f.read_at(&mut b[done..], (a0 + done) as u64)?;
+            if n == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+            }
+            done += n;
+        }
+        dst.copy_from_slice(&b[off - a0..off - a0 + src.len()]);
+        Ok(())
+    }
+}
+
 impl Arena {
     /// Copy `which` experts (in that order) until `cap` bytes; returns the arena and the experts that did not fit.
     pub fn new(m: &Model, which: &[(usize, usize)], cap: usize) -> Result<(Arena, Vec<(usize, usize)>)> {
@@ -694,7 +761,9 @@ impl Arena {
                 rest.push((l, e));
             }
         }
+        let t0 = std::time::Instant::now();
         let buf = crate::gpu::HostBuf::new(tot.max(1))?;
+        eprintln!("arena: {:.1} GB allocated and pinned in {:.1} s", tot as f64 / 1e9, t0.elapsed().as_secs_f64());
         let base = buf.host_ptr() as usize;
         let mut slots = HashMap::new();
         for &(l, e, off) in &take {
@@ -702,17 +771,49 @@ impl Arena {
             let (a, b, c) = (x.gate.bytes().len(), x.up.bytes().len(), x.down.bytes().len());
             slots.insert((l, e), [(off, a), (off + a, b), (off + a + b, c)]);
         }
-        // parallel copy (page faults on the source dominate; 16 threads keep the NVMe queue deep)
+        // O_DIRECT reads from the GGUF files: 5.9 GB/s on .102's NVMe for expert-sized pieces vs 3.9-4.6 through the
+        // mmap, and no page cache to reclaim while the arena fills most of the server's memory cgroup (the mmap copy
+        // ran at ~1 GB/s there: 107 GB in 76-121 s). Falls back to the mmap copy (e.g. a file system without O_DIRECT).
+        let direct = match &m.src {
+            crate::model::Source::Gguf(g) => DirectReader::open(g).ok(),
+            _ => None,
+        };
         use rayon::prelude::*;
-        take.par_iter().for_each(|&(l, e, off)| {
-            let x = &m.layers[l].experts[e];
-            let mut o = off;
-            for mm in [&x.gate, &x.up, &x.down] {
-                let src = mm.bytes();
-                unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), (base + o) as *mut u8, src.len()) };
-                o += src.len();
-            }
-        });
+        let max_mat = take.iter().map(|&(l, e, _)| size(l, e)).max().unwrap_or(0);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        take.par_iter().for_each_init(
+            || AlignedBuf::new(max_mat + 2 * DIO_ALIGN),
+            |bounce, &(l, e, off)| {
+                let x = &m.layers[l].experts[e];
+                let mut o = off;
+                for mm in [&x.gate, &x.up, &x.down] {
+                    let src = mm.bytes();
+                    let dst = unsafe { std::slice::from_raw_parts_mut((base + o) as *mut u8, src.len()) };
+                    if !direct.as_ref().is_some_and(|d| d.read(src, dst, bounce).is_ok()) {
+                        failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                        dst.copy_from_slice(src);
+                    }
+                    o += src.len();
+                }
+            },
+        );
+        if direct.is_none() || failed.into_inner() {
+            eprintln!("arena: O_DIRECT reads unavailable for some experts, copied them through the mmap");
+        }
+        if std::env::var_os("DSX_ARENA_VERIFY").is_some() {
+            // compare every arena byte with the mmap (slow: reads the experts again through the page cache)
+            let bad = take.par_iter().filter(|&&(l, e, off)| {
+                let x = &m.layers[l].experts[e];
+                let mut o = off;
+                [&x.gate, &x.up, &x.down].iter().any(|mm| {
+                    let src = mm.bytes();
+                    let d = unsafe { std::slice::from_raw_parts((base + o) as *const u8, src.len()) };
+                    o += src.len();
+                    d != src
+                })
+            }).count();
+            eprintln!("arena verify: {bad} of {} experts differ from the file", take.len());
+        }
         Ok((Arena { buf, slots, bytes: tot }, rest))
     }
 
