@@ -26,54 +26,21 @@ each other.
 
 ## The model
 
-| Files | Size | What's in it |
-| --- | ---: | --- |
-| **[dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud)** | 305 GB | routed experts at 1-2 bits from [Unsloth](https://github.com/unslothai/unsloth)'s [UD-IQ1_M](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF), dense weights at Q8_0, the Engram table at Q6_K, the tokenizer and the vision tower |
+https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud
+
+One 305 GB download in 5 GGUF shards. The routed experts are 1-2 bit, from
+[Unsloth](https://github.com/unslothai/unsloth)'s [UD-IQ1_M](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF).
+The dense weights are Q8_0 and the Engram table is Q6_K, and the tokenizer and vision tower are included.
 
 Against the FP8 model on the [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) eval
-(8 x 1,024 tokens):
-
-| | KL ↓ | Same next token | Perplexity (FP8: 8.56) |
-| --- | ---: | ---: | ---: |
-| default | 0.269 | 78.9% | 10.13 |
-| `--defer-rank 3` (faster) | 0.284 | 78.2% | 10.25 |
+(8 x 1,024 tokens), it picks the same next token 78.9% of the time, with KL 0.269 and perplexity 10.13 (FP8: 8.56).
+With `--defer-rank 3`, which is faster, those are 78.2%, KL 0.284 and perplexity 10.25.
 
 ## How fast is it?
 
-| Machine | Decode (writing the answer) | Prefill (reading your prompt) |
-| --- | ---: | ---: |
-| **2x RTX 3090 24 GB**, i7-12700K, 128 GB DDR4 | **32-36 tokens/s** with `--defer-rank 3`; 27-29.5 without | ~370 tokens/s (3,000-token prompt) |
-
-A 340-token prompt is read in 4.0 s. On the same PC, the same expert weights run at 12 tokens/s in llama.cpp.
-
-## How it works
-
-The model has 15,360 experts (384 in each of its 40 layers), and each token uses 6 per layer. Together they take far
-more memory than two GPUs have, so dsx spreads them over everything the PC has and keeps each one where it's cheapest
-to run.
-
-- **Hot experts on the GPUs, the rest in RAM:** a ranking from calibration text says which experts the model picks
-  most. The hottest fill the GPUs, the next ~110 GB go into RAM, where the CPU computes them, and the few coldest stay
-  in the file on the SSD. On two RTX 3090s, about three of every four expert picks land on a GPU.
-- **It follows your conversation:** after every token, dsx counts which experts were used and swaps a few hot ones
-  from RAM onto the main GPU in the background, replacing ones that went cold. A coding session and a chat about
-  history end up with different experts on the card.
-- **It measures your GPUs:** at startup, dsx times how fast each GPU talks to the CPU and checks its memory. The
-  best-connected card becomes the main GPU and holds the dense weights (attention and the shared parts), the conversation's memory (the KV cache)
-  and its own expert cache. Every other card only holds experts. A card in a slow slot (a PCIe x4 slot, say) keeps a
-  fixed set of experts instead of swapping them, because copying experts would compete with the work it needs every
-  layer. Mismatched cards are fine: up to six GPUs, each used for what it's good at.
-- **GPUs and CPU work at the same time:** in every layer, the main GPU picks the experts and hands their input to the
-  CPU and the other GPUs through shared memory. Each computes its own experts in parallel, and the main GPU adds the
-  results. The handoff takes about 6 µs and never waits on the operating system.
-- **Fast CPU kernels:** the experts in RAM run on hand-written AVX2 / AVX-VNNI kernels across the CPU's performance
-  cores, from memory locked in large pages so the CPU reads it at full speed.
-- **Optional deferral:** `--defer-rank 3` lets the CPU's least important experts finish one layer late instead of
-  holding up the GPU: 15-20% faster decode for a small change in the output.
-- **Long prompts:** prompts are read in chunks of 4,096 tokens. The main GPU streams the experts it lacks from RAM
-  while it computes, and the other GPUs work on the same chunk in parallel.
-- **Picks up where you left off:** the last conversation stays on the GPU, so the next message only reads the new
-  text.
+On two RTX 3090s (24 GB each) with an i7-12700K and 128 GB of DDR4, dsx writes **32-36 tokens/s** with
+`--defer-rank 3` and 27-29.5 without it. It reads a 3,000-token prompt at ~370 tokens/s, and a 340-token prompt in
+4.0 s. On the same PC, the same expert weights run at 12 tokens/s in llama.cpp.
 
 ## Quick start
 
@@ -253,6 +220,35 @@ Thinking is on by default, at high effort. A request turns it off or sets the ef
 
 `cargo build --release` builds `core` and the NVIDIA runner; without `--features cuda`, the runner is built for the
 CPU only. Binaries go to `target/release/`.
+
+## How it works
+
+The model has 15,360 experts (384 in each of its 40 layers), and each token uses 6 per layer. Together they take far
+more memory than two GPUs have, so dsx spreads them over everything the PC has and keeps each one where it's cheapest
+to run.
+
+- **Hot experts on the GPUs, the rest in RAM:** a ranking from calibration text says which experts the model picks
+  most. The hottest fill the GPUs, the next ~110 GB go into RAM, where the CPU computes them, and the few coldest stay
+  in the file on the SSD. On two RTX 3090s, about three of every four expert picks land on a GPU.
+- **It follows your conversation:** after every token, dsx counts which experts were used and swaps a few hot ones
+  from RAM onto the main GPU in the background, replacing ones that went cold. A coding session and a chat about
+  history end up with different experts on the card.
+- **It measures your GPUs:** at startup, dsx times how fast each GPU talks to the CPU and checks its memory. The
+  best-connected card becomes the main GPU and holds the dense weights (attention and the shared parts), the conversation's memory (the KV cache)
+  and its own expert cache. Every other card only holds experts. A card in a slow slot (a PCIe x4 slot, say) keeps a
+  fixed set of experts instead of swapping them, because copying experts would compete with the work it needs every
+  layer. Mismatched cards are fine: up to six GPUs, each used for what it's good at.
+- **GPUs and CPU work at the same time:** in every layer, the main GPU picks the experts and hands their input to the
+  CPU and the other GPUs through shared memory. Each computes its own experts in parallel, and the main GPU adds the
+  results. The handoff takes about 6 µs and never waits on the operating system.
+- **Fast CPU kernels:** the experts in RAM run on hand-written AVX2 / AVX-VNNI kernels across the CPU's performance
+  cores, from memory locked in large pages so the CPU reads it at full speed.
+- **Optional deferral:** `--defer-rank 3` lets the CPU's least important experts finish one layer late instead of
+  holding up the GPU: 15-20% faster decode for a small change in the output.
+- **Long prompts:** prompts are read in chunks of 4,096 tokens. The main GPU streams the experts it lacks from RAM
+  while it computes, and the other GPUs work on the same chunk in parallel.
+- **Picks up where you left off:** the last conversation stays on the GPU, so the next message only reads the new
+  text.
 
 ## Credits
 
