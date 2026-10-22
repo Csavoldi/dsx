@@ -469,6 +469,61 @@ pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays:
     Ok(out)
 }
 
+/// Write a split model (`<prefix>-00001-of-0000N.gguf`) as one GGUF: shard 1's metadata without the `split.*` keys,
+/// then every tensor in file order.
+pub fn merge(src: &Path, out: &Path) -> Result<()> {
+    use std::io::{BufWriter, Write};
+    let g = Gguf::open(src)?;
+    let map = &g.maps[0];
+    let mut c = Cursor { b: map, p: 24 };
+    let nkv0 = u64::from_le_bytes(map[16..24].try_into()?) as usize;
+    let (mut nkv, mut kv_raw) = (0u64, vec![]);
+    for _ in 0..nkv0 {
+        let p0 = c.p;
+        let k = c.string()?;
+        let t = c.u32()?;
+        c.value(t)?;
+        if !k.starts_with("split.") {
+            kv_raw.extend(&map[p0..c.p]);
+            nkv += 1;
+        }
+    }
+    let align = g.kv.get("general.alignment").and_then(|v| v.as_u64()).unwrap_or(32);
+    let mut h: Vec<u8> = b"GGUF".to_vec();
+    h.extend(3u32.to_le_bytes());
+    h.extend((g.order.len() as u64).to_le_bytes());
+    h.extend(nkv.to_le_bytes());
+    h.extend(&kv_raw);
+    let mut off = 0u64;
+    for k in &g.order {
+        let t = &g.tensors[k];
+        h.extend((t.name.len() as u64).to_le_bytes());
+        h.extend(t.name.as_bytes());
+        h.extend((t.dims.len() as u32).to_le_bytes());
+        for d in &t.dims {
+            h.extend(d.to_le_bytes());
+        }
+        h.extend((t.ty as u32).to_le_bytes());
+        h.extend(off.to_le_bytes());
+        off = (off + t.bytes).div_ceil(align) * align;
+    }
+    h.resize((h.len() as u64).div_ceil(align) as usize * align as usize, 0);
+    let mut w = BufWriter::with_capacity(64 << 20, File::create(out).with_context(|| format!("create {}", out.display()))?);
+    w.write_all(&h)?;
+    let mut pos = 0u64;
+    for k in &g.order {
+        let t = &g.tensors[k];
+        w.write_all(g.bytes(t))?;
+        pos += t.bytes;
+        let pad = pos.div_ceil(align) * align - pos;
+        w.write_all(&vec![0u8; pad as usize])?;
+        pos += pad;
+    }
+    w.into_inner().map_err(|e| anyhow::anyhow!("{e}"))?.sync_all()?;
+    eprintln!("{}: {} tensors, {:.2} GB", out.display(), g.order.len(), pos as f64 / 1e9);
+    Ok(())
+}
+
 #[cfg(test)]
 mod split_tests {
     #[test]

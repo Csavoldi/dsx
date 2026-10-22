@@ -155,6 +155,8 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Write a split GGUF (`<prefix>-00001-of-0000N.gguf`) as one file and check every tensor's bytes.
+    Merge { input: PathBuf, out: PathBuf },
     /// Write a GGUF as llama.cpp-style split files (`<prefix>-0000k-of-0000N.gguf`) and check every tensor's bytes.
     Split {
         input: PathBuf,
@@ -631,6 +633,20 @@ fn main() -> Result<()> {
             }
             w.flush()?;
             println!("{}: {} tensors, {:.2} GB", out.display(), names.len(), off as f64 / 1e9);
+        }
+        Cmd::Merge { input, out } => {
+            dsx::gguf::merge(&input, &out)?;
+            let (a, b) = (dsx::gguf::Gguf::open(&input)?, dsx::gguf::Gguf::open(&out)?);
+            anyhow::ensure!(a.order == b.order, "tensor order differs");
+            for k in &a.order {
+                let (x, y) = (&a.tensors[k], &b.tensors[k]);
+                anyhow::ensure!(x.dims == y.dims && x.ty == y.ty && a.bytes(x) == b.bytes(y), "tensor {k} differs");
+            }
+            // shards after the first carry general.alignment even when shard 1 has none (default 32)
+            let same = |k: &String, v| k.starts_with("split.") || b.kv.get(k) == Some(v) || (k == "general.alignment" && !b.kv.contains_key(k));
+            anyhow::ensure!(a.kv.iter().all(|(k, v)| same(k, v)), "metadata differs");
+            anyhow::ensure!(!b.kv.keys().any(|k| k.starts_with("split.")), "split keys left");
+            println!("{}: {} tensors and all metadata match {}", out.display(), b.order.len(), input.display());
         }
         Cmd::Split { input, prefix, shards, name, expert_rot_from, add, tokenizer_json } => {
             let mut arrays = vec![];
