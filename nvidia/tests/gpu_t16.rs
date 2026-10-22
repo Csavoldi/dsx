@@ -1,0 +1,128 @@
+#![cfg(feature = "cuda")]
+//! T16 prefill kernels (t16.cuh): dequant_t16_f16 + t16_pre / t16_post around a GEMM, against core's t16::forward.
+use dsx::gguf::GType;
+use dsx::gpu::*;
+use dsx::t16;
+
+fn rng(seed: &mut u64) -> u64 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    *seed
+}
+
+/// a T16 matrix with random trellis bits and scales near 0.02 (the size of real suh / svh)
+fn random_matrix(ty: GType, k: usize, n: usize, seed: &mut u64) -> Vec<u8> {
+    let k2 = t16::k2(ty).unwrap();
+    let tb = t16::trellis_bytes(k2, k, n);
+    let mut v: Vec<u8> = (0..t16::matrix_bytes(ty, k, n)).map(|_| rng(seed) as u8).collect();
+    for c in v[tb..].chunks_exact_mut(2) {
+        let s = 0.02 * (0.5 + (rng(seed) % 1000) as f32 / 1000.0) * if rng(seed) % 2 == 0 { 1.0 } else { -1.0 };
+        c.copy_from_slice(&half::f16::from_f32(s).to_le_bytes());
+    }
+    v
+}
+
+#[test]
+fn t16_prefill_matches_reference() {
+    let g = Gpu::new(0).unwrap();
+    let kern = |n: &str| g.kernel(n).unwrap();
+    let mut seed = 0x1234_5678_9abc_def1u64;
+    let nt = 5;
+    for (ty, k, n) in [(GType::T16K15, 512, 256), (GType::T16K2, 256, 512), (GType::T16K25, 384, 256)] {
+        let k2 = t16::k2(ty).unwrap();
+        let w = random_matrix(ty, k, n, &mut seed);
+        let x: Vec<f32> = (0..nt * k).map(|_| (rng(&mut seed) % 2001) as f32 / 1000.0 - 1.0).collect();
+        let x16: Vec<u16> = x.iter().map(|&v| half::f16::from_f32(v).to_bits()).collect();
+        // reference on the f16-rounded inputs
+        let want: Vec<f32> = (0..nt)
+            .flat_map(|r| {
+                let xr: Vec<f32> = x16[r * k..(r + 1) * k].iter().map(|&h| half::f16::from_bits(h).to_f32()).collect();
+                t16::forward(&w, ty, k, n, &xr)
+            })
+            .collect();
+        let (wb, xb, tb, w16, yb) = (g.alloc(w.len()).unwrap(), g.alloc(nt * k * 2).unwrap(), g.alloc(nt * k * 2).unwrap(), g.alloc(n * k * 2).unwrap(), g.alloc(nt * n * 4).unwrap());
+        g.htod_sync(wb.ptr, &w).unwrap();
+        g.htod_sync(xb.ptr, &x16).unwrap();
+        let trb = t16::trellis_bytes(k2, k, n) as u64;
+        g.launch(kern("t16_pre"), ((k / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(xb.ptr), Arg::P(tb.ptr), Arg::P(wb.ptr + trb), Arg::I(k as i32)]).unwrap();
+        g.launch(kern("dequant_t16_f16"), ((k as u32).div_ceil(256), n as u32, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(wb.ptr), Arg::P(w16.ptr), Arg::I(n as i32), Arg::I(k as i32)]).unwrap();
+        // the decoded inner matrix must equal core's exactly
+        let mut wh = vec![0u16; n * k];
+        g.dtoh(&mut wh, w16.ptr).unwrap();
+        g.sync().unwrap();
+        let inner = t16::decode_inner(&w[..trb as usize], k2, k, n);
+        let bad = (0..k).flat_map(|i| (0..n).map(move |j| (i, j))).filter(|&(i, j)| half::f16::from_bits(wh[j * k + i]).to_f32() != inner[i * n + j]).count();
+        assert_eq!(bad, 0, "{ty:?}: {bad} decoded weights differ from core::t16::decode_inner");
+        g.gemm_f16(tb.ptr, w16.ptr, yb.ptr, nt, k, n, n).unwrap();
+        g.launch(kern("t16_post"), ((n / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(yb.ptr), Arg::P(wb.ptr + trb + 2 * k as u64), Arg::I(n as i32)]).unwrap();
+        let mut got = vec![0f32; nt * n];
+        g.dtoh(&mut got, yb.ptr).unwrap();
+        g.sync().unwrap();
+        let rms = (want.iter().map(|v| v * v).sum::<f32>() / want.len() as f32).sqrt();
+        let e = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max) / rms;
+        println!("{ty:?} {k}x{n}: max |err| / rms = {e:.2e}");
+        assert!(e < 5e-3, "{ty:?}: prefill output vs reference {e}");
+    }
+}
+
+fn bf16r(x: f32) -> f32 {
+    half::bf16::from_f32(x).to_f32()
+}
+
+/// The decode path (t16d_*) of a store with T16 experts, against core's f32 reference forward. The int8 activations
+/// of the GEMVs (per 256 inputs, like quant_act) leave ~1% RMS error; skipped picks (not resident) contribute 0.
+#[test]
+fn t16_decode_matches_reference() {
+    use dsx::experts::{ExpCfg, GpuExperts, RawExpert};
+    let g = Gpu::new(0).unwrap();
+    let mut seed = 0x0dd5_eed5_1234_5678u64;
+    let c = ExpCfg { n_layers: 2, n_experts: 10, inter: 2304, dim: 5120, lim: 10.0, rot: 0 };
+    let (gu, dn) = (GType::T16K15, GType::T16K2);
+    let mats: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..8)
+        .map(|_| (random_matrix(gu, c.dim, c.inter, &mut seed), random_matrix(gu, c.dim, c.inter, &mut seed), random_matrix(dn, c.inter, c.dim, &mut seed)))
+        .collect();
+    // experts 0..8 resident on layer 1; 8 and 9 are not
+    let items: Vec<((usize, usize), RawExpert)> = mats.iter().enumerate().map(|(e, m)| ((1, e), RawExpert { gate: &m.0, up: &m.1, down: &m.2, gu, dn })).collect();
+    let st = GpuExperts::build(&g, c, &items, true).unwrap();
+    let k = 6;
+    for t in [1usize, 2] {
+        let sel: Vec<i32> = (0..t * k).map(|j| [3, 9, 0, 5, 7, 1, 2, 6, 8, 4, 1, 3][j % 12]).collect();
+        let wts: Vec<f32> = (0..t * k).map(|_| 0.05 + (rng(&mut seed) % 100) as f32 * 0.003).collect();
+        let x: Vec<f32> = (0..t * c.dim).map(|_| (rng(&mut seed) % 2001) as f32 / 1000.0 - 1.0).collect();
+        g.htod_sync(st.sel.ptr, &sel).unwrap();
+        g.htod_sync(st.wts.ptr, &wts).unwrap();
+        g.htod_sync(st.x.ptr, &x).unwrap();
+        st.run_device_fast(&g, 1, st.sel.ptr, st.wts.ptr, k, t, st.x.ptr, st.out.ptr).unwrap();
+        let got: Vec<f32> = g.download(st.out.ptr, t * c.dim).unwrap();
+        let mut want = vec![0f32; t * c.dim];
+        for tt in 0..t {
+            let xr = &x[tt * c.dim..(tt + 1) * c.dim];
+            for j in 0..k {
+                let e = sel[tt * k + j] as usize;
+                if e >= mats.len() {
+                    continue;
+                }
+                let m = &mats[e];
+                let (gv, uv) = (t16::forward(&m.0, gu, c.dim, c.inter, xr), t16::forward(&m.1, gu, c.dim, c.inter, xr));
+                let h: Vec<f32> = gv.iter().zip(&uv).map(|(&a, &b)| {
+                    let (a, b) = (a.min(c.lim), b.clamp(-c.lim, c.lim));
+                    bf16r(a / (1.0 + (-a).exp()) * b * wts[tt * k + j])
+                }).collect();
+                let o = t16::forward(&m.2, dn, c.inter, c.dim, &h);
+                for r in 0..c.dim {
+                    want[tt * c.dim + r] += o[r];
+                }
+            }
+        }
+        let rms = |v: &[f32]| (v.iter().map(|a| (*a as f64).powi(2)).sum::<f64>() / v.len() as f64).sqrt() as f32;
+        let d: Vec<f32> = want.iter().zip(&got).map(|(a, b)| a - b).collect();
+        let e = rms(&d) / rms(&want);
+        println!("T16 decode T={t}: rms err {e:.2e} of rms (int8 activations)");
+        assert!(e < 0.03, "T16 decode vs reference: {e}");
+        // a layer with nothing resident gives zeros
+        st.run_device_fast(&g, 0, st.sel.ptr, st.wts.ptr, k, t, st.x.ptr, st.out.ptr).unwrap();
+        let z: Vec<f32> = g.download(st.out.ptr, t * c.dim).unwrap();
+        assert!(z.iter().all(|&v| v == 0.0), "empty layer");
+    }
+}

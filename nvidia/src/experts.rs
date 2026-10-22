@@ -94,6 +94,9 @@ pub struct GpuExperts {
     fast: Option<Fast>,
     /// adaptive residency (enable_swaps): in-flight replacements
     swap: Option<Swapper>,
+    /// per layer: (gate / up, down) bits x 2 when the layer's experts are T16
+    t16: Vec<Option<(usize, usize)>>,
+    t16b: Option<T16Bufs>,
 }
 
 /// An expert replacing a same-type victim in place: its raw matrices go to a staging buffer and are repacked into the
@@ -136,6 +139,36 @@ pub fn tile_smem(t: GType) -> u32 {
         _ => 0,
     }
 }
+
+fn is_t16(t: GType) -> bool {
+    crate::t16::k2(t).is_some()
+}
+
+/// Table / prefill id of a resident type: T16 is stored as is (its own decode kernels, t16.cuh); others are repacked
+/// for the fast kernels (2000 + id) unless the store is raw.
+fn slot_id(t: GType, fast: bool) -> u32 {
+    if fast && !is_t16(t) { 2000 + t as u32 } else { t as u32 }
+}
+
+/// T16 decode scratch (t16.cuh t16d_*), for T tokens x K picks
+struct T16Bufs {
+    xpg: Buf,
+    xpu: Buf,
+    xpd: Buf,
+    xdg: Buf,
+    xsg: Buf,
+    xdu: Buf,
+    xsu: Buf,
+    xdd: Buf,
+    xsd: Buf,
+    pg: Buf,
+    pu: Buf,
+    pd: Buf,
+    h: Buf,
+}
+/// k-splits of the T16 GEMVs: gate / up (dim / 256 = 20 groups), down (inter / 256 = 9 groups)
+const T16_SGU: usize = 4;
+const T16_SD: usize = 3;
 
 /// Type id of `t` repacked for the fast kernels (expert_fast.cuh), the same bytes per weight.
 pub fn repacked_id(t: GType) -> Result<i32> {
@@ -190,6 +223,7 @@ impl GpuExperts {
             let mut put = |b: &[u8], t: GType, rows: usize, k: usize| -> Result<u64> {
                 let p = buf.ptr + off;
                 match &stage {
+                    _ if is_t16(t) => g.htod_sync(p, b)?,
                     Some(s) => {
                         g.htod_sync(s.ptr, b)?;
                         repack(g, t, s.ptr, p, rows, k)?;
@@ -201,7 +235,9 @@ impl GpuExperts {
             };
             for t in [x.gu, x.dn] {
                 // a kernel exists for the layout; raw IQ stores (DSX_OLD_MOE) only have prefill's dequant_f16 so far
-                if fast {
+                if is_t16(t) {
+                    anyhow::ensure!(fast, "T16 experts need the fast store (unset DSX_OLD_MOE)");
+                } else if fast {
                     repacked_id(t)?;
                 } else if !matches!(t, GType::Iq1S | GType::Iq2Xs | GType::Iq2S | GType::Iq2Xxs) {
                     gemv_name(t)?;
@@ -212,7 +248,7 @@ impl GpuExperts {
         }
         g.sync()?;
         drop(stage);
-        let id = |t: GType| if fast { 2000 + t as u32 } else { t as u32 };
+        let id = |t: GType| slot_id(t, fast);
         // ExpSlot {u64 gate, up, down; i32 gu, dn} = 32 bytes, offsets relative to the store base
         let mut tab = vec![0u8; c.n_layers * c.n_experts * 32];
         for l in 0..c.n_layers {
@@ -235,6 +271,39 @@ impl GpuExperts {
         for n in ["gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "gemv_q8_0", "swiglu_s", "add_inplace", "moe_gu", "moe_down", "quant_act", "moe_gu_fast", "moe_down_fast"] {
             k.insert(n, g.kernel(n)?);
         }
+        let mut t16 = vec![None; c.n_layers];
+        for ((l, _), x) in items {
+            if let (Some(a), Some(b)) = (crate::t16::k2(x.gu), crate::t16::k2(x.dn)) {
+                anyhow::ensure!(t16[*l].is_none_or(|v| v == (a, b)), "layer {l}: T16 experts of different K");
+                t16[*l] = Some((a, b));
+            } else {
+                anyhow::ensure!(!is_t16(x.gu) && !is_t16(x.dn), "layer {l}: T16 mixed with other expert types");
+            }
+        }
+        let t16b = if t16.iter().any(|v| v.is_some()) {
+            for n in ["t16d_prep", "t16d_gemv_3", "t16d_gemv_4", "t16d_gemv_5", "t16d_post_gu", "t16d_post_down"] {
+                k.insert(n, g.kernel(n)?);
+            }
+            let (p, d, i) = (MAXT * MAXK, c.dim, c.inter);
+            let f4 = |n: usize| g.alloc_zeroed(n * 4);
+            Some(T16Bufs {
+                xpg: f4(p * d / 2)?,
+                xpu: f4(p * d / 2)?,
+                xpd: f4(p * i / 2)?,
+                xdg: f4(p * d / 256)?,
+                xsg: f4(p * d / 256)?,
+                xdu: f4(p * d / 256)?,
+                xsu: f4(p * d / 256)?,
+                xdd: f4(p * i / 256)?,
+                xsd: f4(p * i / 256)?,
+                pg: f4(T16_SGU * p * i)?,
+                pu: f4(T16_SGU * p * i)?,
+                pd: f4(T16_SD * p * d)?,
+                h: f4(p * i)?,
+            })
+        } else {
+            None
+        };
         let f = |n: usize| g.alloc_zeroed(n * 4);
         let fast = if fast {
             let (nx, nh) = (MAXT * c.dim, MAXT * MAXK * c.inter);
@@ -277,6 +346,8 @@ impl GpuExperts {
             smem,
             fast,
             swap: None,
+            t16,
+            t16b,
         })
     }
 
@@ -314,7 +385,8 @@ impl GpuExperts {
         let mut b = [0u8; 32];
         match sl {
             Some(sl) => {
-                let id = |t: GType| if self.fast.is_some() { 2000 + t as u32 } else { t as u32 };
+                let fast = self.fast.is_some();
+                let id = |t: GType| slot_id(t, fast);
                 b[0..8].copy_from_slice(&(sl.gate - self.buf.ptr).to_le_bytes());
                 b[8..16].copy_from_slice(&(sl.up - self.buf.ptr).to_le_bytes());
                 b[16..24].copy_from_slice(&(sl.down - self.buf.ptr).to_le_bytes());
@@ -351,9 +423,16 @@ impl GpuExperts {
         g.htod_side(stage, raw[0])?;
         g.htod_side(stage + og, raw[1])?;
         g.htod_side(stage + ou, raw[2])?;
-        repack_on(g, true, gu, stage, slot.gate, inter, dim)?;
-        repack_on(g, true, gu, stage + og, slot.up, inter, dim)?;
-        repack_on(g, true, dn, stage + ou, slot.down, dim, inter)?;
+        if is_t16(gu) {
+            // stored as is: copy the staged matrices into the slot
+            g.dtod_side(slot.gate, stage, raw[0].len())?;
+            g.dtod_side(slot.up, stage + og, raw[1].len())?;
+            g.dtod_side(slot.down, stage + ou, raw[2].len())?;
+        } else {
+            repack_on(g, true, gu, stage, slot.gate, inter, dim)?;
+            repack_on(g, true, gu, stage + og, slot.up, inter, dim)?;
+            repack_on(g, true, dn, stage + ou, slot.down, dim, inter)?;
+        }
         g.record(ev, true)?;
         self.swap.as_mut().unwrap().pending.push(Pending { l: new.0, e: new.1, slot, stage: si });
         Ok(true)
@@ -387,8 +466,8 @@ impl GpuExperts {
     /// device pointers (gate, up, down) of a resident expert and the type ids of gate/up and down as dequant_f16
     /// takes them (ggml id, or 2000 + id when repacked)
     pub fn slot_ptrs(&self, l: usize, e: usize) -> Option<(u64, u64, u64, i32, i32)> {
-        let off = if self.fast.is_some() { 2000 } else { 0 };
-        self.slots.get(&(l, e)).map(|s| (s.gate, s.up, s.down, off + s.gu as u32 as i32, off + s.dn as u32 as i32))
+        let fast = self.fast.is_some();
+        self.slots.get(&(l, e)).map(|s| (s.gate, s.up, s.down, slot_id(s.gu, fast) as i32, slot_id(s.dn, fast) as i32))
     }
 
     pub fn has(&self, l: usize, e: usize) -> bool {
@@ -472,6 +551,9 @@ impl GpuExperts {
         if t == 0 || t > MAXT || k == 0 || k > MAXK {
             bail!("run_device_fast: T = {t}, K = {k} (max {MAXT}, {MAXK})");
         }
+        if let Some((kg, kd)) = self.t16[l] {
+            return self.run_t16(g, l, sel, wts, k, t, x, out, kg, kd);
+        }
         let (dim, inter) = (self.dim, self.inter);
         let (tab, e) = (Arg::P(self.tab.ptr), Arg::I(self.n_experts as i32));
         let rot = ((self.rot >> l) & 1) as i32;
@@ -503,6 +585,30 @@ impl GpuExperts {
             self.smem,
             &[tab, Arg::I(l as i32), e, Arg::P(f.plan.ptr), Arg::I(k as i32), Arg::P(self.buf.ptr), Arg::P(f.hq.ptr), Arg::P(f.hd.ptr), Arg::P(f.hs.ptr), Arg::P(out), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(t as i32), Arg::P(f.part.ptr), Arg::P(f.cnt.ptr)],
         )
+    }
+}
+
+impl GpuExperts {
+    /// T16 layer (t16.cuh t16d_*): per pick, prepare x for gate and up, two GEMVs, swiglu, prepare h, the down
+    /// GEMV, then each token's sum. Eight launches, no host round trip.
+    #[allow(clippy::too_many_arguments)]
+    fn run_t16(&self, g: &Gpu, l: usize, sel: u64, wts: u64, k: usize, t: usize, x: u64, out: u64, kg: usize, kd: usize) -> Result<()> {
+        let b = self.t16b.as_ref().unwrap();
+        let (dim, inter, picks) = (self.dim, self.inter, t * k);
+        let (tab, base, e) = (Arg::P(self.tab.ptr), Arg::P(self.buf.ptr), Arg::I(self.n_experts as i32));
+        let (li, ki, ti) = (Arg::I(l as i32), Arg::I(k as i32), Arg::I(t as i32));
+        let blocks = |warps: usize| ((warps as u32).div_ceil(4), 1, 1);
+        let gemv = |k2: usize| self.k[["t16d_gemv_3", "t16d_gemv_4", "t16d_gemv_5"][k2 - 3]];
+        for (role, xp, xd, xs) in [(0, &b.xpg, &b.xdg, &b.xsg), (1, &b.xpu, &b.xdu, &b.xsu)] {
+            g.launch(self.k["t16d_prep"], blocks(picks * dim / 256), 128, 0, &[Arg::P(x), Arg::I(0), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::P(xp.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr)])?;
+        }
+        for (role, xp, xd, xs, part) in [(0, &b.xpg, &b.xdg, &b.xsg, &b.pg), (1, &b.xpu, &b.xdu, &b.xsu, &b.pu)] {
+            g.launch(gemv(kg), blocks(picks * inter / 32 * T16_SGU), 128, 0, &[Arg::P(xp.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(T16_SGU as i32), Arg::P(part.ptr)])?;
+        }
+        g.launch(self.k["t16d_post_gu"], blocks(picks * inter / 128), 128, 0, &[Arg::P(b.pg.ptr), Arg::P(b.pu.ptr), Arg::I(T16_SGU as i32), Arg::P(sel), Arg::P(wts), tab, base, li, e, ki, ti, Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::F(self.lim), Arg::P(b.h.ptr)])?;
+        g.launch(self.k["t16d_prep"], blocks(picks * inter / 256), 128, 0, &[Arg::P(b.h.ptr), Arg::I(1), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(2), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(kd as i32), Arg::P(b.xpd.ptr), Arg::P(b.xdd.ptr), Arg::P(b.xsd.ptr)])?;
+        g.launch(gemv(kd), blocks(picks * dim / 32 * T16_SD), 128, 0, &[Arg::P(b.xpd.ptr), Arg::P(b.xdd.ptr), Arg::P(b.xsd.ptr), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(2), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(T16_SD as i32), Arg::P(b.pd.ptr)])?;
+        g.launch(self.k["t16d_post_down"], blocks(t * dim / 128), 128, 0, &[Arg::P(b.pd.ptr), Arg::I(T16_SD as i32), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(kd as i32), Arg::P(out)])
     }
 }
 

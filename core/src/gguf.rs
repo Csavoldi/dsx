@@ -82,6 +82,11 @@ pub enum GType {
     Fp8B32 = 1000,
     /// HF checkpoint FP4 E2M1, two per byte (low nibble first), E8M0 scale per 32 (not a GGUF type)
     Fp4 = 1001,
+    /// T16 trellis expert matrix at 1.5 / 2 / 2.5 bits per weight: `trellis | suh | svh` per matrix (core/src/t16.rs);
+    /// not a ggml type
+    T16K15 = 1010,
+    T16K2 = 1011,
+    T16K25 = 1012,
 }
 
 impl GType {
@@ -103,6 +108,9 @@ impl GType {
             30 => GType::BF16,
             42 => GType::Q2_0,
             143 => GType::Ptq1_0,
+            1010 => GType::T16K15,
+            1011 => GType::T16K2,
+            1012 => GType::T16K25,
             _ => bail!("unsupported ggml type {id}"),
         })
     }
@@ -126,6 +134,10 @@ impl GType {
             GType::Ptq1_0 => (128, 28),
             GType::Fp8B32 => (1, 1),
             GType::Fp4 => (2, 1),
+            // per weight, not counting suh / svh: a T16 matrix is not a sequence of rows (see Mat::bytes)
+            GType::T16K15 => (16, 3),
+            GType::T16K2 => (4, 1),
+            GType::T16K25 => (16, 5),
         }
     }
     pub fn row_bytes(self, n: usize) -> usize {
@@ -269,7 +281,11 @@ impl Gguf {
             let data = (c.p as u64).div_ceil(align) * align;
             for (name, dims, ty, off) in infos {
                 let n: u64 = dims.iter().product();
-                let bytes = (ty.row_bytes(dims[0] as usize) as u64) * (n / dims[0]);
+                let bytes = match crate::t16::k2(ty) {
+                    // T16: [k, n, experts...], each k x n matrix stored as trellis | suh | svh
+                    Some(_) => crate::t16::matrix_bytes(ty, dims[0] as usize, dims[1] as usize) as u64 * (n / dims[0] / dims[1]),
+                    None => (ty.row_bytes(dims[0] as usize) as u64) * (n / dims[0]),
+                };
                 let ti = TensorInfo { name: name.clone(), dims, ty, shard, offset: data + off, bytes };
                 if ti.offset + ti.bytes > map.len() as u64 {
                     bail!("tensor {name} runs past the end of {}", p.display());

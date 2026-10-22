@@ -296,8 +296,13 @@ impl Mat {
     pub fn row_bytes(&self) -> usize {
         self.ty.row_bytes(self.cols)
     }
-    /// bytes of rows [row0, row0 + rows)
+    /// bytes of rows [row0, row0 + rows); for T16, the whole matrix (rows x cols) starting at row0
     pub fn bytes(&self) -> &[u8] {
+        if crate::t16::k2(self.ty).is_some() {
+            let mb = crate::t16::matrix_bytes(self.ty, self.cols, self.rows);
+            assert!(self.row0 % self.rows == 0, "{}: a T16 matrix is used whole", self.name);
+            return unsafe { std::slice::from_raw_parts(self.data.add(self.row0 / self.rows * mb), mb) };
+        }
         let rb = self.row_bytes();
         unsafe { std::slice::from_raw_parts(self.data.add(self.row0 * rb), self.rows * rb) }
     }
@@ -340,6 +345,12 @@ pub fn matvec(w: &Mat, x: &[f32], y: &mut [f32]) {
     } else {
         x
     };
+    if crate::t16::k2(w.ty).is_some() {
+        // no rows to decode one at a time: build the effective matrix once
+        let e = crate::t16::dequant_effective(w.bytes(), w.ty, w.cols, w.rows);
+        y.par_iter_mut().enumerate().for_each(|(j, yv)| *yv = dot(&e[j * w.cols..(j + 1) * w.cols], x));
+        return;
+    }
     y.par_chunks_mut(64).enumerate().for_each_init(
         || vec![0f32; w.cols],
         |buf, (ci, ys)| {
@@ -369,6 +380,9 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn mat_f32(m: &Mat) -> Vec<f32> {
+    if crate::t16::k2(m.ty).is_some() {
+        return crate::t16::dequant_effective(m.bytes(), m.ty, m.cols, m.rows);
+    }
     let mut v = vec![0f32; m.rows * m.cols];
     for (r, chunk) in v.chunks_mut(m.cols).enumerate() {
         m.dequant(r, chunk);
@@ -494,6 +508,9 @@ fn experts_of(g: &Gguf, l: usize, cfg: &Config) -> Result<Vec<Expert>> {
         11 => "q3_k",
         143 => "ptq1_0",
         16 => "iq2_xxs",
+        1010 => "t16k15",
+        1011 => "t16k2",
+        1012 => "t16k25",
         _ => "?",
     };
     let gu = types("ffn_exps_gu_type")?;

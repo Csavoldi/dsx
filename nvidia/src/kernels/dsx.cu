@@ -1086,6 +1086,7 @@ extern "C" __global__ void swiglu_s(const float *g, const float *u, float *h, in
 #include "moe.cuh"
 #include "expert_fast.cuh"
 #include "dequant_iq8.cuh"
+#include "t16.cuh"
 
 // ---------------------------------------------------------------- cross-device expert handoff (mapped host memory)
 // xch layout (bytes): route_flag @0, cpu_flag @64, gpu1_flag @128, ntok @192, sel[8][8] i32 @256, wts[8][8] f32 @512,

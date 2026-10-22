@@ -18,6 +18,23 @@ fn dq_iq8(ty: i32, cols: usize) -> bool {
 pub(crate) fn dq_kernel(k: &std::collections::HashMap<&'static str, crate::gpu::Kernel>, ty: i32, cols: usize) -> crate::gpu::Kernel {
     k[if dq_iq8(ty, cols) { "dequant_f16_iq8" } else { "dequant_f16" }]
 }
+/// T16 experts in prefill: y = had(had(x * suh) @ W_inner) * svh, done on the activations around one GEMM.
+/// `x16` [nt][k] f16 (left as is unless `tx16` == `x16`), `tx16` scratch [nt][k], `y` [nt][n] f32.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn t16_linear(g: &crate::gpu::Gpu, k: &std::collections::HashMap<&'static str, crate::gpu::Kernel>, ty: i32, w: u64, x16: u64, tx16: u64, w16: u64, y: u64, nt: usize, kin: usize, nout: usize) -> Result<()> {
+    let gt = GType::from_id(ty as u32)?;
+    let k2 = crate::t16::k2(gt).unwrap();
+    let tb = crate::t16::trellis_bytes(k2, kin, nout) as u64;
+    g.launch(k["t16_pre"], ((kin / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(x16), Arg::P(tx16), Arg::P(w + tb), Arg::I(kin as i32)])?;
+    g.launch(k["dequant_t16_f16"], ((kin as u32).div_ceil(256), nout as u32, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(w), Arg::P(w16), Arg::I(nout as i32), Arg::I(kin as i32)])?;
+    g.gemm_f16(tx16, w16, y, nt, kin, nout, nout)?;
+    g.launch(k["t16_post"], ((nout / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(y), Arg::P(w + tb + 2 * kin as u64), Arg::I(nout as i32)])?;
+    Ok(())
+}
+pub(crate) fn is_t16(ty: i32) -> bool {
+    (1010..=1012).contains(&ty)
+}
+
 pub(crate) fn dq_grid(ty: i32, rows: usize, cols: usize) -> (u32, u32, u32) {
     let per = if dq_iq8(ty, cols) { 8 } else { 1 };
     (((cols / per) as u32).div_ceil(256), rows as u32, 1)
@@ -56,6 +73,8 @@ pub struct PrefillBufs {
     tmp: Buf,
     // experts
     gx16: Buf,
+    /// T16: the gathered rows times one matrix's suh, Hadamard-transformed
+    tx16: Buf,
     gg: Buf,
     gu: Buf,
     h16: Buf,
@@ -83,6 +102,8 @@ pub struct AuxPrefill {
     rows: Buf,
     wrow: Buf,
     gx16: Buf,
+    /// T16: the gathered rows times one matrix's suh, Hadamard-transformed
+    tx16: Buf,
     gg: Buf,
     gu: Buf,
     h16: Buf,
@@ -98,7 +119,7 @@ impl AuxPrefill {
         let c = &m.cfg;
         let (d, inter) = (c.dim, c.inter);
         let mut k = std::collections::HashMap::new();
-        for n in ["gather_h", "dequant_f16", "dequant_f16_iq8", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16", "add_noise_rows"] {
+        for n in ["gather_h", "dequant_f16", "dequant_f16_iq8", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16", "add_noise_rows", "dequant_t16_f16", "t16_pre", "t16_post"] {
             k.insert(n, g1.kernel(n)?);
         }
         Ok(AuxPrefill {
@@ -106,6 +127,7 @@ impl AuxPrefill {
             rows: g1.alloc(tmax * 8 * 4)?,
             wrow: g1.alloc(tmax * 8 * 4)?,
             gx16: g1.alloc(tmax * d * 2)?,
+            tx16: g1.alloc(tmax * d * 2)?,
             gg: g1.alloc(tmax * inter * 4)?,
             gu: g1.alloc(tmax * inter * 4)?,
             h16: g1.alloc(tmax * inter * 2)?,
@@ -171,6 +193,7 @@ impl PrefillBufs {
             keep_tail: g.alloc((c.n_layers - 1 - c.cand_layer) * c.window * nb)?,
             tmp: f(tmax * 25600.max(c.n_experts))?,
             gx16: g.alloc(tmax * c.dim * 2)?,
+            tx16: g.alloc(tmax * c.dim * 2)?,
             gg: f(tmax * c.inter)?,
             gu: f(tmax * c.inter)?,
             h16: g.alloc(tmax * c.inter * 2)?,
@@ -232,6 +255,10 @@ impl GpuModel<'_> {
                     g1.launch(gp.k["fwht_rows_f16"], ((d / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(gp.gx16.ptr), Arg::I(d as i32)])?;
                 }
                 for (wp, yp) in [(wg, gp.gg.ptr), (wu, gp.gu.ptr)] {
+                    if is_t16(gt) {
+                        t16_linear(g1, &gp.k, gt, wp, gp.gx16.ptr, gp.tx16.ptr, gp.w16.ptr, yp, nt, d, inter)?;
+                        continue;
+                    }
                     g1.launch(dq_kernel(&gp.k, gt, d), dq_grid(gt, inter, d), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
                     g1.gemm_f16(gp.gx16.ptr, gp.w16.ptr, yp, nt, d, inter, inter)?;
                 }
@@ -239,8 +266,12 @@ impl GpuModel<'_> {
                 if rot {
                     g1.launch(gp.k["fwht_rows_f16"], ((inter / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(gp.h16.ptr), Arg::I(inter as i32)])?;
                 }
-                g1.launch(dq_kernel(&gp.k, dt, inter), dq_grid(dt, d, inter), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
-                g1.gemm_f16(gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d, d)?;
+                if is_t16(dt) {
+                    t16_linear(g1, &gp.k, dt, wd, gp.h16.ptr, gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d)?;
+                } else {
+                    g1.launch(dq_kernel(&gp.k, dt, inter), dq_grid(dt, d, inter), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
+                    g1.gemm_f16(gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d, d)?;
+                }
                 if let Some(rel) = noise_rel(li) {
                     g1.launch(gp.k["add_noise_rows"], (nt as u32, 1, 1), 256, 0, &[Arg::P(gp.go.ptr), Arg::I(d as i32), Arg::F(rel), Arg::I((li * 1000 + e + 1) as i32)])?;
                 }
@@ -888,6 +919,10 @@ impl GpuModel<'_> {
                 }
             };
             for (wp, yp) in [(gp, pb.gg.ptr), (up, pb.gu.ptr)] {
+                if is_t16(gt) {
+                    t16_linear(&self.g, &self.k, gt, wp, pb.gx16.ptr, pb.tx16.ptr, pb.w16.ptr, yp, nt, d, inter)?;
+                    continue;
+                }
                 self.g.launch(dq_kernel(&self.k, gt, d), dq_grid(gt, inter, d), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
                 self.g.gemm_f16(pb.gx16.ptr, pb.w16.ptr, yp, nt, d, inter, inter)?;
             }
@@ -895,8 +930,12 @@ impl GpuModel<'_> {
             if rot {
                 self.g.launch(self.k["fwht_rows_f16"], ((inter / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(pb.h16.ptr), Arg::I(inter as i32)])?;
             }
-            self.g.launch(dq_kernel(&self.k, dt, inter), dq_grid(dt, d, inter), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
-            self.g.gemm_f16(pb.h16.ptr, pb.w16.ptr, pb.go.ptr, nt, inter, d, d)?;
+            if is_t16(dt) {
+                t16_linear(&self.g, &self.k, dt, dp, pb.h16.ptr, pb.h16.ptr, pb.w16.ptr, pb.go.ptr, nt, inter, d)?;
+            } else {
+                self.g.launch(dq_kernel(&self.k, dt, inter), dq_grid(dt, d, inter), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
+                self.g.gemm_f16(pb.h16.ptr, pb.w16.ptr, pb.go.ptr, nt, inter, d, d)?;
+            }
             if let Some(rel) = noise_rel(li) {
                 self.g.launch(self.k["add_noise_rows"], (nt as u32, 1, 1), 256, 0, &[Arg::P(pb.go.ptr), Arg::I(d as i32), Arg::F(rel), Arg::I((li * 1000 + e + 1) as i32)])?;
             }

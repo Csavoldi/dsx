@@ -228,6 +228,7 @@ pub fn dequant_row(t: GType, raw: &[u8], out: &mut [f32]) {
         }
         GType::I8 | GType::I32 => panic!("{t:?} is not a weight format"),
         GType::Fp8B32 | GType::Fp4 => panic!("{t:?} needs its scales: dequant_row_scaled"),
+        GType::T16K15 | GType::T16K2 | GType::T16K25 => panic!("{t:?} has no rows: crate::t16::dequant_effective"),
     }
 }
 
