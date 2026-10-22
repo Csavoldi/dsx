@@ -130,3 +130,61 @@ fn t16_decode_matches_reference() {
         assert!(z.iter().all(|&v| v == 0.0), "empty layer");
     }
 }
+
+/// Decode speed of one layer's resident experts as run_device_fast runs them (T = 1, K = 6 distinct picks out of 64
+/// experts, ~1 GB of weights so no call finds them in L2): T16 1.5 / 2 against a UD-IQ1_M-like codebook mix,
+/// interleaved A B B A with pauses (the 3090's power cap throttles long loops).
+/// cargo test --release --features cuda --test gpu_t16 -- --ignored --nocapture t16_decode_speed
+#[test]
+#[ignore]
+fn t16_decode_speed() {
+    use dsx::experts::{ExpCfg, GpuExperts, RawExpert};
+    let g = Gpu::new(0).unwrap();
+    let mut seed = 0xfeed_beef_1234_5678u64;
+    let c = ExpCfg { n_layers: 1, n_experts: 64, inter: 2304, dim: 5120, lim: 10.0, rot: 0 };
+    let iq = |ty: GType, rows: usize, k: usize, seed: &mut u64| -> Vec<u8> {
+        let (_, b) = ty.block();
+        let mut v: Vec<u8> = (0..ty.row_bytes(k) * rows).map(|_| rng(seed) as u8).collect();
+        for blk in v.chunks_exact_mut(b) {
+            blk[..2].copy_from_slice(&half::f16::from_f32(0.01).to_le_bytes());
+        }
+        v
+    };
+    let mix = [(GType::Iq1S, GType::Iq2Xxs), (GType::Iq2Xxs, GType::Iq2Xs), (GType::Iq1S, GType::Iq2S), (GType::Iq2Xxs, GType::Iq2Xxs)];
+    // one type per role per layer for T16; the IQ store mixes types across experts like UD's files
+    let t16m: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..64).map(|_| (random_matrix(GType::T16K15, c.dim, c.inter, &mut seed), random_matrix(GType::T16K15, c.dim, c.inter, &mut seed), random_matrix(GType::T16K2, c.inter, c.dim, &mut seed))).collect();
+    let iqm: Vec<(GType, GType, Vec<u8>, Vec<u8>, Vec<u8>)> = (0..64).map(|e| {
+        let (gu, dn) = mix[e % mix.len()];
+        (gu, dn, iq(gu, c.inter, c.dim, &mut seed), iq(gu, c.inter, c.dim, &mut seed), iq(dn, c.dim, c.inter, &mut seed))
+    }).collect();
+    let st_t16 = GpuExperts::build(&g, c, &t16m.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.0, up: &m.1, down: &m.2, gu: GType::T16K15, dn: GType::T16K2 })).collect::<Vec<_>>(), true).unwrap();
+    let st_iq = GpuExperts::build(&g, c, &iqm.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.2, up: &m.3, down: &m.4, gu: m.0, dn: m.1 })).collect::<Vec<_>>(), true).unwrap();
+    let calls = 400;
+    let sels: Vec<Vec<i32>> = (0..calls).map(|i| (0..6).map(|j| ((i * 7 + j * 11) % 64) as i32).collect()).collect();
+    let x: Vec<f32> = (0..c.dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+    let wts = vec![1.0f32 / 6.0; 6];
+    let mut res: Vec<(&str, f64)> = vec![];
+    for name in ["T16", "IQ", "IQ", "T16", "T16", "IQ"] {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let st = if name == "T16" { &st_t16 } else { &st_iq };
+        g.htod_sync(st.x.ptr, &x).unwrap();
+        g.htod_sync(st.wts.ptr, &wts).unwrap();
+        let dsel: Vec<Buf> = sels.iter().map(|s| g.upload(s).unwrap()).collect();
+        let ev = (g.timed_event().unwrap(), g.timed_event().unwrap());
+        st.run_device_fast(&g, 0, dsel[0].ptr, st.wts.ptr, 6, 1, st.x.ptr, st.out.ptr).unwrap();
+        g.sync().unwrap();
+        g.record(ev.0, false).unwrap();
+        for s in &dsel {
+            st.run_device_fast(&g, 0, s.ptr, st.wts.ptr, 6, 1, st.x.ptr, st.out.ptr).unwrap();
+        }
+        g.record(ev.1, false).unwrap();
+        g.sync().unwrap();
+        let us = g.elapsed_ms(ev.0, ev.1).unwrap() as f64 * 1e3 / calls as f64;
+        println!("{name}: {us:.1} us per layer call (6 experts, T = 1)");
+        res.push((name, us));
+    }
+    for n in ["T16", "IQ"] {
+        let v: Vec<f64> = res.iter().filter(|r| r.0 == n).map(|r| r.1).collect();
+        println!("{n}: mean {:.1} us", v.iter().sum::<f64>() / v.len() as f64);
+    }
+}

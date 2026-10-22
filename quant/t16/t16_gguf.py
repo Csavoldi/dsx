@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""t16_gguf.py OUT PACKDIR BASE_SHARDS...
+"""t16_gguf.py [--no-engram] OUT PACKDIR BASE_SHARDS...
 One GGUF for dsx with T16 routed experts: every tensor and key of BASE (a dsx build, e.g. dsx-ud's 5 shards: dense
 weights, Engram table, tokenizer) except its routed experts, plus the T16 experts that t16_worker.py wrote with
 T16_PACKDIR (PACKDIR/LNN/eNNN.safetensors, keys blk.L.ffn_{gate,up,down}_exps.eNNN.{trellis,suh,svh,mul1}), or the
@@ -11,7 +11,8 @@ Each T16 role of a layer becomes one tensor blk.L.ffn_{role}_exps.weight of type
 trellis | suh (f16 [k]) | svh (f16 [n]) (core/src/t16.rs). The trellis is converted from exllamav3's order
 (u16 [k/16][n/16][16 K], u32 words read MSB first) to dsx's stored layout: tiles by column (tile (kb, nb) at
 nb * k/16 + kb), each tile's bytes in bit-stream order (every u32 word byte-swapped); t16::from_exl3 is the same.
-Drops split.* and dsx.expert_rot (T16 carries its own Hadamards). Split the result with `dsx split`."""
+Drops split.* and dsx.expert_rot (T16 carries its own Hadamards). Split the result with `dsx split`. --no-engram leaves
+out the Engram table (per_layer_token_embd.weight) for test builds; run them with --engram BASE's shard that has it."""
 import json, os, re, struct, sys
 import numpy as np
 
@@ -72,14 +73,19 @@ def expert_files(packdir):
 
 
 def main():
-    out, packdir = sys.argv[1], sys.argv[2]
-    base = [G(p) for p in sys.argv[3:]]
+    args = sys.argv[1:]
+    no_engram = '--no-engram' in args
+    args = [a for a in args if a != '--no-engram']
+    out, packdir = args[0], args[1]
+    base = [G(p) for p in args[2:]]
     layers = expert_files(packdir)
     is_exp = re.compile(r'blk\.(\d+)\.ffn_(gate|up|down)_exps(\..*)?\.weight$|blk\.(\d+)\.ffn_exps_(gu|down)_type$')
     tensors = []   # (name, ne, ty, source): source = (G, offset) or ('t16', L, role, files)
     nexp_base = 0
     for g in base:
         for name, ne, ty, off in g.t:
+            if no_engram and name == 'per_layer_token_embd.weight':
+                continue
             mm = is_exp.match(name)
             if mm and int(mm.group(1) or mm.group(4)) in layers:
                 nexp_base += 1
