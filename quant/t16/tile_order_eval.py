@@ -5,7 +5,7 @@ tensor_core_perm / tensor_core_perm_i are replaced). Damping: sigma_reg = 2 x me
 Experts: dumps/udump/LNN_eNNN.pt (W1/W3/W2, H1/H2, calib inputs) and dumps/edump/ (Lucebox eval inputs), from R2
 dsx/t16/dumps/. Scores as quant/t16/q_eval.py: per expert err = sum (y_hat - y)^2, ye = sum y^2 on both token sets.
 Writes rows_L{L}_{perm}.json (resumable). RATES e.g. 1.5,1.5,2 (gate, up, down)."""
-import glob, json, os, sys
+import glob, json, os, sys, time
 from functools import lru_cache
 import torch
 import torch.nn.functional as F
@@ -66,12 +66,15 @@ for f in files:
         continue
     W1, W3, W2 = (d[k].float().to(dev) for k in ("W1", "W3", "W2"))
     H1, H2, lim = d["H1"].to(dev), d["H2"].to(dev), d["lim"]
+    torch.cuda.synchronize()
+    tq = time.time()
     a, b, c = exl3(W1, H1, rates[0], "gate"), exl3(W3, H1, rates[1], "up"), exl3(W2, H2, rates[2], "down")
-    r = {"ex": e, "perm": perm, "rates": rates}
+    torch.cuda.synchronize()
+    r = {"ex": e, "perm": perm, "rates": rates, "quant_s": round(time.time() - tq, 2)}
     for k, (x, g) in {"calib": (d["xv"], d["gv"]), "eval": (de["xv"], de["gv"])}.items():
         x, g = x.to(dev), g.to(dev)
         y, yq = expert_f(x, W1, W3, W2, g, lim), expert_f(x, a, b, c, g, lim)
         r[k] = {"n": len(x), "err": float((yq - y).square().sum()), "ye": float(y.square().sum())}
     rows.append(r)
     json.dump(rows, open(out_path, "w"))
-    print(f"L{L} e{e} {perm}: calib {r['calib']['err'] / r['calib']['ye']:.4f}  eval {r['eval']['err'] / r['eval']['ye']:.4f}", flush=True)
+    print(f"L{L} e{e} {perm}: calib {r['calib']['err'] / r['calib']['ye']:.4f}  eval {r['eval']['err'] / r['eval']['ye']:.4f}  quantize {r['quant_s']} s", flush=True)
