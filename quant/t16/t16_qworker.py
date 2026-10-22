@@ -8,7 +8,8 @@ PACKDIR/LNN/eNNN.safetensors (atomic rename; its presence marks the expert done)
 (quant/t16/t16_gguf.py) reads:
   L{LL}.e{EEE}.{gate,up,down}.{trellis,suh,svh,mul1}  as quantize_exl3 returns them: trellis I16 [in/16][out/16][16 K]
   for W in (in, out) orientation (gate / up 5120 -> 2304, down 2304 -> 5120), suh F16 [in], svh F16 [out], mul1 I32
-  (0x3A2F), plus the expert's stats as JSON in the file's metadata ("stats").
+  (0x3A2F), plus the expert's stats as JSON in the file's metadata ("stats"): per matrix proxy error, relative weight
+  error wrel, gain <Wq, W> / <W, W> and H-weighted gain_h.
 A restart skips finished experts and first takes back its own claims. Layout (bits gate, up, down): layers 0-19 1.5,
 1.5, 2; layers 20-39 2, 2, 2.5 (gate and up share K). LDLQ damping sigma_reg = T16_SIGMA (default 2). Experts without a
 Hessian (below the chain's --min-fit tokens, or unrouted) use H = I. CUDA_VISIBLE_DEVICES picks the GPU; Q_THREADS
@@ -35,15 +36,20 @@ def layout(L):
 
 
 def exl3(W, H, K, key):
-    """W [out, in] -> exllamav3's tensors for W^T (in, out), proxy error, relative weight error"""
+    """W [out, in] -> exllamav3's tensors for W^T (in, out) and stats: proxy error, relative weight error, and the gains
+    <Wq, W> / <W, W> and (H-weighted, H = the input Hessian) tr(Wq H W^T) / tr(W H W^T): the MSE-optimal Viterbi
+    shrinks the weights toward 0 by ~(1 - wrel), which per-expert output scales can undo later"""
     k = W.shape[1]
     Hm = torch.eye(k, device=dev) if H is None else H.to(dev, torch.float32)
     H_data = {"H": Hm.clone(), "first_key": key, "count": 1, "finalized": False, "num_total": 0,
               "inf_nan": torch.zeros(2, dtype=torch.long, device=dev), "device": dev}
     qa = {"K": K, "seed": 1, "apply_out_scales": None, "devices": [dev], "mul1": True, "sigma_reg": SIGMA}
     wq, proxy, packed = quantize_exl3(W.t().contiguous(), H_data, qa, return_weight_q=True)   # it rewrites its input
-    wrel = float((wq.float() - W.t()).square().sum() / W.square().sum())
-    return packed, float(proxy), wrel
+    Wt, Wq = W.t(), wq.float()
+    HW = Hm @ Wt                                   # (in, out)
+    st = {"proxy": float(proxy), "wrel": float((Wq - Wt).square().sum() / W.square().sum()),
+          "gain": float((Wq * Wt).sum() / Wt.square().sum()), "gain_h": float((Wq * HW).sum() / (Wt * HW).sum())}
+    return packed, st
 
 
 def process(L, f):
@@ -55,7 +61,8 @@ def process(L, f):
           "order": "column-major"}
     out = {}
     for role, Wk, Hk, K in (("gate", "W1", "H1", kg), ("up", "W3", "H1", ku), ("down", "W2", "H2", kd)):
-        packed, st[f"proxy_{role}"], st[f"wrel_{role}"] = exl3(d[Wk].to(dev).float(), d[Hk], K, role)
+        packed, ms = exl3(d[Wk].to(dev).float(), d[Hk], K, role)
+        st.update({f"{n}_{role}": v for n, v in ms.items()})
         for n, t in packed.items():
             out[f"L{L:02d}.e{e:03d}.{role}.{n}"] = t.detach().reshape(()) if n == "mul1" else t.detach()
     out = {k: v.contiguous().cpu() for k, v in out.items()}
