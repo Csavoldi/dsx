@@ -4,7 +4,7 @@ The forward chain (v41_calib.py layer with V41_DUMP_ALL=DUMPDIR) writes every ro
 to DUMPDIR/LNN/eNNN.pt and DUMPDIR/LNN/DONE when a layer is complete. Workers claim experts by renaming the file
 (atomic), quantize gate / up / down with exllamav3's quantize_exl3 on the patched T16 build (on PYTHONPATH), and write
 the dequantized result as Q8_0 in place into GGUF (a v41_gguf.py --rtn q8_0 --experts-in-place file, offsets from
-GGUF.experts.json). STATSDIR/LNN/eNNN.json (proxy errors, bits) marks an expert done; a restart skips those and first
+GGUF.experts.json), and with T16_PACKDIR exllamav3's packed tensors (trellis, suh, svh, mul1) per expert. STATSDIR/LNN/eNNN.json (proxy errors, bits) marks an expert done; a restart skips those and first
 reclaims its own claimed files. CUDA_VISIBLE_DEVICES picks the GPU; Q_THREADS (default 2) caps torch's CPU threads
 (pods cap CPUs by cgroup).
 
@@ -19,6 +19,7 @@ from exllamav3.modules.quant.exl3_lib.quantize import quantize_exl3  # noqa: E40
 
 wid, gguf, dumpdir, statsdir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 SIGMA = float(os.environ.get("T16_SIGMA", "2"))
+PACKDIR = os.environ.get("T16_PACKDIR")   # exllamav3's packed tensors per expert (LNN/eNNN.safetensors), for dsx's T16 reader
 dev = torch.device("cuda:0")
 off = json.load(open(gguf + ".experts.json"))["layers"]
 
@@ -34,8 +35,8 @@ def exl3(W, H, K, key):
     H_data = {"H": Hm.clone(), "first_key": key, "count": 1, "finalized": False, "num_total": 0,
               "inf_nan": torch.zeros(2, dtype=torch.long, device=dev), "device": dev}
     qa = {"K": K, "seed": 1, "apply_out_scales": None, "devices": [dev], "mul1": True, "sigma_reg": SIGMA}
-    wq, proxy, _ = quantize_exl3(W.t().contiguous().float().to(dev), H_data, qa, return_weight_q=True)
-    return wq.t().contiguous().float(), float(proxy)
+    wq, proxy, packed = quantize_exl3(W.t().contiguous().float().to(dev), H_data, qa, return_weight_q=True)
+    return wq.t().contiguous().float(), float(proxy), packed
 
 
 def q8_0(W):
@@ -60,13 +61,24 @@ def process(L, f, fd):
     kg, ku, kd = layout(L)
     o = off[str(L)]["off"][str(e)]
     st = {"L": L, "ex": e, "n_fit": d["n_fit"], "bits": [kg, ku, kd], "sigma_reg": SIGMA, "hessian": d["H1"] is not None}
+    packed = {}
     for role, Wk, Hk, K in (("gate", "W1", "H1", kg), ("up", "W3", "H1", ku), ("down", "W2", "H2", kd)):
         W = d[Wk].to(dev).float()
-        Q, proxy = exl3(W, d[Hk], K, role)
+        Q, proxy, pk = exl3(W, d[Hk], K, role)
+        for n, t in pk.items():   # exllamav3's packed T16 (trellis, suh, svh, mul1 marker) for a native dsx reader
+            packed[f"blk.{L}.ffn_{role}_exps.e{e:03d}.{n}"] = t.detach().contiguous().cpu()
         st[f"proxy_{role}"] = proxy
         st[f"wrel_{role}"] = float((Q - W).square().sum() / W.square().sum())
         b = q8_0(Q)
         os.pwrite(fd, b, o[role])
+    if PACKDIR:
+        from safetensors.torch import save_file
+        pd = os.path.join(PACKDIR, f"L{L:02d}")
+        os.makedirs(pd, exist_ok=True)
+        save_file(packed, os.path.join(pd, f"e{e:03d}.safetensors.tmp"))
+        os.replace(os.path.join(pd, f"e{e:03d}.safetensors.tmp"), os.path.join(pd, f"e{e:03d}.safetensors"))
+        if e == 0:
+            st["packed_shapes"] = {k.split(".", 4)[-1]: [str(v.dtype), list(v.shape)] for k, v in packed.items()}
     st["seconds"] = round(time.time() - t0, 2)
     return e, st
 

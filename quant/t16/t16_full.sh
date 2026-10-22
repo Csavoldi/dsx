@@ -39,7 +39,7 @@ PY
   git fetch -q --depth 1 origin main && git checkout -q FETCH_HEAD
   CUDA_ARCHS=120,90 NVCC=/usr/local/cuda/bin/nvcc cargo build -q --release -p dsx --features cuda > /root/dsx_build.log 2>&1
   flag "DSX-BUILD $?" ) &
-( hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-ud --local-dir /work/dsx-ud --max-workers 16 > /root/dl_ud.log 2>&1; flag "DSXUD-DL $?" ) &
+( until command -v hf >/dev/null; do sleep 10; done; hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-ud --local-dir /work/dsx-ud --max-workers 16 > /root/dl_ud.log 2>&1; flag "DSXUD-DL $?" ) &
 wait $HPID; flag "HYDRATE $?"; tail -3 /root/hydrate.log
 until grep -q "BUILD-t16" /root/t16.flag; do sleep 10; done
 export V41_MODEL=$W/fp8-1017 V41_REF=$W/fp8-1017/inference V41_ROWS=8192 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
@@ -77,11 +77,11 @@ mkdir -p /work/dump $T/stats
   done
   flag TEACHERS-DONE
   python3 $J/teacher_check.py /root/eval /work/lucet/teacher > /root/teacher_check.log 2>&1
-  for k in 0 1 2; do CUDA_VISIBLE_DEVICES=1 Q_THREADS=2 PYTHONPATH=/root/x3t16 TORCH_EXTENSIONS_DIR=/root/ext_t16 \
+  for k in 0 1 2; do CUDA_VISIBLE_DEVICES=1 Q_THREADS=2 T16_PACKDIR=$T/packed PYTHONPATH=/root/x3t16 TORCH_EXTENSIONS_DIR=/root/ext_t16 \
       python3 $J/t16_worker.py 1$k $T/1017-t16q8.gguf /work/dump $T/stats > /root/worker_1$k.log 2>&1 & done
   wait ) > /root/teachers.log 2>&1 &
 for g in 2 3 4 5 6 7; do for k in 0 1 2; do
-  CUDA_VISIBLE_DEVICES=$g Q_THREADS=2 PYTHONPATH=/root/x3t16 TORCH_EXTENSIONS_DIR=/root/ext_t16 \
+  CUDA_VISIBLE_DEVICES=$g Q_THREADS=2 T16_PACKDIR=$T/packed PYTHONPATH=/root/x3t16 TORCH_EXTENSIONS_DIR=/root/ext_t16 \
     python3 $J/t16_worker.py $g$k $T/1017-t16q8.gguf /work/dump $T/stats > /root/worker_$g$k.log 2>&1 &
 done; done
 wait

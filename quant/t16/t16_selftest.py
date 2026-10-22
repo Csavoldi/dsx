@@ -18,7 +18,8 @@ for R, C in ((2304, 5120), (5120, 2304)):
     ok &= same
 W = torch.randn(2304, 5120, device="cuda")
 for K in (1.5, 2, 2.5):
-    Q, proxy = ns["exl3"](W, None, K, "gauss")
+    Q, proxy, pk = ns["exl3"](W, None, K, "gauss")
+    print(f"  packed: {[(n, str(t.dtype), list(t.shape)) for n, t in pk.items()]}", flush=True)
     mse = float((Q.cuda() - W).square().mean())
     print(f"T16 K{K} gaussian mse {mse:.4f} proxy {proxy:.4f}", flush=True)
     ok &= mse < {1.5: 0.15, 2: 0.085, 2.5: 0.055}[K]
