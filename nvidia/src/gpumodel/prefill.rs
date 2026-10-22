@@ -10,6 +10,19 @@
 use super::*;
 use crate::gguf::GType;
 
+/// prefill weight expansion to f16: the 8-wide kernel for the IQ codebook types (GGUF blocks or repacked), else
+/// dequant_f16; same arguments
+fn dq_iq8(ty: i32, cols: usize) -> bool {
+    matches!(ty, 16 | 17 | 19 | 22 | 2016 | 2017 | 2019 | 2022) && cols % 256 == 0
+}
+pub(crate) fn dq_kernel(k: &std::collections::HashMap<&'static str, crate::gpu::Kernel>, ty: i32, cols: usize) -> crate::gpu::Kernel {
+    k[if dq_iq8(ty, cols) { "dequant_f16_iq8" } else { "dequant_f16" }]
+}
+pub(crate) fn dq_grid(ty: i32, rows: usize, cols: usize) -> (u32, u32, u32) {
+    let per = if dq_iq8(ty, cols) { 8 } else { 1 };
+    (((cols / per) as u32).div_ceil(256), rows as u32, 1)
+}
+
 /// staging buffers for streamed experts (copies run ahead of compute by up to NSTAGE - 1 experts)
 const NSTAGE: usize = 4;
 
@@ -85,7 +98,7 @@ impl AuxPrefill {
         let c = &m.cfg;
         let (d, inter) = (c.dim, c.inter);
         let mut k = std::collections::HashMap::new();
-        for n in ["gather_h", "dequant_f16", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16", "add_noise_rows"] {
+        for n in ["gather_h", "dequant_f16", "dequant_f16_iq8", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16", "add_noise_rows"] {
             k.insert(n, g1.kernel(n)?);
         }
         Ok(AuxPrefill {
@@ -219,14 +232,14 @@ impl GpuModel<'_> {
                     g1.launch(gp.k["fwht_rows_f16"], ((d / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(gp.gx16.ptr), Arg::I(d as i32)])?;
                 }
                 for (wp, yp) in [(wg, gp.gg.ptr), (wu, gp.gu.ptr)] {
-                    g1.launch(gp.k["dequant_f16"], ((d as u32).div_ceil(256), inter as u32, 1), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
+                    g1.launch(dq_kernel(&gp.k, gt, d), dq_grid(gt, inter, d), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
                     g1.gemm_f16(gp.gx16.ptr, gp.w16.ptr, yp, nt, d, inter, inter)?;
                 }
                 g1.launch(gp.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(gp.gg.ptr), Arg::P(gp.gu.ptr), Arg::P(w_p), Arg::P(gp.h16.ptr), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
                 if rot {
                     g1.launch(gp.k["fwht_rows_f16"], ((inter / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(gp.h16.ptr), Arg::I(inter as i32)])?;
                 }
-                g1.launch(gp.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
+                g1.launch(dq_kernel(&gp.k, dt, inter), dq_grid(dt, d, inter), 256, 0, &[Arg::I(dt), Arg::P(wd), Arg::P(0), Arg::P(gp.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
                 g1.gemm_f16(gp.h16.ptr, gp.w16.ptr, gp.go.ptr, nt, inter, d, d)?;
                 if let Some(rel) = noise_rel(li) {
                     g1.launch(gp.k["add_noise_rows"], (nt as u32, 1, 1), 256, 0, &[Arg::P(gp.go.ptr), Arg::I(d as i32), Arg::F(rel), Arg::I((li * 1000 + e + 1) as i32)])?;
@@ -280,7 +293,7 @@ impl GpuModel<'_> {
             xin = pb.tmp.ptr;
         }
         g.launch(self.k["to_f16"], ((nx as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(xin), Arg::P(pb.act16.ptr), Arg::I(nx as i32)])?;
-        g.launch(self.k["dequant_f16"], ((cols as u32).div_ceil(256), rows as u32, 1), 256, 0, &[Arg::I(ty), Arg::P(wp), Arg::P(sp), Arg::P(pb.w16.ptr), Arg::I(rows as i32), Arg::I(cols as i32)])?;
+        g.launch(dq_kernel(&self.k, ty, cols), dq_grid(ty, rows, cols), 256, 0, &[Arg::I(ty), Arg::P(wp), Arg::P(sp), Arg::P(pb.w16.ptr), Arg::I(rows as i32), Arg::I(cols as i32)])?;
         g.gemm_f16(pb.act16.ptr, pb.w16.ptr, y, n, cols, rows, rows)
     }
 
@@ -661,7 +674,7 @@ impl GpuModel<'_> {
         // pack x columns into act16 [n][k]
         g.launch(self.k["pack_f16"], ((k as u32).div_ceil(256), n as u32, 1), 256, 0, &[Arg::P(x), Arg::I(ldx as i32), Arg::P(pb.act16.ptr), Arg::I(k as i32)])?;
         let (wp, sp, id) = w.ptrs(r0);
-        g.launch(self.k["dequant_f16"], ((k as u32).div_ceil(256), rows as u32, 1), 256, 0, &[Arg::I(id), Arg::P(wp), Arg::P(sp), Arg::P(pb.w16.ptr), Arg::I(rows as i32), Arg::I(k as i32)])?;
+        g.launch(dq_kernel(&self.k, id, k), dq_grid(id, rows, k), 256, 0, &[Arg::I(id), Arg::P(wp), Arg::P(sp), Arg::P(pb.w16.ptr), Arg::I(rows as i32), Arg::I(k as i32)])?;
         g.gemm_f16(pb.act16.ptr, pb.w16.ptr, y, n, k, rows, ldy)
     }
 
@@ -823,7 +836,7 @@ impl GpuModel<'_> {
         }
         let (sdw, sds, sdid) = sd.ptrs(0);
         if sd.q6.is_none() {
-            self.g.launch(self.k["dequant_f16"], ((sd.cols as u32).div_ceil(256), sd.rows as u32, 1), 256, 0, &[Arg::I(sdid), Arg::P(sdw), Arg::P(sds), Arg::P(pb.w16.ptr), Arg::I(sd.rows as i32), Arg::I(sd.cols as i32)])?;
+            self.g.launch(dq_kernel(&self.k, sdid, sd.cols), dq_grid(sdid, sd.rows, sd.cols), 256, 0, &[Arg::I(sdid), Arg::P(sdw), Arg::P(sds), Arg::P(pb.w16.ptr), Arg::I(sd.rows as i32), Arg::I(sd.cols as i32)])?;
         }
         if sd.act_fp8 {
             // FP8 checkpoint: the down input is fake-quantized to FP8 first (bf16 h -> f32 -> fp8 -> f16)
@@ -875,14 +888,14 @@ impl GpuModel<'_> {
                 }
             };
             for (wp, yp) in [(gp, pb.gg.ptr), (up, pb.gu.ptr)] {
-                self.g.launch(self.k["dequant_f16"], ((d as u32).div_ceil(256), inter as u32, 1), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
+                self.g.launch(dq_kernel(&self.k, gt, d), dq_grid(gt, inter, d), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(inter as i32), Arg::I(d as i32)])?;
                 self.g.gemm_f16(pb.gx16.ptr, pb.w16.ptr, yp, nt, d, inter, inter)?;
             }
             self.g.launch(self.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(pb.gg.ptr), Arg::P(pb.gu.ptr), Arg::P(w_p), Arg::P(pb.h16.ptr), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
             if rot {
                 self.g.launch(self.k["fwht_rows_f16"], ((inter / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(pb.h16.ptr), Arg::I(inter as i32)])?;
             }
-            self.g.launch(self.k["dequant_f16"], ((inter as u32).div_ceil(256), d as u32, 1), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
+            self.g.launch(dq_kernel(&self.k, dt, inter), dq_grid(dt, d, inter), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(pb.w16.ptr), Arg::I(d as i32), Arg::I(inter as i32)])?;
             self.g.gemm_f16(pb.h16.ptr, pb.w16.ptr, pb.go.ptr, nt, inter, d, d)?;
             if let Some(rel) = noise_rel(li) {
                 self.g.launch(self.k["add_noise_rows"], (nt as u32, 1, 1), 256, 0, &[Arg::P(pb.go.ptr), Arg::I(d as i32), Arg::F(rel), Arg::I((li * 1000 + e + 1) as i32)])?;
