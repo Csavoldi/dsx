@@ -67,7 +67,13 @@ def clean(t, dom):
 
 
 def dl(repo, f):
-    return hf_hub_download(repo, f, repo_type="dataset", local_dir=CACHE)
+    """plain HTTPS (a xet download of a Wikipedia shard stalled on .102), cached under CACHE"""
+    p = os.path.join(CACHE, repo.replace("/", "__"), f)
+    if not os.path.exists(p):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        subprocess.run(["curl", "-sfL", "--retry", "5", "-o", p + ".part", f"https://huggingface.co/datasets/{repo}/resolve/main/{f}"], check=True)
+        os.replace(p + ".part", p)
+    return p
 
 
 def agent_swe(out):

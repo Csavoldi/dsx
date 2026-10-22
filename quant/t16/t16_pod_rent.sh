@@ -9,7 +9,7 @@ GPUS=("NVIDIA RTX PRO 6000 Blackwell Server Edition" "NVIDIA RTX PRO 6000 Blackw
 for try in $(seq 1 ${T16_TRIES:-6}); do
   rm -f $ST
   gpu=${GPUS[$(( (try - 1) % ${#GPUS[@]} ))]}
-  timeout 900 python3 $R/quant/rent/pod.py up $ST --name dsx-t16-full1 --gpu "$gpu" --cloud COMMUNITY --disk 850 --tries 1 2>&1 | tail -2
+  timeout 900 python3 $R/quant/rent/pod.py up $ST --name dsx-t16-full1 --gpu "$gpu" --cloud ${T16_CLOUD:-COMMUNITY} --disk 850 --tries 1 2>&1 | tail -2
   [ -f $ST ] || continue
   ip=$(python3 -c "import json; print(json.load(open('$ST'))['ip'])")
   if echo " $SKIP " | grep -q " $ip "; then echo "$ip skip-listed"; python3 $R/quant/rent/pod.py down $ST | tail -1; continue; fi
