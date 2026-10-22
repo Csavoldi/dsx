@@ -465,7 +465,7 @@ impl Decoder {
             // finish the mixes once per token
             g.launch("hc_mix_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pm), Arg::B(bytes(pa)), Arg::P(pre), Arg::B(bytes(prea)), Arg::P(pf.mixd.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32)])?;
             // tokens per block: the 24 mix-weight rows are loaded once per block (2 MB per token otherwise)
-            let tpb = std::env::var("DSXA_HC_TPB").ok().and_then(|v| v.parse().ok()).unwrap_or(if t >= 64 { 8 } else { 1 });
+            let tpb = std::env::var("DSXA_HC_TPB").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
             let mut xo = vec![0u8; 56];
             xo[40..48].copy_from_slice(&pf.mixd.ptr.to_le_bytes());
             xo[48..52].copy_from_slice(&(t as i32).to_le_bytes());
