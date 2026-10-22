@@ -349,9 +349,34 @@ impl Decoder {
             .collect()
     }
 
+    /// bf16 twin of an FP8 activation buffer (written alongside it by prep / write_act)
+    fn bf16_twin(&self, xq: u64) -> Option<u64> {
+        let pf = self.pf.as_ref().unwrap();
+        let pairs = [(&pf.aq, &pf.aqb), (&pf.hq, &pf.hqb), (&pf.shq, &pf.shqb), (&pf.eq, &pf.eqb), (&pf.oq, &pf.oqb)];
+        pairs.iter().find(|(q, _)| xq >= q.ptr && xq < q.ptr + q.bytes as u64).map(|(q, b)| b.ptr + (xq - q.ptr) * 2)
+    }
+
+    /// batched step dense jobs: hipBLAS on the BF16 copies from DSXA_BBLAS_MIN tokens (default 32) when built,
+    /// else bgemv_d
+    pub(crate) fn bdense_launch(&self, label: &str, mut jobs: Vec<crate::verify::VJob>) -> Result<()> {
+        let min: i32 = std::env::var("DSXA_BBLAS_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(32);
+        if jobs.iter().all(|j| j.ntok >= min) {
+            let mut ok = true;
+            for j in jobs.iter_mut() {
+                if j.fmt == 0 {
+                    match self.bf16_twin(j.xq) { Some(b) => j.xb = b, None => ok = false }
+                }
+            }
+            if ok && self.bgemm(label, &jobs)? {
+                return Ok(());
+            }
+        }
+        self.blaunch(label, jobs)
+    }
+
     fn gm(&self, verify: bool, plain: &dyn Fn(&str) -> bool, label: &str, jobs: &[MmJob]) -> Result<()> {
         if self.pf.as_ref().unwrap().bmode.get() && !plain(label) && std::env::var_os("DSXA_BMM").is_none() {
-            return self.blaunch(label, self.as_v(jobs));
+            return self.bdense_launch(label, self.as_v(jobs));
         }
         if verify && !plain(label) { self.vlaunch(label, self.as_v(jobs), self.st.ptr) } else { self.mm_l(label, jobs) }
     }
@@ -439,11 +464,15 @@ impl Decoder {
             let (ev, es) = eng.unwrap_or((0, 0));
             // finish the mixes once per token
             g.launch("hc_mix_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pm), Arg::B(bytes(pa)), Arg::P(pre), Arg::B(bytes(prea)), Arg::P(pf.mixd.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32)])?;
-            let mut xo = vec![0u8; 48];
+            // tokens per block: the 24 mix-weight rows are loaded once per block (2 MB per token otherwise)
+            let tpb = std::env::var("DSXA_HC_TPB").ok().and_then(|v| v.parse().ok()).unwrap_or(if t >= 64 { 8 } else { 1 });
+            let mut xo = vec![0u8; 56];
             xo[40..48].copy_from_slice(&pf.mixd.ptr.to_le_bytes());
+            xo[48..52].copy_from_slice(&(t as i32).to_le_bytes());
+            xo[52..56].copy_from_slice(&(tpb as i32).to_le_bytes());
             g.launch(
                 "hc_step",
-                ((D / 64) as u32, t as u32, 1),
+                ((D / 64) as u32, t.div_ceil(tpb) as u32, 1),
                 256,
                 0,
                 &[Arg::P(pf.h.ptr), Arg::P(y), Arg::I(round as i32), Arg::P(pm), Arg::B(bytes(pa)), Arg::P(pre), Arg::B(bytes(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(xr), Arg::P(xss), Arg::P(ev), Arg::P(es), Arg::P(0), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::B(xo)],
@@ -459,7 +488,20 @@ impl Decoder {
                 if let Some((wkv, qk)) = &l.engram {
                     hc(pf.y.ptr, true, pf.mix_f.ptr, &p.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
                     let ei = c.engram_layers.iter().position(|&x| x == li).unwrap();
-                    g.launch("engram_act_t", (t as u32, 1, 1), 256, 0, &[Arg::P(pf.erows.at(ei * ER)), Arg::I((2 * ER) as i32), Arg::P(pf.eq.ptr), Arg::P(pf.es.ptr), Arg::P(pf.eqb.ptr)])?;
+                    // batched step: rows [table][token][ER]; table 1 arrives from the background fetch now
+                    let (rp, rs) = if let Some(b) = bt {
+                        if ei == 1 {
+                            if let Some(h) = b.eng1.borrow_mut().take() {
+                                let v = h.join().map_err(|_| anyhow::anyhow!("engram fetch thread"))?;
+                                unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), b.eng_pin, v.len()) };
+                                g.htod_async(pf.erows.at(t * ER), b.eng_pin, v.len())?;
+                            }
+                        }
+                        (pf.erows.at(ei * t * ER), ER)
+                    } else {
+                        (pf.erows.at(ei * ER), 2 * ER)
+                    };
+                    g.launch("engram_act_t", (t as u32, 1, 1), 256, 0, &[Arg::P(rp), Arg::I(rs as i32), Arg::P(pf.eq.ptr), Arg::P(pf.es.ptr), Arg::P(pf.eqb.ptr)])?;
                     let mut j = MmJob::dense(wkv, 0, pf.eq.ptr, pf.es.ptr, 6144, pf.ekv.ptr, 25600);
                     j.ntok = t as i32;
                     self.gm(vk, &plain, "mm engram", &[j])?;
@@ -654,7 +696,7 @@ impl Decoder {
                 sj.yatomic = 1;
                 let mut sv = self.as_v(&[sj]);
                 sv[0].atomic = 1;
-                if bt.is_some() { self.blaunch("batch shared down", sv)?; } else { self.vlaunch("verify shared down", sv, self.st.ptr)?; }
+                if bt.is_some() { self.bdense_launch("batch shared down", sv)?; } else { self.vlaunch("verify shared down", sv, self.st.ptr)?; }
                 self.vlaunch("verify experts down", vec![ej(2, D, INTER, pf.hq.ptr, pf.hs.ptr, INTER, pf.y.ptr, D, 1)], self.st.ptr)?;
                 continue;
             }
@@ -745,10 +787,7 @@ impl Decoder {
         let onorm = if draft { dsx.unwrap().norm.ptr } else { self.out_norm.ptr };
         hc(pf.y.ptr, true, pf.mix_f.ptr, &last.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
         if let Some(b) = bt {
-            for lt in 0..t {
-                let (hrow, mrow) = (pf.h.at(lt * HC * D * 4), pf.mix_f.at(lt * 80 * 32 * 4));
-                g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(hrow), Arg::P(mrow), Arg::B(bytes(&last.hc_ffn)), Arg::P(onorm), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(b.xb.at(lt * D * 2)), Arg::P(b.xl.at(lt * D * 2))])?;
-            }
+            g.launch("hc_final_b", (t as u32, 1, 1), 256, 0, &[Arg::P(pf.h.ptr), Arg::P(pf.mix_f.ptr), Arg::B(bytes(&last.hc_ffn)), Arg::P(onorm), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(b.xb.ptr), Arg::P(b.xl.ptr)])?;
             self.batch_head(b, t)?;
             let v: Vec<i32> = g.dtoh(b.next.ptr, t)?;
             return Ok(v.iter().map(|&x| x as u32).collect());

@@ -144,6 +144,8 @@ struct XOut {
     os: u64,
     ob: u64,
     mixd: u64,
+    ntok: i32,
+    tpb: i32,
 }
 
 /// an FP8 activation buffer (codes, scales) + optional bf16 hi / lo copies
@@ -340,6 +342,10 @@ pub struct Decoder {
     pub(crate) dspark: Option<crate::dspark::Dspark>,
     /// verify / draft pass graphs by (tokens, draft, 16K-position bucket)
     pub(crate) vgraphs: std::cell::RefCell<std::collections::HashMap<(usize, bool, usize), Graph>>,
+    /// batched decode, dense GEMMs on hipBLAS: row-major BF16 copies of the dense matrices, as (tiled buffer start,
+    /// its bytes, tiled bytes per row, k, row-major copy); see Decoder::build_bdense
+    pub(crate) bdense: Vec<(u64, usize, usize, usize, Buf)>,
+    pub(crate) blas: Option<crate::hip::blas::Handle>,
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
@@ -471,7 +477,7 @@ pub fn test_hc_step_nosync(g: &Gpu, h: u64, y: u64, pmix: u64, pa: &HcArgs, prem
         ((D / 64) as u32, 1, 1),
         256,
         0,
-        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 48])],
+        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 56])],
     )
 }
 
@@ -482,7 +488,7 @@ pub fn test_hc_step(g: &Gpu, h: u64, y: u64, pmix: u64, pa: &HcArgs, premix: u64
         ((D / 64) as u32, 1, 1),
         256,
         0,
-        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 48])],
+        &[Arg::P(h), Arg::P(y), Arg::I(1), Arg::P(pmix), Arg::B(bytes_of(pa)), Arg::P(premix), Arg::B(bytes_of(prea)), Arg::P(fnw), Arg::P(nmix), Arg::P(x_raw), Arg::P(xss), Arg::P(0), Arg::P(0), Arg::P(0), Arg::F(1e-6), Arg::F(1e-20), Arg::I(20), Arg::B(vec![0u8; 56])],
     )?;
     g.sync()
 }
@@ -730,6 +736,8 @@ impl Decoder {
             hist_tokens: vec![],
             dspark: None,
             vgraphs: Default::default(),
+            bdense: vec![],
+            blas: None,
             pos: 0,
             dump: None,
             etab: vec![],
@@ -1022,7 +1030,7 @@ impl Decoder {
     }
 
     fn xout(&self, l: usize, which: usize, nw: u64, a: &Act) -> XOut {
-        XOut { cnt: self.accp(l, A_CNT + which), nw, oq: a.q.ptr, os: a.s.ptr, ob: a.h.ptr, mixd: 0 }
+        XOut { cnt: self.accp(l, A_CNT + which), nw, oq: a.q.ptr, os: a.s.ptr, ob: a.h.ptr, mixd: 0, ntok: 0, tpb: 0 }
     }
 
     /// gemv2 launch: jobs (split 0 = shared choice) with their post groups; expects are filled from block counts.
@@ -1582,6 +1590,19 @@ impl Decoder {
         Ok(())
     }
 
+    /// The Engram tables (memory-mapped) as a Send handle for fetch threads
+    pub(crate) fn engram_tabs(&self) -> Result<EngTabs> {
+        let c = &self.cfg;
+        let est = self.engram_st.as_ref().context("engram tables")?;
+        let mut tabs = vec![];
+        for &l in &c.engram_layers {
+            let wb = est.bytes(est.get(&format!("layers.{l}.engram.embed.weight"))?);
+            let sb = est.bytes(est.get(&format!("layers.{l}.engram.embed.scale"))?);
+            tabs.push((wb.as_ptr() as usize, wb.len(), sb.as_ptr() as usize, sb.len()));
+        }
+        Ok(EngTabs { c: c.clone(), tabs })
+    }
+
     /// Engram rows of a batched decode step: token i's row from its own history hists[i] (ending with the token)
     pub(crate) fn engram_rows_multi(&self, hists: &[&[i64]], out: &mut [u8]) -> Result<()> {
         use rayon::prelude::*;
@@ -1594,7 +1615,11 @@ impl Decoder {
             let sct = est.get(&format!("layers.{l}.engram.embed.scale"))?;
             tabs.push((est.bytes(wt), est.bytes(sct)));
         }
-        out.par_chunks_mut(2 * ENG_ROW_BYTES).zip(hists.par_iter()).for_each(|(o, h)| {
+        // the row reads are random page-cache misses on NVMe (the tables exceed RAM): many threads keep many reads in
+        // flight (rayon's ~20 left a 256-token step waiting 30-90 ms)
+        let nth: usize = std::env::var("DSXA_ENG_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+        let per = hists.len().div_ceil(nth).max(1);
+        let one = |o: &mut [u8], h: &[i64]| {
             for (ei, (wb, sb)) in tabs.iter().enumerate() {
                 let ids = engram_hashes(c, h, ei);
                 let ob = &mut o[ei * ENG_ROW_BYTES..(ei + 1) * ENG_ROW_BYTES];
@@ -1603,6 +1628,20 @@ impl Decoder {
                     ob[r * 256..(r + 1) * 256].copy_from_slice(&wb[id * hd..id * hd + 256]);
                     ob[24 * 256 + r * 8..24 * 256 + r * 8 + 8].copy_from_slice(&sb[id * (hd / 32)..id * (hd / 32) + 8]);
                 }
+            }
+        };
+        if hists.len() <= 4 {
+            out.par_chunks_mut(2 * ENG_ROW_BYTES).zip(hists.par_iter()).for_each(|(o, h)| one(o, h));
+            return Ok(());
+        }
+        std::thread::scope(|sc| {
+            for (oc, hc) in out.chunks_mut(2 * ENG_ROW_BYTES * per).zip(hists.chunks(per)) {
+                let one = &one;
+                sc.spawn(move || {
+                    for (o, h) in oc.chunks_mut(2 * ENG_ROW_BYTES).zip(hc) {
+                        one(o, h);
+                    }
+                });
             }
         });
         Ok(())
@@ -1757,6 +1796,41 @@ impl Decoder {
 }
 
 /// model.py NgramHashState for engram layer `li`: hash ids of the 2..max_ngram n-grams ending at the newest token
+/// Engram tables by raw pointer into the decoder's memory maps (which live as long as the decoder): sendable to the
+/// batched step's background fetch
+pub(crate) struct EngTabs {
+    c: Config,
+    tabs: Vec<(usize, usize, usize, usize)>,
+}
+unsafe impl Send for EngTabs {}
+unsafe impl Sync for EngTabs {}
+
+impl EngTabs {
+    /// rows of table ei ([24 x 256 B][24 x 8 B]) for each history tail (ending with the new token) into out [n][ER]
+    pub(crate) fn fetch(&self, hists: &[Vec<i64>], ei: usize, out: &mut [u8]) {
+        let c = &self.c;
+        let hd = c.engram_dim;
+        let (wp, wl, sp, sl) = self.tabs[ei];
+        let (wb, sb) = unsafe { (std::slice::from_raw_parts(wp as *const u8, wl), std::slice::from_raw_parts(sp as *const u8, sl)) };
+        // random page-cache misses on NVMe (the tables exceed RAM): many threads keep many reads in flight
+        let nth: usize = std::env::var("DSXA_ENG_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+        let per = hists.len().div_ceil(nth).max(1);
+        std::thread::scope(|sc| {
+            for (oc, hc) in out.chunks_mut(ENG_ROW_BYTES * per).zip(hists.chunks(per)) {
+                sc.spawn(move || {
+                    for (ob, h) in oc.chunks_mut(ENG_ROW_BYTES).zip(hc) {
+                        for (r, &id) in engram_hashes(c, h, ei).iter().enumerate() {
+                            let id = id as usize;
+                            ob[r * 256..(r + 1) * 256].copy_from_slice(&wb[id * hd..id * hd + 256]);
+                            ob[24 * 256 + r * 8..24 * 256 + r * 8 + 8].copy_from_slice(&sb[id * (hd / 32)..id * (hd / 32) + 8]);
+                        }
+                    }
+                });
+            }
+        });
+    }
+}
+
 pub fn engram_hashes(c: &Config, hist: &[i64], li: usize) -> Vec<u64> {
     let n = c.engram_ngram;
     let t = hist.len() - 1;

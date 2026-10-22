@@ -206,7 +206,7 @@ impl Gpu {
     }
 
     /// profiling: a start event for the next stream operation, and its end event to record after it
-    fn prof_begin(&self, name: &str) -> Result<Option<hipEvent_t>> {
+    pub(crate) fn prof_begin(&self, name: &str) -> Result<Option<hipEvent_t>> {
         let mut prof = self.prof.lock().unwrap();
         Ok(if let Some(p) = prof.as_mut() {
             let (mut a, mut b) = (std::ptr::null_mut(), std::ptr::null_mut());
@@ -222,7 +222,7 @@ impl Gpu {
         })
     }
 
-    fn prof_finish(&self, ev: Option<hipEvent_t>) -> Result<()> {
+    pub(crate) fn prof_finish(&self, ev: Option<hipEvent_t>) -> Result<()> {
         if let Some(b) = ev {
             ck(unsafe { hipEventRecord(b, self.stream) }, "hipEventRecord")?;
         }

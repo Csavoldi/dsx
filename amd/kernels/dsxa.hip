@@ -163,6 +163,7 @@ struct XOut {
     float* os;
     uint16_t* ob;
     const float* mixd;  // prompt path: per-token finished mixes (hc_mix_t), replaces pmix/premix finishing
+    int ntok, tpb;      // prompt path: tokens, and tokens per block (blockIdx.y covers tokens y*tpb ..; 0: one per block)
 };
 
 // Residual-stream step between sub-blocks, one block per 64 dims (grid D/64, 256 threads: thread = stream*64 + dim):
@@ -170,42 +171,48 @@ struct XOut {
 //   engram (optional): h[k] = bf16(h[k] + gate[k] * value)                   gate from engram sums
 //   x_raw = bf16(sum_k pre[k] h[k]); xss += sum x_raw^2                      pre from `premix` (or one-hot if null)
 //   nmix[0..24) += fn . h; nmix[24] += sum h^2                              raw dots for the next sub-block's mixes
-extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h, const float* __restrict__ y, int round_y,
-                                               const float* pmix, HcArgs pa, const float* premix, HcArgs prea,
-                                               const float* __restrict__ fn, float* nmix, float* x_raw, float* xss,
-                                               const float* eng_val, const float* eng_sum, const float* eng_qk_unused,
+extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h0, const float* __restrict__ y0, int round_y,
+                                               const float* pmix0, HcArgs pa, const float* premix0, HcArgs prea,
+                                               const float* __restrict__ fn, float* nmix0, float* x_raw0, float* xss0,
+                                               const float* eng_val0, const float* eng_sum0, const float* eng_qk_unused,
                                                float hc_eps, float eps, int iters, XOut xo) {
-    {
-        // prompt path: token blockIdx.y of a batch (decode: 0)
-        const int ty = blockIdx.y;
-        h += (size_t)ty * HC * D;
-        if (y) y += (size_t)ty * D;
-        if (pmix) pmix += (size_t)ty * NPART * 32;
-        if (premix) premix += (size_t)ty * NPART * 32;
-        if (nmix) nmix += (size_t)ty * NPART * 32;
-        if (x_raw) x_raw += (size_t)ty * D;
-        if (xss) xss += (size_t)ty * NPART;
-        if (eng_val) eng_val += (size_t)ty * 25600;
-        if (eng_sum) eng_sum += (size_t)ty * 16;
-    }
     __shared__ float hs[HC][64];
     __shared__ float post[4], comb[16], pre[4];
     __shared__ float m0[32], m1[32];
     __shared__ float red[4][32];
+#ifdef HC_LDSRED
     __shared__ float prod[25][257];
+#else
+    __shared__ float red25[4][25];
+#endif
     const int k = threadIdx.x >> 6, i = threadIdx.x & 63, d = blockIdx.x * 64 + i;
-    // the next mixes' weights do not depend on h: start their loads first
+    // the next mixes' weights do not depend on h: loaded once, used for every token of the block
     float fw[24];
-    if (nmix) {
+    if (nmix0) {
 #pragma unroll
         for (int j = 0; j < 24; j++) fw[j] = fn[(size_t)j * HC * D + k * D + d];
     }
+    const int tpb = xo.tpb > 0 ? xo.tpb : 1, ntok = xo.ntok > 0 ? xo.ntok : (int)gridDim.y * tpb;
+    for (int tt = 0; tt < tpb; tt++) {
+    // prompt path: token ty of a batch (decode: 0)
+    const int ty = blockIdx.y * tpb + tt;
+    if (ty >= ntok) break;
+    __syncthreads();
+    float* h = h0 + (size_t)ty * HC * D;
+    const float* y = y0 ? y0 + (size_t)ty * D : nullptr;
+    const float* pmix = pmix0 ? pmix0 + (size_t)ty * NPART * 32 : nullptr;
+    const float* premix = premix0 ? premix0 + (size_t)ty * NPART * 32 : nullptr;
+    float* nmix = nmix0 ? nmix0 + (size_t)ty * NPART * 32 : nullptr;
+    float* x_raw = x_raw0 ? x_raw0 + (size_t)ty * D : nullptr;
+    float* xss = xss0 ? xss0 + (size_t)ty * NPART : nullptr;
+    const float* eng_val = eng_val0 ? eng_val0 + (size_t)ty * 25600 : nullptr;
+    const float* eng_sum = eng_sum0 ? eng_sum0 + (size_t)ty * 16 : nullptr;
     {
         const int w = threadIdx.x >> 6, ln = threadIdx.x & 63;
 #ifndef HC_NOFIN
         if (xo.mixd) {
             // prompt path: mixes finished once per token by hc_mix_t: [token][2][24] = (pre, post, comb) of pmix, premix
-            const float* md = xo.mixd + (size_t)blockIdx.y * 48;
+            const float* md = xo.mixd + (size_t)ty * 48;
             if (threadIdx.x < 16) comb[threadIdx.x] = md[8 + threadIdx.x];
             if (threadIdx.x < 4) { post[threadIdx.x] = md[4 + threadIdx.x]; pre[threadIdx.x] = premix ? md[24 + threadIdx.x] : (threadIdx.x == 0 ? 1.f : 0.f); }
         } else
@@ -257,6 +264,7 @@ extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h,
     // next sub-block's mix dots: 24 rows of fn over this block's 4x64 h values + sum h^2
     // next sub-block's mix dots: 24 rows of fn over this block's 4x64 h values + sum h^2, reduced through LDS
     if (nmix) {
+#ifdef HC_LDSRED
         const int t = threadIdx.x;
 #pragma unroll
         for (int j = 0; j < 24; j++) prod[j][t] = fw[j] * hv;
@@ -271,6 +279,17 @@ extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h,
             sacc = group_sum<8>(sacc);
             if (q == 0) nmix[blockIdx.x * 32 + j] = sacc;
         }
+#else
+        // 25 sums of 256: wave sums (one wave per stream k), then the 4 waves through LDS (small LDS: more blocks
+        // per CU; this kernel is latency-bound)
+#pragma unroll
+        for (int j = 0; j < 25; j++) {
+            const float sv = wave_sum(j < 24 ? fw[j] * hv : hv * hv);
+            if (i == 0) red25[k][j] = sv;
+        }
+        __syncthreads();
+        if (threadIdx.x < 25) nmix[blockIdx.x * 32 + threadIdx.x] = red25[0][threadIdx.x] + red25[1][threadIdx.x] + red25[2][threadIdx.x] + red25[3][threadIdx.x];
+#endif
     }
     if (xo.cnt) {
         __shared__ int last;
@@ -287,12 +306,25 @@ extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h,
             write_act(D, [&](int j) -> float { return round_bf16(xo.nw[j] * (ld_dev(x_raw + j) * r)); }, xo.oq, xo.os, xo.ob);
         }
     }
+    }  // tokens
 }
 
 // The final norm input: x = bf16(sum_k pre[k] h[k]) with pre from the last ffn mixes, into xf (f32, for the head).
+DEV void hc_final_body(const float* __restrict__ h, const float* premix, HcArgs prea, const float* norm_w, float* xout,
+                       float hc_eps, float eps, int iters, uint8_t* oq, float* os, uint16_t* oh, uint16_t* ol);
 extern "C" __global__ void __launch_bounds__(256) hc_final(const float* __restrict__ h, const float* premix, HcArgs prea,
                                                 const float* norm_w, float* xout, float hc_eps, float eps, int iters,
                                                 uint8_t* oq, float* os, uint16_t* oh, uint16_t* ol) {
+    hc_final_body(h, premix, prea, norm_w, xout, hc_eps, eps, iters, oq, os, oh, ol);
+}
+// batched decode: block per token (h [t][HC][D], mixes [t][NPART*32], bf16 hi / lo rows [t][D]; no f32 / FP8 output)
+extern "C" __global__ void __launch_bounds__(256) hc_final_b(const float* __restrict__ h, const float* premix, HcArgs prea,
+                                                  const float* norm_w, float hc_eps, float eps, int iters, uint16_t* oh, uint16_t* ol) {
+    const size_t t = blockIdx.x;
+    hc_final_body(h + t * HC * D, premix + t * NPART * 32, prea, norm_w, nullptr, hc_eps, eps, iters, nullptr, nullptr, oh + t * D, ol + t * D);
+}
+DEV void hc_final_body(const float* __restrict__ h, const float* premix, HcArgs prea, const float* norm_w, float* xout,
+                       float hc_eps, float eps, int iters, uint8_t* oq, float* os, uint16_t* oh, uint16_t* ol) {
     __shared__ float pre[4];
     __shared__ float red[16];
     __shared__ float m0[32];
@@ -316,7 +348,7 @@ extern "C" __global__ void __launch_bounds__(256) hc_final(const float* __restri
     for (int u = 0; u < D / 256; u++) {
         const int d = u * 256 + threadIdx.x;
         const float x = norm_w[d] * (xv[u] * r);
-        xout[d] = x;
+        if (xout) xout[d] = x;
         if (oh) {
             const uint32_t hb = bf16_bits(x);
             oh[d] = (uint16_t)hb;
