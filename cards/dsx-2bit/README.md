@@ -29,11 +29,12 @@ exact routing. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engi
 
 | Build | Made for | Download | KL / top-1 vs FP8 | Decode |
 |---|---|---|---:|---:|
-| [**dsx-ud**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud) (recommended) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 305 GB, Engram and tokenizer inside | 0.269 / 78.9% | 27-29.5 tok/s (32-36 with `--defer-rank 3`) |
+| [**dsx-t16**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16) (recommended) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 302 GB, Engram and tokenizer inside | 0.194 / 81.4% | 34.9 tok/s (36.8 with `--defer-rank 3`) |
+| [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 305 GB, Engram and tokenizer inside | 0.272 / 79.0% | 27-29.5 tok/s (32-36 with `--defer-rank 3`) |
 | [dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 148 GB + the official Engram shards (203 GB) | 0.373 / 74.4% | ~29 tok/s (35.7 with `--defer-rank 3`) |
 | [dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4) | 1x AMD Instinct MI325X (256 GiB) | 270 GB + the official Engram shards (203 GB) | 0.049 / 90.6% | 110-114 tok/s |
 
-All three run on [dsx](https://github.com/lxe/dsx) and were measured on the same eval
+All four run on [dsx](https://github.com/lxe/dsx) and were measured on the same eval
 ([Lucebox 1017](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF), 8 x 1,024 tokens against the FP8
 model's top-256 log-probs).
 

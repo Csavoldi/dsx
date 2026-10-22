@@ -1,11 +1,11 @@
 <h1 align="center">dsx</h1>
 
 <p align="center"><b>DeepSeek-V4.1-Flash-1017 (552 B + 196 B Engram) on your old gaming PC</b><br>
-two RTX 3090s and 128 GB of RAM · 32-36 tokens/s · full routing, no expert pruning · OpenAI- and
+two RTX 3090s and 128 GB of RAM · ~35 tokens/s · full routing, no expert pruning · OpenAI- and
 Anthropic-compatible API · chat in the browser, pictures, thinking levels</p>
 
 <p align="center">
-<a href="https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--ud-yellow" alt="Model: dsx-ud"></a>
+<a href="https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--t16-yellow" alt="Model: dsx-t16"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust"></a>
 <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-13-76B900?logo=nvidia" alt="CUDA 13"></a>
@@ -18,36 +18,39 @@ drive. It's an engine written in Rust and CUDA for this one model. The experts e
 the next ones in RAM where the CPU computes them, and the GPUs and CPU hand each layer back and forth without stalling
 each other.
 
-- **Fast:** 32-36 tokens/s writing the answer and ~370 tokens/s reading a 3,000-token prompt on two RTX 3090s.
-- **Close to the original:** the same next token as the FP8 model 78-79% of the time on the Lucebox eval.
+- **Fast:** ~35 tokens/s writing the answer and ~365 tokens/s reading a 3,000-token prompt on two RTX 3090s.
+- **Close to the original:** the same next token as the FP8 model 81% of the time on the Lucebox eval, with dsx's own T16 experts.
 - **One download:** one 305 GB GGUF in 5 shards, with the Engram table and tokenizer inside.
 - **Plugs into your tools:** OpenAI- and Anthropic-compatible API with streaming, ready for coding agents.
 - **Everything in the box:** a chat in the browser, pictures, thinking on or off, effort levels.
 
 ## The model
 
-https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud
+https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16
 
-One 305 GB download in 5 GGUF shards. The routed experts are 1-2 bit, from
-[Unsloth](https://github.com/unslothai/unsloth)'s [UD-IQ1_M](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF).
-The dense weights are Q8_0 and the Engram table is Q6_K, and the tokenizer and vision tower are included.
+One 302 GB download in 4 GGUF shards. The routed experts are in T16, dsx's own trellis format (exllamav3's bitshift
+trellis with a codebook made for desktop CPUs, [docs/t16.md](docs/t16.md)) at 1.5-2.5 bits, quantized from DeepSeek's
+original weights. The dense weights are Q8_0 and the Engram table is Q6_K, and the tokenizer and vision tower are
+included.
 
 Against the FP8 model on the [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) eval
-(8 x 1,024 tokens), it picks the same next token 78.9% of the time, with KL 0.269 and perplexity 10.13 (FP8: 8.56).
-With `--defer-rank 3`, which is faster, those are 78.2%, KL 0.284 and perplexity 10.25.
+(8 x 1,024 tokens), it picks the same next token 81.4% of the time, with KL 0.194 and perplexity 9.60 (FP8: 8.56).
+That is 28% lower KL than [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud), the same size with
+[Unsloth](https://github.com/unslothai/unsloth)'s [UD-IQ1_M](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)
+experts (KL 0.272), which dsx also runs.
 
 ## How fast is it?
 
-On two RTX 3090s (24 GB each) with an i7-12700K and 128 GB of DDR4, dsx writes **32-36 tokens/s** with
-`--defer-rank 3` and 27-29.5 without it. It reads a 3,000-token prompt at ~370 tokens/s, and a 340-token prompt in
-4.0 s. On the same PC, the same expert weights run at 12 tokens/s in llama.cpp.
+On two RTX 3090s (24 GB each) with an i7-12700K and 128 GB of DDR4, dsx writes **34.9 tokens/s** with T16 and 36.8 with
+`--defer-rank 3`. It reads a 3,000-token prompt at ~365 tokens/s. On the same PC, Unsloth's UD-IQ1_M runs at 12 tokens/s
+in llama.cpp.
 
 ## Quick start
 
 Download the build (the Engram table and tokenizer are inside it):
 
 ```bash
-hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-ud --local-dir dsx-ud
+hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --local-dir dsx-t16
 ```
 
 Build for your GPU (`CUDA_ARCHS` from the table under [Requirements](#requirements)) and start the server:
@@ -56,15 +59,15 @@ Build for your GPU (`CUDA_ARCHS` from the table under [Requirements](#requiremen
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 
 ./target/release/dsx-server \
-  --model dsx-ud/DeepSeek-V4.1-Flash-1017-dsx-ud-00001-of-00005.gguf \
-  --rank dsx-ud/expert-rank.json \
+  --model dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf \
+  --rank dsx-t16/expert-rank.json \
   --ctx 131072 \
   --arena-gb 110 \
   --defer-rank 3 \
   --host 0.0.0.0 --port 8090
 ```
 
-`--defer-rank 3` trades a little quality for speed (see [The model](#the-model)); leave it out for the best quality.
+`--defer-rank 3` trades a little quality for speed; leave it out for the best quality.
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI client at `http://localhost:8090/v1` (Anthropic
 clients at `http://localhost:8090`):
@@ -180,7 +183,7 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 
 | | |
 |---|---|
-| `--defer-rank R` | add the CPU's lower-ranked experts (router rank R or lower, 0 = best of 6) one layer later instead of waiting for them. `--defer-rank 3`: decode 27-29.5 → 32-36 tok/s on 2x RTX 3090, KL 0.269 → 0.284 against the FP8 model. Off by default because outputs change slightly |
+| `--defer-rank R` | add the CPU's lower-ranked experts (router rank R or lower, 0 = best of 6) one layer later instead of waiting for them. `--defer-rank 3` on 2x RTX 3090: dsx-t16 34.9 → 36.8 tok/s; dsx-ud 27-29.5 → 32-36 tok/s, KL 0.269 → 0.284 against the FP8 model. Off by default because outputs change slightly |
 
 Settings by machine (the flags are explained in [docs/placement.md](docs/placement.md)):
 
@@ -254,7 +257,7 @@ to run.
 
 ## Credits
 
-[Unsloth](https://github.com/unslothai/unsloth) for the expert weights in dsx-ud, from their [UD-IQ1_M GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) · [DeepSeek](https://huggingface.co/deepseek-ai) for the model (MIT) ·
+[exllamav3](https://github.com/turboderp-org/exllamav3) (turboderp, MIT) for the trellis quantizer T16 patches · [Unsloth](https://github.com/unslothai/unsloth) for the expert weights in dsx-ud, from their [UD-IQ1_M GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) · [DeepSeek](https://huggingface.co/deepseek-ai) for the model (MIT) ·
 [Xolotl / Strata](https://github.com/Indras-Mirror/Xolotl) for the GSQ tools and V4.1 GGUF format (MIT; derived files in `quant/v41` carry its license) ·
 DeepSeek for the reference `model.py` the calibration runs · GPTQ ([Frantar et al.](https://arxiv.org/abs/2210.17323)) ·
 [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) for the eval set ·
