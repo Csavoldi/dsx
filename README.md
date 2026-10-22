@@ -11,7 +11,8 @@ at full routing on a desktop with two RTX 3090s, 128 GB of RAM and an NVMe drive
 for this one model. It runs three builds:
 
 - [**lxe/DeepSeek-V4.1-Flash-1017-dsx-ud**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud): Unsloth's
-  UD-IQ1_M routed experts with dsx's Q8_0 dense weights and the official FP8 Engram. The best quality.
+  UD-IQ1_M routed experts with dsx's Q8_0 dense weights and the official Engram table at Q6_K, in one download. The
+  best quality.
 - [unsloth/DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) `UD-IQ1_M`,
   as downloaded: the smallest download, Engram included.
 - [lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit): dsx's own
@@ -19,27 +20,22 @@ for this one model. It runs three builds:
 
 | 2x RTX 3090, 128 GB DDR4 | dsx-ud | Unsloth UD-IQ1_M as-is | dsx-2bit |
 |---|---:|---:|---:|
-| Download | 142 GB + 203 GB official Engram | 250 GB | 148 GB + 203 GB official Engram |
-| Decode, 3K-token prompt | 27-28.5 tok/s | 27-29.5 tok/s | 29.5 tok/s |
-| Decode with `--defer-rank 3` | 31.5 tok/s | 31-31.7 tok/s | 35.7 tok/s |
-| KL vs the FP8 model (Lucebox eval) | 0.270 (0.283 with deferral) | 0.277 | 0.373 |
-| Top-1 agreement with the FP8 model | 79.0% | 78.0% | 74.4% |
+| Download | 303 GB, Engram and tokenizer included | 250 GB | 148 GB + 203 GB official Engram |
+| Decode, 3K-token prompt | 27-29.5 tok/s | 27-29.5 tok/s | 29.5 tok/s |
+| Decode with `--defer-rank 3` | 32-36 tok/s | 31-31.7 tok/s | 35.7 tok/s |
+| KL vs the FP8 model (Lucebox eval) | 0.269 (0.284 with deferral) | 0.277 | 0.373 |
+| Top-1 agreement with the FP8 model | 78.9% | 78.0% | 74.4% |
 | Perplexity (FP8 model: 8.56) | 10.13 | 10.11 | 10.68 |
 
 For comparison, Unsloth's UD-IQ1_M in llama.cpp on the same machine: KL 0.275, top-1 78.8%, 12.3 tok/s decode.
-Unsloth's file needs no `--engram`: dsx reads its Engram table from the GGUF.
+dsx-ud and Unsloth's file need no `--engram`: dsx reads the Engram table from the GGUF.
 
 ## Quick start
 
-Download the build, plus the Engram tables and tokenizer from the official checkpoint:
+Download the build (the Engram table and tokenizer are inside it):
 
 ```bash
 hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-ud --local-dir dsx-ud
-hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
-  --include model.safetensors.index.json \
-            model-00047-of-00048.safetensors \
-            model-00048-of-00048.safetensors \
-            tokenizer.json
 ```
 
 Build for your GPU (`CUDA_ARCHS` from the table under [Requirements](#requirements)) and start the server:
@@ -48,9 +44,7 @@ Build for your GPU (`CUDA_ARCHS` from the table under [Requirements](#requiremen
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 
 ./target/release/dsx-server \
-  --model dsx-ud/DeepSeek-V4.1-Flash-1017-dsx-ud-00001-of-00004.gguf \
-  --engram v41-1017 \
-  --tokenizer v41-1017/tokenizer.json \
+  --model dsx-ud/DeepSeek-V4.1-Flash-1017-dsx-ud-00001-of-00005.gguf \
   --rank dsx-ud/expert-rank.json \
   --ctx 131072 \
   --arena-gb 110 \
@@ -58,8 +52,11 @@ CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
   --host 0.0.0.0 --port 8090
 ```
 
-`--defer-rank 3` trades a little quality for speed (see the table); leave it out for the best quality. For dsx's own
-quant, use `dsx-2bit` and its file names in place of `dsx-ud`.
+`--defer-rank 3` trades a little quality for speed (see the table); leave it out for the best quality. dsx's own
+quant (`dsx-2bit`) reads Engram and the tokenizer from the official checkpoint: download them with
+`hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 --include model.safetensors.index.json
+model-00047-of-00048.safetensors model-00048-of-00048.safetensors tokenizer.json` and add
+`--engram v41-1017 --tokenizer v41-1017/tokenizer.json`.
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI client at `http://localhost:8090/v1` (Anthropic
 clients at `http://localhost:8090`):
@@ -123,7 +120,7 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 | CUDA | 13 |
 | RAM | 128 GB |
 | CPU | x86 with AVX2 (AVX-VNNI or AVX-512 VNNI preferred) |
-| Disk | ~350 GB: the quant (148 GB) + the Engram shards (203 GB) |
+| Disk | ~305 GB for dsx-ud (Engram included); ~350 GB for dsx-2bit (148 GB + the official Engram shards, 203 GB) |
 
 | GPU | `CUDA_ARCHS` | Status |
 |---|---|---|
@@ -134,15 +131,16 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 
 ## Parameters
 
-`dsx-server` needs `--model`, `--engram` and `--tokenizer`; every other option has a default.
+`dsx-server` needs `--model`; every other option has a default. Builds without the Engram table and tokenizer inside
+(dsx-2bit) also need `--engram` and `--tokenizer`.
 
 **Model files**
 
 | | |
 |---|---|
 | `--model` | the quant's first GGUF shard (the others load from beside it) |
-| `--engram` | directory with the official checkpoint's Engram shards (`model-00047/00048-of-00048.safetensors`) |
-| `--tokenizer` | the official `tokenizer.json` |
+| `--engram` | directory with the official checkpoint's Engram shards (`model-00047/00048-of-00048.safetensors`), or a GGUF holding the table; default: the table in the model GGUF |
+| `--tokenizer` | the official `tokenizer.json`; default: the one stored in the model GGUF |
 | `--rank` | expert hotness order (`expert-rank.json` in the quant repo) |
 | `--vision` / `--no-vision` | image input (default: `vision.safetensors` beside the model); `--no-vision` for text only |
 

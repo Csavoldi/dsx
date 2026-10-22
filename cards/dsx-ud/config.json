@@ -1,28 +1,44 @@
 {
   "base_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
-  "format": "dsx GGUF, 4 shards (llama.cpp split naming); load the first",
+  "format": "dsx GGUF, 5 shards (llama.cpp split naming); load the first. Shards 1-4: the model; shard 5: the Engram table",
   "runtime": "https://github.com/lxe/dsx",
   "quantization": {
     "routed_experts": "Unsloth UD-IQ1_M tensors, unchanged (unsloth/DeepSeek-V4.1-Flash-1017-GGUF revision 60ad3651): IQ1_S, IQ2_XXS, IQ2_XS, IQ2_S per tensor",
     "dense": "Q8_0 (from dsx 2-bit v4b)",
-    "engram": "not included; read from the official checkpoint's model-00047/00048 shards",
+    "engram": "Q6_K (ggml), from the official FP8 Engram tables (bf16-rounded); per_layer_token_embd.weight [256 x 768022850], shard 5",
     "rotation": "none"
   },
   "files": {
     "gguf": [
-      "DeepSeek-V4.1-Flash-1017-dsx-ud-00001-of-00004.gguf",
-      "DeepSeek-V4.1-Flash-1017-dsx-ud-00002-of-00004.gguf",
-      "DeepSeek-V4.1-Flash-1017-dsx-ud-00003-of-00004.gguf",
-      "DeepSeek-V4.1-Flash-1017-dsx-ud-00004-of-00004.gguf"
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00001-of-00005.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00002-of-00005.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00003-of-00005.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00004-of-00005.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-ud-00005-of-00005.gguf"
     ],
     "expert_rank": "expert-rank.json",
     "vision": "vision.safetensors"
   },
   "quality": {
     "eval": "Lucebox 1017 set, 8 x 1024 tokens vs FP8 top-256 log-probs",
-    "kl": 0.2703,
-    "top1": 0.790,
+    "kl": 0.2694,
+    "top1": 0.789,
     "perplexity": 10.13,
-    "defer_rank_3": {"kl": 0.2833, "top1": 0.784, "perplexity": 10.24}
-  }
+    "defer_rank_3": {
+      "kl": 0.2841,
+      "top1": 0.782,
+      "perplexity": 10.25
+    },
+    "engram_fp8_instead": {
+      "kl": 0.2703,
+      "top1": 0.79,
+      "perplexity": 10.13
+    },
+    "engram_iq4_nl_instead": {
+      "kl": 0.2767,
+      "top1": 0.783,
+      "perplexity": 10.18
+    }
+  },
+  "tokenizer": "official tokenizer.json stored in shard 1 as the string key dsx.tokenizer_json"
 }
