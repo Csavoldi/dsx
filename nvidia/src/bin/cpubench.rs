@@ -159,6 +159,26 @@ fn main() {
     let nexp = if quick { 12 } else { 64 };
     let mut rng = Rng(0x2545f4914f6cdd1d);
     use GType::*;
+    // ud=MODEL.gguf: only the mixed layer, with the (gate/up, down) types of that model's 40 layers, e.g. Unsloth UD-IQ1_M
+    if let Some(path) = std::env::args().find_map(|a| a.strip_prefix("ud=").map(str::to_string)) {
+        let g = dsx::gguf::Gguf::open(std::path::Path::new(&path)).expect("ud= model");
+        let nl = g.u64("deepseek41.num_hidden_layers").or_else(|_| g.u64("deepseek4.block_count")).unwrap_or(40) as usize;
+        let pairs: Vec<(GType, GType)> = (0..nl)
+            .filter_map(|l| Some((g.tensors.get(&format!("blk.{l}.ffn_gate_exps.weight"))?.ty, g.tensors.get(&format!("blk.{l}.ffn_down_exps.weight"))?.ty)))
+            .collect();
+        let exs = make(&pairs, 64, &mut rng);
+        let ew = views(&exs);
+        let per6: f64 = ew.iter().map(|e| e.bytes()).sum::<usize>() as f64 / ew.len() as f64 * 6.0 / 1e6;
+        println!("ud mix of {} layers: {per6:.1} MB of weights per 6-expert call, pool of 64", pairs.len());
+        for th in [14usize, 20] {
+            let mut moe = CpuMoe::new(Pool::new(&cpus(th), Duration::from_millis(5)));
+            for _ in 0..2 {
+                let (gb, ms) = layer_rate(&mut moe, &ew, 1, 5, &mut rng);
+                println!("  {th:2} threads T=1: {ms:.3} ms per 6-expert call ({gb:.1} GB/s)");
+            }
+        }
+        return;
+    }
 
     // in-cache single-thread kernel rate on a P-core: the compute ceiling per thread
     dsx::cpu::pool::pin_to(0);
