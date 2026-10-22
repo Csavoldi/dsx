@@ -46,6 +46,35 @@ Against the FP8 model on the [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V
 
 A 340-token prompt is read in 4.0 s. On the same PC, the same expert weights run at 12 tokens/s in llama.cpp.
 
+## How it works
+
+The model has 15,360 experts (384 in each of its 40 layers), and each token uses 6 per layer. Together they take far
+more memory than two GPUs have, so dsx spreads them over everything the PC has and keeps each one where it's cheapest
+to run.
+
+- **Hot experts on the GPUs, the rest in RAM:** a ranking from calibration text says which experts the model picks
+  most. The hottest fill the GPUs, the next ~110 GB go into RAM, where the CPU computes them, and the few coldest stay
+  in the file on the SSD. On two RTX 3090s, about three of every four expert picks land on a GPU.
+- **It follows your conversation:** after every token, dsx counts which experts were used and swaps a few hot ones
+  from RAM onto the main GPU in the background, replacing ones that went cold. A coding session and a chat about
+  history end up with different experts on the card.
+- **It measures your GPUs:** at startup, dsx times how fast each GPU talks to the CPU and checks its memory. The
+  best-connected card becomes the main GPU and holds the dense weights (attention and the shared parts), the conversation's memory (the KV cache)
+  and its own expert cache. Every other card only holds experts. A card in a slow slot (a PCIe x4 slot, say) keeps a
+  fixed set of experts instead of swapping them, because copying experts would compete with the work it needs every
+  layer. Mismatched cards are fine: up to six GPUs, each used for what it's good at.
+- **GPUs and CPU work at the same time:** in every layer, the main GPU picks the experts and hands their input to the
+  CPU and the other GPUs through shared memory. Each computes its own experts in parallel, and the main GPU adds the
+  results. The handoff takes about 6 µs and never waits on the operating system.
+- **Fast CPU kernels:** the experts in RAM run on hand-written AVX2 / AVX-VNNI kernels across the CPU's performance
+  cores, from memory locked in large pages so the CPU reads it at full speed.
+- **Optional deferral:** `--defer-rank 3` lets the CPU's least important experts finish one layer late instead of
+  holding up the GPU: 15-20% faster decode for a small change in the output.
+- **Long prompts:** prompts are read in chunks of 4,096 tokens. The main GPU streams the experts it lacks from RAM
+  while it computes, and the other GPUs work on the same chunk in parallel.
+- **Picks up where you left off:** the last conversation stays on the GPU, so the next message only reads the new
+  text.
+
 ## Quick start
 
 Download the build (the Engram table and tokenizer are inside it):
