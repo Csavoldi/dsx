@@ -20,7 +20,7 @@ tags:
 
 # DeepSeek-V4.1-Flash-1017 · dsx T16
 
-DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in one 302 GB download for two RTX 3090s and 128 GB of RAM, with the
+DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in one 252 GB download for two RTX 3090s and 128 GB of RAM, with the
 routed experts in **T16**, dsx's own trellis format: exllamav3's bitshift trellis with a codebook made for desktop
 CPUs, quantized from DeepSeek's original weights. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engine
 for this model.
@@ -32,7 +32,7 @@ the quality of Project Maya's 178 GB Maya-S in 141 GB, and they decode faster on
 
 | Build | Made for | Download | KL / top-1 vs FP8 | Decode |
 |---|---|---|---:|---:|
-| [**dsx-t16**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16) (this, v1, recommended) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 302 GB, Engram and tokenizer inside | 0.194 / 81.4% | 34.9 tok/s (36.8 with `--defer-rank 3`) |
+| [**dsx-t16**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16) (this, v1, recommended) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 252 GB, Engram and tokenizer inside | 0.196 / 80.9% | 34.9 tok/s (36.8 with `--defer-rank 3`) |
 | [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 305 GB, Engram and tokenizer inside | 0.272 / 79.0% | 27-29.5 tok/s (32-36 with `--defer-rank 3`) |
 | [dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 148 GB + the official Engram shards (203 GB) | 0.373 / 74.4% | ~29 tok/s (35.7 with `--defer-rank 3`) |
 | [dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4) | 1x AMD Instinct MI325X (256 GiB) | 270 GB + the official Engram shards (203 GB) | 0.049 / 90.6% | 110-114 tok/s |
@@ -45,9 +45,9 @@ model's top-256 log-probs).
 
 | | |
 |---|---|
-| Size | 302 GB in 4 GGUF shards: the model (141 GB in 3) + the Engram table at Q6_K (161 GB); tokenizer included. 252 GB with the IQ4_NL Engram table (`iq4nl-engram/`) |
+| Size | 252 GB in 4 GGUF shards: the model (141 GB in 3) + the Engram table at IQ4_NL (111 GB); tokenizer included. With a Q6_K Engram table (302 GB, slightly better): branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) |
 | Experts | T16 trellis: 1.5 / 1.5 / 2 bits (gate / up / down) in layers 0-19, 2 / 2 / 2.5 in layers 20-39; ~1.9 bpw |
-| Quality vs FP8 | KL 0.194 · top-1 81.4% · perplexity 9.60 (FP8: 8.56) |
+| Quality vs FP8 | KL 0.196 · top-1 80.9% · perplexity 9.54 (FP8: 8.56); with the Q6_K Engram table: 0.194 · 81.4% · 9.60 |
 | Speed, 2x RTX 3090 | 34.9 tok/s decode, 36.8 with `--defer-rank 3` · ~365 tok/s prefill (3K prompt) |
 | Hardware | 2x 24 GB NVIDIA GPU (RTX 3090 / 4090 / 5090), 128 GB RAM, AVX2 CPU (AVX-VNNI for the fast CPU kernel), ~305 GB NVMe ([details](#hardware)) |
 | Runtime | [dsx](https://github.com/lxe/dsx) from 2026-10-22 or later (T16 support) |
@@ -59,7 +59,8 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 
 | | Size without Engram | KL ↓ | Top-1 ↑ | Perplexity ↓ |
 |---|---:|---:|---:|---:|
-| **This build (T16 v1), dsx** | **141 GB** | **0.194** | **81.4%** | **9.60** |
+| **This build (T16 v1, IQ4_NL Engram), dsx** | **141 GB** | **0.196** | **80.9%** | **9.54** |
+| This build with the Q6_K Engram table (branch `q6k-engram`) | 141 GB | 0.194 | 81.4% | 9.60 |
 | dsx-ud (Unsloth UD-IQ1_M's experts), dsx | 142 GB | 0.272 | 79.0% | 10.17 |
 | Project Maya Maya-S, llama.cpp | 178 GB | 0.195 | 82.0% | 9.49 |
 | Unsloth UD-IQ1_M as shipped, llama.cpp | ~140 GB | 0.275 | 78.8% | 10.11 |
@@ -118,17 +119,15 @@ hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --local-dir dsx-t16
 git clone https://github.com/lxe/dsx && cd dsx
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda      # 86 = RTX 30xx, 120 = RTX 50xx
 
-./target/release/dsx-server --model ../dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf \
+./target/release/dsx-server --model ../dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-00001-of-00004.gguf \
   --host 0.0.0.0 --port 8090 --ctx 131072 --arena-gb 110 --rank ../dsx-t16/expert-rank.json --defer-rank 3
 ```
 
-**Smaller download (252 GB):** the same model with Unsloth's IQ4_NL Engram table (111 GB instead of 161) is in
-`iq4nl-engram/`: KL 0.196 / top-1 80.9% instead of 0.194 / 81.4%.
+**The Q6_K Engram version** (302 GB, KL 0.194 / top-1 81.4% instead of 0.196 / 80.9%) is on the branch `q6k-engram`:
 
 ```bash
-hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --include "iq4nl-engram/*" expert-rank.json vision.safetensors --local-dir dsx-t16
-# then --model dsx-t16/iq4nl-engram/DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-00001-of-00004.gguf
-#      --vision dsx-t16/vision.safetensors
+hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --revision q6k-engram --local-dir dsx-t16-q6k
+# then --model dsx-t16-q6k/DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf
 ```
 
 The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-rank 3` for the best quality. Open
@@ -141,7 +140,7 @@ The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-ra
 | GPU | NVIDIA, 24 GB of VRAM or more; two 24 GB cards measured |
 | RAM | 128 GB |
 | CPU | x86 with AVX2; the fast T16 kernel needs AVX-VNNI or AVX-512 VNNI (others use a scalar decode) |
-| Disk | ~305 GB, NVMe |
+| Disk | ~255 GB, NVMe |
 | Software | CUDA 13, Rust |
 
 | GPU | `CUDA_ARCHS` | Status |
@@ -155,7 +154,7 @@ The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-ra
 
 | File | |
 |---|---|
-| `DeepSeek-V4.1-Flash-1017-dsx-t16-0000N-of-00004.gguf` | the model in shards 1-3 (T16 experts, Q8_0 dense), the Engram table (Q6_K) in shard 4 |
+| `DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-0000N-of-00004.gguf` | the model in shards 1-3 (T16 experts, Q8_0 dense), the Engram table (IQ4_NL, from Unsloth's UD-IQ1_M GGUF) in shard 4 |
 | `SHA256SUMS` | checksums of the shards |
 | `expert-rank.json` | expert hotness, used to place experts in VRAM |
 | `vision.safetensors` | vision tower, aligner and image embeddings from the official checkpoint (bf16) |
@@ -165,6 +164,6 @@ The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-ra
 
 [DeepSeek](https://huggingface.co/deepseek-ai) for the model (MIT) · [exllamav3](https://github.com/turboderp-org/exllamav3)
 (turboderp, MIT) for the trellis quantizer that T16 patches · the T16 format: [docs/t16.md](https://github.com/lxe/dsx/blob/main/docs/t16.md) · QTIP ([Tseng et al.](https://arxiv.org/abs/2406.11235))
-for bitshift trellises · [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) for the Q6_K Engram format (MIT) ·
+for bitshift trellises · [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) for the Q6_K and IQ4_NL formats (MIT) · [Unsloth](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) for the IQ4_NL Engram table ·
 [Xolotl / Strata](https://github.com/Indras-Mirror/Xolotl) for the V4.1 GGUF format (MIT) ·
 [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) for the eval set.

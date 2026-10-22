@@ -1,30 +1,35 @@
 {
   "base_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
-  "format": "dsx GGUF, 4 shards (llama.cpp split naming); load the first. Shards 1-3: the model; shard 4: the Engram table",
+  "format": "dsx GGUF, 4 shards (llama.cpp split naming); load the first. Shards 1-3: the model; shard 4: the Engram table (IQ4_NL). The Q6_K-Engram version is on branch q6k-engram",
   "runtime": "https://github.com/lxe/dsx",
   "version": "T16 v1",
   "quantization": {
     "routed_experts": "T16 trellis (exllamav3 v1.6.4 bitshift trellis, codebook 0x3A2F 16-bit multiply + 2-byte sum, column-major tile positions; dsx GGUF types 1010-1012, trellis | suh | svh per matrix). Layers 0-19: 1.5 / 1.5 / 2 bits (gate / up / down); 20-39: 2 / 2 / 2.5. LDLQ with sigma_reg 2. Output gains baked into svh: gate/up x1.13 at 1.5 bits, x1.04 at 2 bits",
     "calibration": "635K tokens (calib4: coding-agent sessions, agent/code prompts, the model's reasoning traces, Wikipedia in 5 languages, the-stack-smol, UltraChat)",
     "dense": "Q8_0 (from dsx 2-bit v4b)",
-    "engram": "Q6_K (ggml), from the official FP8 Engram tables (bf16-rounded); per_layer_token_embd.weight, shard 4"
+    "engram": "IQ4_NL (ggml), Unsloth's table from unsloth/DeepSeek-V4.1-Flash-1017-GGUF UD-IQ1_M shard 5; per_layer_token_embd.weight, shard 4. Branch q6k-engram: Q6_K from the official FP8 tables"
   },
   "files": {
     "gguf": [
-      "DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf",
-      "DeepSeek-V4.1-Flash-1017-dsx-t16-00002-of-00004.gguf",
-      "DeepSeek-V4.1-Flash-1017-dsx-t16-00003-of-00004.gguf",
-      "DeepSeek-V4.1-Flash-1017-dsx-t16-00004-of-00004.gguf"
+      "DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-00001-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-00002-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-00003-of-00004.gguf",
+      "DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-00004-of-00004.gguf"
     ],
     "expert_rank": "expert-rank.json",
     "vision": "vision.safetensors"
   },
   "quality": {
     "eval": "Lucebox 1017 set, 8 x 1024 tokens vs FP8 top-256 log-probs (prefill)",
-    "kl": 0.1943,
-    "top1": 0.8139,
-    "perplexity": 9.6,
-    "decode_path": {
+    "kl": 0.196,
+    "top1": 0.8094,
+    "perplexity": 9.54,
+    "q6k_engram": {
+      "kl": 0.1943,
+      "top1": 0.8137,
+      "perplexity": 9.6
+    },
+    "decode_path_q6k_engram": {
       "kl": 0.2046,
       "top1": 0.8196,
       "perplexity": 8.65
