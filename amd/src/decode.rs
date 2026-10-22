@@ -346,6 +346,8 @@ pub struct Decoder {
     /// its bytes, tiled bytes per row, k, row-major copy); see Decoder::build_bdense
     pub(crate) bdense: Vec<(u64, usize, usize, usize, Buf)>,
     pub(crate) blas: Option<crate::hip::blas::Handle>,
+    /// batched step in progress: device job count for vgemv_xp (bgroup's npairs[1])
+    pub(crate) xp_njp: std::cell::Cell<Option<u64>>,
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
@@ -738,6 +740,7 @@ impl Decoder {
             vgraphs: Default::default(),
             bdense: vec![],
             blas: None,
+            xp_njp: std::cell::Cell::new(None),
             pos: 0,
             dump: None,
             etab: vec![],

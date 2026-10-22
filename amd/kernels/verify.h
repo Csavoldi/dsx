@@ -233,6 +233,246 @@ extern "C" __global__ void __launch_bounds__(256) vgemv_x(VJobs js, const int* p
     vgemv_impl<2>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2, pos0p, rope_f, rope_fc);
 }
 
+// Batched decode: device-built expert jobs (all js.j dyn), only the first *njp of each job list used (bgroup's job
+// count): a fixed grid of blocks loops over the real jobs' blocks (a full-size grid of mostly empty jobs left the
+// launch bound by block dispatch, ~1 TB/s)
+extern "C" __global__ void __launch_bounds__(256) vgemv_xp(VJobs js, const int* njp, const int* pos0p, const float* rope_f, const float* rope_fc) {
+    const int nj = *njp;
+    int tot = 0;
+    for (int ji = 0; ji < js.n; ji++) tot += nj * (js.j[ji].blocks / js.j[ji].ndyn);
+    for (int w = blockIdx.x; w < tot; w += gridDim.x) {
+        int b = w, ji = 0;
+        while (ji < js.n - 1 && b >= nj * (js.j[ji].blocks / js.j[ji].ndyn)) {
+            b -= nj * (js.j[ji].blocks / js.j[ji].ndyn);
+            ji++;
+        }
+        vgemv_impl<2>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2, pos0p, rope_f, rope_fc);
+    }
+}
+
+// Batched decode experts (device-built jobs only): one wave owns R adjacent 16-row tiles and loads each token's
+// activation fragments once for all of them (the activation gathers - 16 token rows per k-block - cost more memory
+// instructions than the 3-bit weights themselves). Block = 4 waves = 64R rows; blocks per job: ceil(n/64R) * split.
+template <int R>
+DEV void vgemv_xr_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
+    const int lane = threadIdx.x & 63, wv = threadIdx.x >> 6;
+    {
+        const int per = J.blocks / J.ndyn;
+        const int* d = J.dyn + (size_t)(b / per) * 40;
+        b %= per;
+        J.fmt = d[0];
+        J.ntok = d[1];
+        if (J.ntok == 0) return;
+        J.woff = (long long)(uint32_t)d[2] | (long long)d[3] << 32;
+        J.soff = (long long)(uint32_t)d[4] | (long long)d[5] << 32;
+        J.mul = __int_as_float(d[6]);
+        J.rows = d + 8;
+        J.orows = d + 24;
+    }
+    const int RB = (J.n + 64 * R - 1) / (64 * R);
+    const int rb = b % RB, sl = b / RB;
+    const int rt0 = (rb * 4 + wv) * R;
+    if (rt0 * 16 >= J.n) return;
+    const int KU = J.k / 128;
+    const int u0 = KU * sl / J.split, u1 = KU * (sl + 1) / J.split;
+    const int col = lane & 15, g8 = 8 * (lane >> 4);
+    const bool live = col < J.ntok;
+    const int xrow = live ? J.rows[col] : 0;
+    const uint8_t* xq = J.xq + (size_t)xrow * J.ldx;
+    const float* xs = J.xs + (size_t)xrow * (J.ldx / 32);
+    const float lm = live ? 1.f : 0.f;
+    const char* base = (const char*)J.w;
+    const int NDW = J.fmt == 1 ? 4 : (J.fmt == 2 ? 3 : 2);
+    const uint32_t tlo = J.fmt == 2 ? cb3lo : cb2, thi = J.fmt == 2 ? cb3hi : 0u;
+    f4 acc[R];
+#pragma unroll
+    for (int r = 0; r < R; r++) acc[r] = f4{0, 0, 0, 0};
+    struct Unit { uint32_t w[R][4]; u4v s[R]; uint64_t x[4]; float xs[4]; };
+    Unit cu, nu;
+    auto ld = [&](int u, Unit& o) {
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            const int rt = min(rt0 + r, J.n / 16 - 1);
+            const uint32_t* wp = (const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u) * 64 * NDW + lane * NDW;
+#pragma unroll
+            for (int q = 0; q < 4; q++) o.w[r][q] = q < NDW ? __builtin_nontemporal_load(wp + q) : 0u;
+            o.s[r] = ((const u4v*)(base + J.soff))[((size_t)rt * KU + u) * 4 + (lane >> 4)];
+        }
+#pragma unroll
+        for (int m = 0; m < 4; m++) {
+            o.x[m] = live ? *reinterpret_cast<const uint64_t*>(xq + (4 * u + m) * 32 + g8) : 0ull;
+            o.xs[m] = xs[4 * u + m] * lm;
+        }
+    };
+    if (u0 < u1) ld(u0, cu);
+    for (int u = u0; u < u1; u++) {
+        if (u + 1 < u1) ld(u + 1, nu);
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            const uint32_t ss[4] = {cu.s[r].x, cu.s[r].y, cu.s[r].z, cu.s[r].w};
+#pragma unroll
+            for (int m = 0; m < 4; m++) {
+                uint64_t a;
+                if (J.fmt == 1) a = fp4x8_to_fp8(cu.w[r][m]);
+                else {
+                    const uint32_t dl = cu.w[r][m >> 1];
+                    const int sh = 4 * (m & 1);
+                    uint32_t s0 = (dl >> sh) & 0x03030303u, s1 = (dl >> (sh + 2)) & 0x03030303u;
+                    if (J.fmt == 2) {
+                        s0 |= ((cu.w[r][2] >> (2 * m)) & 0x01010101u) << 2;
+                        s1 |= ((cu.w[r][2] >> (2 * m + 1)) & 0x01010101u) << 2;
+                    }
+                    a = (uint64_t)perm(thi, tlo, s1) << 32 | perm(thi, tlo, s0);
+                }
+                const f4 dd = mfma_fp8(a, cu.x[m], f4{0, 0, 0, 0});
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    const uint32_t bb = (ss[j] >> (8 * m)) & 0xFFu;
+                    const float ws = J.fmt == 1 ? __uint_as_float(bb << 23) : fp8_to_f32(bb, 0);
+                    acc[r][j] += dd[j] * (ws * cu.xs[m]);
+                }
+            }
+        }
+        cu = nu;
+    }
+    if (!live) return;
+    const int orow = J.orows[col];
+#pragma unroll
+    for (int r = 0; r < R; r++) {
+        const int rt = rt0 + r;
+        if (rt * 16 >= J.n) break;
+        float* yp = J.y + (size_t)orow * J.ldy + rt * 16 + 4 * (lane >> 4);
+        for (int j = 0; j < 4; j++) atomicAdd(yp + j, acc[r][j] * J.mul);
+    }
+}
+// As vgemv_xr_impl, with the block's activation slice (16 token rows x the k-slice, FP8 + scales) staged in LDS
+// once: waves read their token fragments from LDS. Dynamic LDS: 16 * (kn + 8) + 16 * (kn / 32 + 1) * 4 bytes.
+template <int R>
+DEV void vgemv_xs_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
+    extern __shared__ char xsm[];
+    const int lane = threadIdx.x & 63, wv = threadIdx.x >> 6;
+    {
+        const int per = J.blocks / J.ndyn;
+        const int* d = J.dyn + (size_t)(b / per) * 40;
+        b %= per;
+        J.fmt = d[0];
+        J.ntok = d[1];
+        if (J.ntok == 0) return;
+        J.woff = (long long)(uint32_t)d[2] | (long long)d[3] << 32;
+        J.soff = (long long)(uint32_t)d[4] | (long long)d[5] << 32;
+        J.mul = __int_as_float(d[6]);
+        J.rows = d + 8;
+        J.orows = d + 24;
+    }
+    const int RB = (J.n + 64 * R - 1) / (64 * R);
+    const int rb = b % RB, sl = b / RB;
+    const int rt0 = (rb * 4 + wv) * R;
+    const int KU = J.k / 128;
+    const int u0 = KU * sl / J.split, u1 = KU * (sl + 1) / J.split;
+    const int kn = (u1 - u0) * 128, k0 = u0 * 128;
+    // rows padded (+8 bytes, +1 scale) so the 16 token rows of a fragment read fall in different banks
+    const int xst = kn + 8, sst = kn / 32 + 1;
+    uint8_t* xl = (uint8_t*)xsm;                   // [16][xst]
+    float* xsl = (float*)(xsm + 16 * xst);          // [16][sst]
+    for (int i = threadIdx.x; i < 16 * kn / 8; i += 256) {
+        const int t = i / (kn / 8), c = i % (kn / 8);
+        uint64_t v = 0;
+        if (t < J.ntok) v = *reinterpret_cast<const uint64_t*>(J.xq + (size_t)J.rows[t] * J.ldx + k0 + 8 * c);
+        *reinterpret_cast<uint64_t*>(xl + t * xst + 8 * c) = v;
+    }
+    for (int i = threadIdx.x; i < 16 * (kn / 32); i += 256) {
+        const int t = i / (kn / 32), c = i % (kn / 32);
+        xsl[t * sst + c] = t < J.ntok ? J.xs[(size_t)J.rows[t] * (J.ldx / 32) + k0 / 32 + c] : 0.f;
+    }
+    __syncthreads();
+    if (rt0 * 16 >= J.n) return;
+    const int col = lane & 15, g8 = 8 * (lane >> 4);
+    const bool live = col < J.ntok;
+    const char* base = (const char*)J.w;
+    const int NDW = J.fmt == 1 ? 4 : (J.fmt == 2 ? 3 : 2);
+    const uint32_t tlo = J.fmt == 2 ? cb3lo : cb2, thi = J.fmt == 2 ? cb3hi : 0u;
+    f4 acc[R];
+#pragma unroll
+    for (int r = 0; r < R; r++) acc[r] = f4{0, 0, 0, 0};
+    struct Unit { uint32_t w[R][4]; u4v s[R]; };
+    Unit cu, nu;
+    auto ld = [&](int u, Unit& o) {
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            const int rt = min(rt0 + r, J.n / 16 - 1);
+            const uint32_t* wp = (const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u) * 64 * NDW + lane * NDW;
+#pragma unroll
+            for (int q = 0; q < 4; q++) o.w[r][q] = q < NDW ? __builtin_nontemporal_load(wp + q) : 0u;
+            o.s[r] = ((const u4v*)(base + J.soff))[((size_t)rt * KU + u) * 4 + (lane >> 4)];
+        }
+    };
+    if (u0 < u1) ld(u0, cu);
+    for (int u = u0; u < u1; u++) {
+        if (u + 1 < u1) ld(u + 1, nu);
+        const int ku = (u - u0) * 128;
+        uint64_t xv[4];
+        float xsv[4];
+#pragma unroll
+        for (int m = 0; m < 4; m++) {
+            xv[m] = *reinterpret_cast<const uint64_t*>(xl + col * xst + ku + m * 32 + g8);
+            xsv[m] = xsl[col * sst + ku / 32 + m];
+        }
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            const uint32_t ss[4] = {cu.s[r].x, cu.s[r].y, cu.s[r].z, cu.s[r].w};
+#pragma unroll
+            for (int m = 0; m < 4; m++) {
+                uint64_t a;
+                if (J.fmt == 1) a = fp4x8_to_fp8(cu.w[r][m]);
+                else {
+                    const uint32_t dl = cu.w[r][m >> 1];
+                    const int sh = 4 * (m & 1);
+                    uint32_t s0 = (dl >> sh) & 0x03030303u, s1 = (dl >> (sh + 2)) & 0x03030303u;
+                    if (J.fmt == 2) {
+                        s0 |= ((cu.w[r][2] >> (2 * m)) & 0x01010101u) << 2;
+                        s1 |= ((cu.w[r][2] >> (2 * m + 1)) & 0x01010101u) << 2;
+                    }
+                    a = (uint64_t)perm(thi, tlo, s1) << 32 | perm(thi, tlo, s0);
+                }
+                const f4 dd = mfma_fp8(a, xv[m], f4{0, 0, 0, 0});
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    const uint32_t bb = (ss[j] >> (8 * m)) & 0xFFu;
+                    const float ws = J.fmt == 1 ? __uint_as_float(bb << 23) : fp8_to_f32(bb, 0);
+                    acc[r][j] += dd[j] * (ws * xsv[m]);
+                }
+            }
+        }
+        cu = nu;
+    }
+    if (!live) return;
+    const int orow = J.orows[col];
+#pragma unroll
+    for (int r = 0; r < R; r++) {
+        const int rt = rt0 + r;
+        if (rt * 16 >= J.n) break;
+        float* yp = J.y + (size_t)orow * J.ldy + rt * 16 + 4 * (lane >> 4);
+        for (int j = 0; j < 4; j++) atomicAdd(yp + j, acc[r][j] * J.mul);
+    }
+}
+#define VGEMV_XS(R)                                                                                           \
+    extern "C" __global__ void __launch_bounds__(256) vgemv_xs##R(VJobs js) {                                 \
+        int b = blockIdx.x, ji = 0;                                                                           \
+        while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;                                \
+        vgemv_xs_impl<R>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2);                                            \
+    }
+VGEMV_XS(1)
+VGEMV_XS(2)
+
+#define VGEMV_XR(R)                                                                                           \
+    extern "C" __global__ void __launch_bounds__(256) vgemv_xr##R(VJobs js) {                                 \
+        int b = blockIdx.x, ji = 0;                                                                           \
+        while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;                                \
+        vgemv_xr_impl<R>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2);                                            \
+    }
+VGEMV_XR(2)
+VGEMV_XR(4)
+
 // Zero the outputs [ntok][n] (stride ldy) of the jobs flagged `zero`, before their vgemv launch
 extern "C" __global__ void __launch_bounds__(256) vzero(VJobs js) {
     for (int ji = 0; ji < js.n; ji++) {
@@ -344,6 +584,7 @@ extern "C" __global__ void __launch_bounds__(1024) bgroup(int T, int K, const in
     if (blockIdx.x != 0) return;
     if (i == 0) *npairs = N;
     for (int e = i; e < NE; e += blockDim.x) cnt[e] = 0;
+    // npairs[1]: the job count (vgemv_xp)
     __syncthreads();
     for (int p = i; p < N; p += blockDim.x) {
         wrow[p] = wts[p];
@@ -357,6 +598,7 @@ extern "C" __global__ void __launch_bounds__(1024) bgroup(int T, int K, const in
     }
     __syncthreads();
     const int nj = base[NE];
+    if (i == 0) npairs[1] = nj;
     // headers (all three matrices); unused slots ntok 0
     for (int q = i; q < 3 * BG_JOBS; q += blockDim.x) {
         const int m = q / BG_JOBS, j = q % BG_JOBS;

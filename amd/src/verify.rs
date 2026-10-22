@@ -38,6 +38,10 @@ pub(crate) struct VJob {
 }
 
 const VMAX: usize = 12;
+/// batched decode expert kernels: 16-row tiles per wave (DSXA_XR: 2 or 4)
+fn xr_tiles() -> usize {
+    std::env::var("DSXA_XR").ok().and_then(|v| v.parse().ok()).filter(|&r| r == 1 || r == 2 || r == 4).unwrap_or(2)
+}
 /// waves a vgemv launch aims for (k-split until reached); dev `vwaves N`
 pub static VWAVES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2048);
 
@@ -74,7 +78,8 @@ impl Decoder {
                     j.atomic = 1;
                     j.zero = 1;
                 }
-                j.blocks = ((j.n as usize).div_ceil(64) * j.split as usize * j.ndyn.max(1) as usize) as i32;
+                let rows_per_block = if self.xp_njp.get().is_some() && j.ndyn > 0 { 64 * xr_tiles() } else { 64 };
+                j.blocks = ((j.n as usize).div_ceil(rows_per_block) * j.split as usize * j.ndyn.max(1) as usize) as i32;
                 blocks += j.blocks as u32;
             }
             let n = chunk.len();
@@ -91,7 +96,19 @@ impl Decoder {
             let dense = chunk.iter().all(|j| j.ndyn == 0 && (j.fmt == 0 || j.fmt == 4));
             let experts = chunk.iter().all(|j| j.ndyn > 0 || (1..=3).contains(&j.fmt));
             let kn = if dense { "vgemv_d" } else if experts { "vgemv_x" } else { "vgemv" };
-            let r = self.g.launch(kn, (blocks, 1, 1), 256, 0, &[Arg::B(b), Arg::P(pos0), Arg::P(self.rope_f.ptr), Arg::P(self.rope_fc.ptr)]);
+            // batched decode: R row tiles per wave (one set of activation gathers for all of them)
+            let r = if let (Some(_), true) = (self.xp_njp.get(), chunk.iter().all(|j| j.ndyn > 0)) {
+                if std::env::var_os("DSXA_XS").is_some() {
+                    // activation slice staged in LDS: the largest slice of the chunk
+                    let kn = chunk.iter().map(|j| ((j.k as usize / 128).div_ceil(j.split as usize)) * 128).max().unwrap();
+                    let shm = 16 * (kn + 8) + 16 * (kn / 32 + 1) * 4;
+                    self.g.launch(&format!("vgemv_xs{}", xr_tiles()), (blocks, 1, 1), 256, shm as u32, &[Arg::B(b)])
+                } else {
+                    self.g.launch(&format!("vgemv_xr{}", xr_tiles()), (blocks, 1, 1), 256, 0, &[Arg::B(b)])
+                }
+            } else {
+                self.g.launch(kn, (blocks, 1, 1), 256, 0, &[Arg::B(b), Arg::P(pos0), Arg::P(self.rope_f.ptr), Arg::P(self.rope_fc.ptr)])
+            };
             self.g.set_label(None);
             r?;
         }

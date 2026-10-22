@@ -682,6 +682,9 @@ impl Decoder {
                 } else {
                 g.launch("vgroup", (64, 1, 1), 256, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(pf.dyn_.ptr), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.y.ptr)])?;
                 }
+                if bt.is_some() && std::env::var_os("DSXA_NOXP").is_none() {
+                    self.xp_njp.set(Some(pf.fill.at(4)));
+                }
                 // outputs zeroed by vgroup: all expert jobs add, so k can be split (gate/up 4 ways, down 2)
                 let esplit = |m: usize| std::env::var(if m < 2 { "DSXA_ESPLIT_GU" } else { "DSXA_ESPLIT_D" }).ok().and_then(|v| v.parse().ok()).unwrap_or(if m < 2 { 4 } else { 2 });
                 let ej = |m: usize, n: usize, k: usize, xq: u64, xs: u64, ldx: usize, y: u64, ldy: usize, _atomic: i32| crate::verify::VJob {
@@ -698,6 +701,7 @@ impl Decoder {
                 sv[0].atomic = 1;
                 if bt.is_some() { self.bdense_launch("batch shared down", sv)?; } else { self.vlaunch("verify shared down", sv, self.st.ptr)?; }
                 self.vlaunch("verify experts down", vec![ej(2, D, INTER, pf.hq.ptr, pf.hs.ptr, INTER, pf.y.ptr, D, 1)], self.st.ptr)?;
+                self.xp_njp.set(None);
                 continue;
             }
             let counts: Vec<i32> = g.dtoh(pf.counts.ptr, NE)?;
