@@ -41,9 +41,8 @@ def exl3(W, H, K, key):
     H_data = {"H": Hm.clone(), "first_key": key, "count": 1, "finalized": False, "num_total": 0,
               "inf_nan": torch.zeros(2, dtype=torch.long, device=dev), "device": dev}
     qa = {"K": K, "seed": 1, "apply_out_scales": None, "devices": [dev], "mul1": True, "sigma_reg": SIGMA}
-    Wt = W.t().contiguous()
-    wq, proxy, packed = quantize_exl3(Wt, H_data, qa, return_weight_q=True)
-    wrel = float((wq.float() - Wt).square().sum() / Wt.square().sum())
+    wq, proxy, packed = quantize_exl3(W.t().contiguous(), H_data, qa, return_weight_q=True)   # it rewrites its input
+    wrel = float((wq.float() - W.t()).square().sum() / W.square().sum())
     return packed, float(proxy), wrel
 
 
