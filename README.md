@@ -20,7 +20,7 @@ each other.
 
 - **Fast:** ~35 tokens/s writing the answer and ~365 tokens/s reading a 3,000-token prompt on two RTX 3090s.
 - **Close to the original:** the same next token as the FP8 model 81% of the time on the Lucebox eval, with dsx's own T16 experts.
-- **One download:** one 305 GB GGUF in 5 shards, with the Engram table and tokenizer inside.
+- **One download:** one 252 GB GGUF file, with the Engram table and tokenizer inside.
 - **Plugs into your tools:** OpenAI- and Anthropic-compatible API with streaming, ready for coding agents.
 - **Everything in the box:** a chat in the browser, pictures, thinking on or off, effort levels.
 
@@ -28,14 +28,15 @@ each other.
 
 https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16
 
-One 302 GB download in 4 GGUF shards. The routed experts are in T16, dsx's own trellis format (exllamav3's bitshift
-trellis with a codebook made for desktop CPUs, [docs/t16.md](docs/t16.md)) at 1.5-2.5 bits, quantized from DeepSeek's
-original weights. The dense weights are Q8_0 and the Engram table is Q6_K, and the tokenizer and vision tower are
-included.
+One 252 GB GGUF file. The routed experts are in T16, dsx's own trellis format (exllamav3's bitshift trellis with a
+codebook made for desktop CPUs, [docs/t16.md](docs/t16.md)) at 1.5-2.5 bits, quantized from DeepSeek's original
+weights. The dense weights are Q8_0 and the Engram table is IQ4_NL (Unsloth's, from their UD-IQ1_M GGUF), and the
+tokenizer is stored in the GGUF; the vision tower is `vision.safetensors` beside it.
 
 Against the FP8 model on the [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) eval
-(8 x 1,024 tokens), it picks the same next token 81.4% of the time, with KL 0.194 and perplexity 9.60 (FP8: 8.56).
-That is 28% lower KL than [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud), the same size with
+(8 x 1,024 tokens), it picks the same next token 80.9% of the time, with KL 0.196 and perplexity 9.54 (FP8: 8.56).
+The branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) has the same
+model with a Q6_K Engram table: a 302 GB download in 4 shards, KL 0.194 and 81.4%. That is 28% lower KL than [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud), the same size with
 [Unsloth](https://github.com/unslothai/unsloth)'s [UD-IQ1_M](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)
 experts (KL 0.272), which dsx also runs.
 
@@ -59,7 +60,7 @@ Build for your GPU (`CUDA_ARCHS` from the table under [Requirements](#requiremen
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 
 ./target/release/dsx-server \
-  --model dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf \
+  --model dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf \
   --rank dsx-t16/expert-rank.json \
   --ctx 131072 \
   --arena-gb 110 \
@@ -139,7 +140,7 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 | CUDA | 13 |
 | RAM | 128 GB |
 | CPU | x86 with AVX2 (AVX-VNNI or AVX-512 VNNI preferred) |
-| Disk | ~305 GB on an NVMe drive |
+| Disk | ~255 GB on an NVMe drive |
 
 | GPU | `CUDA_ARCHS` | Status |
 |---|---|---|
@@ -156,7 +157,7 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 
 | | |
 |---|---|
-| `--model` | the quant's first GGUF shard (the others load from beside it) |
+| `--model` | the model GGUF; for a model in shards, the first one (the others load from beside it) |
 | `--engram` | directory with the official checkpoint's Engram shards (`model-00047/00048-of-00048.safetensors`), or a GGUF holding the table; default: the table in the model GGUF |
 | `--tokenizer` | the official `tokenizer.json`; default: the one stored in the model GGUF |
 | `--rank` | expert hotness order (`expert-rank.json` in the quant repo) |
@@ -265,7 +266,7 @@ to run.
 
 ## Credits
 
-[exllamav3](https://github.com/turboderp-org/exllamav3) (turboderp, MIT) for the trellis quantizer T16 patches · [Unsloth](https://github.com/unslothai/unsloth) for the expert weights in dsx-ud, from their [UD-IQ1_M GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) · [DeepSeek](https://huggingface.co/deepseek-ai) for the model (MIT) ·
+[exllamav3](https://github.com/turboderp-org/exllamav3) (turboderp, MIT) for the trellis quantizer T16 patches · [Unsloth](https://github.com/unslothai/unsloth) for dsx-t16's IQ4_NL Engram table and the expert weights in dsx-ud, from their [UD-IQ1_M GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) · [DeepSeek](https://huggingface.co/deepseek-ai) for the model (MIT) ·
 [Xolotl / Strata](https://github.com/Indras-Mirror/Xolotl) for the GSQ tools and V4.1 GGUF format (MIT; derived files in `quant/v41` carry its license) ·
 DeepSeek for the reference `model.py` the calibration runs · GPTQ ([Frantar et al.](https://arxiv.org/abs/2210.17323)) ·
 [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) for the eval set ·

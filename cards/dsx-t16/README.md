@@ -45,7 +45,7 @@ model's top-256 log-probs).
 
 | | |
 |---|---|
-| Size | 252 GB in 4 GGUF shards: the model (141 GB in 3) + the Engram table at IQ4_NL (111 GB); tokenizer included. With a Q6_K Engram table (302 GB, slightly better): branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) |
+| Size | 252 GB in one GGUF file: the model (141 GB) and the Engram table at IQ4_NL (111 GB); tokenizer included. With a Q6_K Engram table (302 GB, slightly better): branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) |
 | Experts | T16 trellis: 1.5 / 1.5 / 2 bits (gate / up / down) in layers 0-19, 2 / 2 / 2.5 in layers 20-39; ~1.9 bpw |
 | Quality vs FP8 | KL 0.196 · top-1 80.9% · perplexity 9.54 (FP8: 8.56); with the Q6_K Engram table: 0.194 · 81.4% · 9.60 |
 | Speed, 2x RTX 3090 | 34.9 tok/s decode, 36.8 with `--defer-rank 3` · ~365 tok/s prefill (3K prompt) |
@@ -119,7 +119,7 @@ hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --local-dir dsx-t16
 git clone https://github.com/lxe/dsx && cd dsx
 CUDA_ARCHS=86 cargo build --release -p dsx --features cuda      # 86 = RTX 30xx, 120 = RTX 50xx
 
-./target/release/dsx-server --model ../dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-00001-of-00004.gguf \
+./target/release/dsx-server --model ../dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf \
   --host 0.0.0.0 --port 8090 --ctx 131072 --arena-gb 110 --rank ../dsx-t16/expert-rank.json --defer-rank 3
 ```
 
@@ -127,7 +127,7 @@ CUDA_ARCHS=86 cargo build --release -p dsx --features cuda      # 86 = RTX 30xx,
 
 ```bash
 hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --revision q6k-engram --local-dir dsx-t16-q6k
-# then --model dsx-t16-q6k/DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf
+# then --model dsx-t16-q6k/DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf (4 shards; dsx loads the rest)
 ```
 
 The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-rank 3` for the best quality. Open
@@ -154,8 +154,8 @@ The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-ra
 
 | File | |
 |---|---|
-| `DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-0000N-of-00004.gguf` | the model in shards 1-3 (T16 experts, Q8_0 dense), the Engram table (IQ4_NL, from Unsloth's UD-IQ1_M GGUF) in shard 4 |
-| `SHA256SUMS` | checksums of the shards |
+| `DeepSeek-V4.1-Flash-1017-dsx-t16.gguf` | the model (T16 experts, Q8_0 dense) and the Engram table (IQ4_NL, from Unsloth's UD-IQ1_M GGUF), one file |
+| `SHA256SUMS` | checksum of the GGUF |
 | `expert-rank.json` | expert hotness, used to place experts in VRAM |
 | `vision.safetensors` | vision tower, aligner and image embeddings from the official checkpoint (bf16) |
 | `config.json` | build metadata |
