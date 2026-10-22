@@ -647,7 +647,9 @@ impl Decoder {
         let (free, _) = g.mem_info()?;
         // DSXA_DSPARK=3 (or 2): room for the draft layers, their experts in a 3-bit (2-bit) codebook
         let draft = crate::dspark::bits_from_env().map(crate::dspark::bytes).unwrap_or(0);
-        let reserve = (3usize << 30) + draft;
+        // DSXA_RESERVE_GB: extra HBM kept free (batched decode's per-sequence state); the coldest experts give way
+        let extra = std::env::var("DSXA_RESERVE_GB").ok().and_then(|v| v.parse::<f64>().ok()).map(|g| (g * 1e9) as usize).unwrap_or(0);
+        let reserve = (3usize << 30) + draft + extra;
         let budget = free.saturating_sub(reserve + (64 << 20));
         let pl = if st.is_export() {
             // an export fixes the formats (re-quantized experts carry `.cb` tiles); if the budget is smaller (draft
@@ -661,8 +663,8 @@ impl Decoder {
                 }
             }
             let mut tot: usize = fmt.iter().map(|&f| expert_bytes(f)).sum();
-            if draft > 0 && tot > budget {
-                anyhow::ensure!(!rank.is_empty(), "export does not fit next to the draft layers: pass --rank to choose experts to re-quantize");
+            if (draft > 0 || extra > 0) && tot > budget {
+                anyhow::ensure!(!rank.is_empty(), "export does not fit next to the draft layers / DSXA_RESERVE_GB: pass --rank to choose experts to re-quantize");
                 for &(l, e) in rank.iter().rev() {
                     if tot <= budget {
                         break;
