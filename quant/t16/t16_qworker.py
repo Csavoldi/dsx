@@ -91,6 +91,8 @@ def main():
         if f is None:
             if os.path.exists(os.path.join(ld, "DONE")) and not glob.glob(os.path.join(ld, "e*.pt*")):
                 L += 1   # layer finished (every file claimed and removed)
+            elif not os.path.isdir(ld) and any(os.path.isdir(os.path.join(dumpdir, f"L{M:02d}")) for M in range(L + 1, 40)):
+                L += 1   # uploaded and removed by t16_pod_up.sh (the chain dumps layers in order)
             else:
                 time.sleep(3)
             continue
