@@ -9,7 +9,7 @@
 // slices, had128, * svh). Shapes: 6 experts' gate [5120 -> 2304] and down [2304 -> 5120].
 //
 // build: nvcc -O3 -arch=sm_86 -o t16_tile t16_tile.cu
-// run:   ./t16_tile [reps] [gate|down|both] [S slices per strip] [U k tiles per step; 9 = v2 int8 mma]
+// run:   ./t16_tile [reps] [gate|down|both] [S slices per strip] [U k tiles per step; 9 = v2 int8 mma; 8 = v3 column-major tiles; 7 = v4 budget kernel; 6 = v4 with tiles repacked pair-major] [K2 = 3 | 4 | 5 for v3 / v4]
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -208,6 +208,7 @@ __global__ void __launch_bounds__(128) t16_gemv2(const uint32_t *__restrict__ w,
 // prep2: per expert and 256-group (one warp): x * suh, had128 on both halves, int8 with absmax scale, written in the
 // permuted row order; group sum of the int8 values
 __constant__ int c_perm[16] = {0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15};  // tile row -> byte slot
+template <bool PERM = true>
 __global__ void prep2(const float *__restrict__ x, const half *__restrict__ suh, int8_t *__restrict__ xq, float *__restrict__ xd, int *__restrict__ xs,
                       int in, int E) {
   const int lane = threadIdx.x & 31, wg = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, groups = in / 256;
@@ -230,8 +231,191 @@ __global__ void prep2(const float *__restrict__ x, const half *__restrict__ suh,
     for (int j = 0; j < 4; j++) {
       const int i = 128 * h + 4 * lane + j, qv = __float2int_rn(v[h][j] * id);  // index within the group
       sum += qv;
-      xq[(size_t)e * in + 256 * gr + 16 * (i / 16) + c_perm[i % 16]] = (int8_t)qv;
+      xq[(size_t)e * in + 256 * gr + (PERM ? 16 * (i / 16) + c_perm[i % 16] : i)] = (int8_t)qv;
     }
+  for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+  if (lane == 0) xd[(size_t)e * groups + gr] = m / 127.f, xs[(size_t)e * groups + gr] = sum;
+}
+
+
+
+// exl3_dq.cuh dq8_half for K = KA + 0.5: positions alternate KA (even) and KA + 1 (odd) bits; t even
+template <int KA>
+__device__ __forceinline__ void prod8_half(const uint32_t *ptr, int t, uint32_t (&p)[8]) {
+  constexpr int bits2 = 2 * KA + 1, words = 4 * bits2, gspan = 18 + 3 * KA;
+  const int e7 = ((t >> 1) + 4) * bits2 + 128 * bits2, e3 = e7 - 2 * bits2;
+  uint32_t w[8];
+  {
+    const int hi = (e7 - 1) / 32, lo = (e7 - gspan) / 32, s = (hi + 1) * 32 - e7;
+    const uint32_t v = fshift(ptr[hi >= words ? hi - words : hi], ptr[lo >= words ? lo - words : lo], s);  // indices < 2 words
+    w[7] = v; w[6] = w[7] >> (KA + 1); w[5] = w[6] >> KA; w[4] = w[5] >> (KA + 1);
+  }
+  {
+    const int hi = (e3 - 1) / 32, lo = (e3 - gspan) / 32, s = (hi + 1) * 32 - e3;
+    const uint32_t v = fshift(ptr[hi >= words ? hi - words : hi], ptr[lo >= words ? lo - words : lo], s);
+    w[3] = v; w[2] = w[3] >> (KA + 1); w[1] = w[2] >> KA; w[0] = w[1] >> (KA + 1);
+  }
+#pragma unroll
+  for (int j = 0; j < 8; j++) p[j] = w[j] * MULC;
+}
+template <int K2>
+__device__ __forceinline__ void prod8_any(const uint32_t *ptr, int t, uint32_t (&p)[8]) {
+  if constexpr (K2 == 4) prod8_k2(ptr, t, p);
+  else prod8_half<K2 / 2>(ptr, t, p);
+}
+
+
+// v3 with half-integer K: a lane's 16 positions (16c .. 16c + 15) span at most 16 + 8 (2 KA + 1) = 56 bits (MSB-first),
+// so three consecutive words give a 64-bit view Y ending at the last window's end (two funnel shifts); window j is then
+// Y >> o_j with o_j = end(15) - end(j) the same for every lane (16c is even). Word indices and the alignment shift depend
+// only on the column, computed once.
+__host__ __device__ constexpr int hend2(int K2, int t) { return K2 % 2 ? (t + 1) * (K2 / 2) + (t + 1) / 2 : (t + 1) * (K2 / 2); }
+template <int K2>
+struct HalfIdx {
+  int i0, i1, i2, sh;
+  __device__ __forceinline__ HalfIdx(int c) {
+    constexpr int words = 4 * K2, NB = 32 * words;
+    const int e = hend2(K2, 16 * c + 15) + NB;  // end of window 15 (+ one tile for the wrap)
+    const int h = (e - 1) / 32;
+    i2 = h % words, i1 = (h - 1) % words, i0 = (h - 2) % words, sh = (h + 1) * 32 - e;
+  }
+};
+template <int K2>
+__device__ __forceinline__ void prod16_half(const uint32_t *ptr, const HalfIdx<K2> &ix, uint32_t (&p)[16]) {
+  const uint32_t a = ptr[ix.i0], b = ptr[ix.i1], c = ptr[ix.i2];
+  const uint32_t lo = fshift(c, b, ix.sh), hi = fshift(b, a, ix.sh);  // Y = hi:lo
+#pragma unroll
+  for (int j = 0; j < 16; j++) {
+    constexpr int dummy = 0;
+    (void)dummy;
+    const int o = hend2(K2, 15) - hend2(K2, j);
+    const uint32_t wj = o < 32 ? __funnelshift_r(lo, hi, o) : hi >> (o - 32);
+    p[j] = wj * MULC;
+  }
+}
+
+// ---- v3: column-major position order inside each tile (position t = 16 c + r is row r, column c; exllamav3's bit
+// stream and tile order unchanged; in its quantizer only tensor_core_perm changes). Lane L owns output column L % 16
+// of tile nb + L / 16 and walks k: per tile two 8-position window decodes (dq8 order, positions 16c..16c+7, +8..+15),
+// 16 products, low / high bytes of each 4 consecutive rows gathered (PRMT) and dot-producted with 4 int8 activations
+// (natural order) by dp4a. The -255 sum(x) term is one constant per 256-row group.
+__device__ __forceinline__ int dp4a_us3(uint32_t a, int b, int c) {
+  int d;
+  asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
+  return d;
+}
+template <int K2, bool V64 = true>
+__global__ void __launch_bounds__(128) t16_gemv3(const uint32_t *__restrict__ w, const int8_t *__restrict__ xq, const float *__restrict__ xd,
+                                                 const int *__restrict__ xs, float *__restrict__ part, int in, int out, int E, int S) {
+  const int lane = threadIdx.x & 31, warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  const int nbs = out / 16, kbs = in / 16, groups = in / 256, pairs = E * nbs / 2;
+  if (warp >= pairs * S) return;
+  const int s = warp / pairs, pr = warp % pairs, e = pr / (nbs / 2), nb = 2 * (pr % (nbs / 2)) + lane / 16, c = lane % 16;
+  const int g0 = groups * s / S, g1 = groups * (s + 1) / S;
+  constexpr int WT = 4 * K2;  // u32 per tile
+  const HalfIdx<K2> hix(c);
+  const uint32_t *we = w + (size_t)e * kbs * nbs * WT;
+  const int *xe = (const int *)(xq + (size_t)e * in);
+  float f = 0.f;
+  for (int gr = g0; gr < g1; gr++) {
+    int acc = 0;
+#pragma unroll 2
+    for (int kb = 16 * gr; kb < 16 * gr + 16; kb++) {
+      const uint32_t *tp = we + ((size_t)kb * nbs + nb) * WT;
+      uint32_t p[16];
+      if constexpr (K2 % 2 || V64) {
+        prod16_half<K2>(tp, hix, p);
+      } else {
+        uint32_t q8[8];
+        prod8_any<K2>(tp, 16 * c, q8);
+#pragma unroll
+        for (int j = 0; j < 8; j++) p[j] = q8[j];
+        prod8_any<K2>(tp, 16 * c + 8, q8);
+#pragma unroll
+        for (int j = 0; j < 8; j++) p[8 + j] = q8[j];
+      }
+#pragma unroll
+      for (int i = 0; i < 4; i++) {
+        const uint32_t a = __byte_perm(p[4 * i], p[4 * i + 1], 0x5410), b = __byte_perm(p[4 * i + 2], p[4 * i + 3], 0x5410);
+        const int x4 = __ldg(xe + 4 * kb + i);
+        acc = dp4a_us3(__byte_perm(a, b, 0x6420), x4, acc);
+        acc = dp4a_us3(__byte_perm(a, b, 0x7531), x4, acc);
+      }
+    }
+    f += __ldg(xd + (size_t)e * groups + gr) * (float)(acc - 255 * __ldg(xs + (size_t)e * groups + gr));
+  }
+  part[(size_t)s * E * out + (size_t)e * out + 16 * nb + c] = f * (1.f / 104.51f);
+}
+
+
+#ifndef V4U
+#define V4U 4
+#endif
+constexpr int kV4U = V4U;  // tiles unrolled per step (pragmas do not expand macros)
+// ---- v4: v3's column-major tiles with the decode built from the instruction budget (docs/t16.md, "Decode cost
+// model"). Per weight: 1 window (funnel shift, ALU) + 1 IMAD (product) + 1/2 PRMT + 1/2 dp4a: two consecutive rows'
+// products are packed as [lo0 hi0 lo1 hi1] (one PRMT) and dp4a'd with [x_k x_k x_k+1 x_k+1], which gives
+// x_k (lo0 + hi0) + x_k+1 (lo1 + hi1) directly. Activations are prepared in that pair form (xp: [in / 2] u32).
+// Addressing is a running 32-bit tile offset and one 16-byte x load per 8 rows, so per tile there is no 64-bit math.
+template <int K2, bool PM = false>
+__global__ void __launch_bounds__(128) t16_gemv4(const uint32_t *__restrict__ w, const uint4 *__restrict__ xp, const float *__restrict__ xd,
+                                                 const int *__restrict__ xs, float *__restrict__ part, int in, int out, int E, int S) {
+  const int lane = threadIdx.x & 31, warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  const int nbs = out / 16, kbs = in / 16, groups = in / 256, pairs = E * nbs / 2;
+  if (warp >= pairs * S) return;
+  const int s = warp / pairs, pr = warp % pairs, e = pr / (nbs / 2), nb = 2 * (pr % (nbs / 2)) + lane / 16, c = lane % 16;
+  const int g0 = groups * s / S, g1 = groups * (s + 1) / S;
+  constexpr int WT = 4 * K2;
+  const HalfIdx<K2> ix(c);
+  // PM: tiles repacked pair-major ([e][pair][kb][2 tiles]): a warp's walk down k is one contiguous stream
+  const uint32_t *tp = PM ? w + (((size_t)e * (nbs / 2) + nb / 2) * kbs + (size_t)16 * g0) * 2 * WT + (size_t)(nb & 1) * WT
+                          : w + (size_t)e * kbs * nbs * WT + ((size_t)16 * g0 * nbs + nb) * WT;
+  const uint32_t step = PM ? 2 * WT : (uint32_t)nbs * WT;
+  const uint4 *xe = xp + (size_t)e * (in / 8) + 2 * 16 * g0;  // 8 rows (4 pair words) per uint4; 2 per tile
+  float f = 0.f;
+  for (int gr = g0; gr < g1; gr++) {
+    int acc = 0;
+#pragma unroll (kV4U)
+    for (int i = 0; i < 16; i++, tp += step, xe += 2) {
+      uint32_t p[16];
+      prod16_half<K2>(tp, ix, p);
+      const uint4 xa = __ldg(xe), xb = __ldg(xe + 1);
+      const uint32_t xw[8] = {xa.x, xa.y, xa.z, xa.w, xb.x, xb.y, xb.z, xb.w};
+#pragma unroll
+      for (int j = 0; j < 8; j++) acc = dp4a_us3(__byte_perm(p[2 * j], p[2 * j + 1], 0x5410), (int)xw[j], acc);
+    }
+    f += __ldg(xd + (size_t)e * groups + gr) * (float)(acc - 255 * __ldg(xs + (size_t)e * groups + gr));
+  }
+  part[(size_t)s * E * out + (size_t)e * out + 16 * nb + c] = f * (1.f / 104.51f);
+}
+
+// prep4: x * suh, had128, int8 per 256 rows, written as pair words [x_k x_k x_k+1 x_k+1]; group sums (of single x)
+__global__ void prep4(const float *__restrict__ x, const half *__restrict__ suh, uint32_t *__restrict__ xp, float *__restrict__ xd, int *__restrict__ xs,
+                      int in, int E) {
+  const int lane = threadIdx.x & 31, wg = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, groups = in / 256;
+  if (wg >= E * groups) return;
+  const int e = wg / groups, gr = wg % groups;
+  float v[2][4];
+  for (int h = 0; h < 2; h++) {
+    const int i = 256 * gr + 128 * h + 4 * lane;
+#pragma unroll
+    for (int j = 0; j < 4; j++) v[h][j] = x[i + j] * __half2float(suh[(size_t)e * in + i + j]);
+    had128_warp(v[h], lane);
+  }
+  float m = 0.f;
+  for (int h = 0; h < 2; h++)
+    for (int j = 0; j < 4; j++) m = fmaxf(m, fabsf(v[h][j]));
+  for (int o = 16; o; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+  const float id = m > 0.f ? 127.f / m : 0.f;
+  int sum = 0;
+  for (int h = 0; h < 2; h++) {
+    int q[4];
+    for (int j = 0; j < 4; j++) q[j] = __float2int_rn(v[h][j] * id), sum += q[j];
+    const int k = 256 * gr + 128 * h + 4 * lane;  // rows k .. k + 3: two pair words
+    const uint32_t b0 = q[0] & 255, b1 = q[1] & 255, b2 = q[2] & 255, b3 = q[3] & 255;
+    xp[((size_t)e * in + k) / 2] = b0 | b0 << 8 | b1 << 16 | b1 << 24;
+    xp[((size_t)e * in + k) / 2 + 1] = b2 | b2 << 8 | b3 << 16 | b3 << 24;
+  }
   for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
   if (lane == 0) xd[(size_t)e * groups + gr] = m / 127.f, xs[(size_t)e * groups + gr] = sum;
 }
@@ -262,6 +446,17 @@ static uint32_t state_ref(const uint32_t *w, int t) {
   const uint64_t m = ((uint64_t)w[i0 % WORDS] << 32) | w[i1 % WORDS];
   return (uint32_t)(m >> s0) & 0xFFFF;
 }
+// end bit of position t (K = K2 / 2; half-integer: even positions KA bits, odd KA + 1)
+static int pend_x(int K2, int t) { return K2 % 2 == 0 ? (t + 1) * (K2 / 2) : (t + 1) * (K2 / 2) + (t + 1) / 2; }
+static uint32_t state_ref_k(const uint32_t *w, int K2, int t) {
+  const int NB = 128 * K2, b0 = (pend_x(K2, t) - 16 + NB) % NB;
+  uint32_t st = 0;
+  for (int i = 0; i < 16; i++) {  // MSB-first: stream bit b is bit 31 - b % 32 of word b / 32
+    const int b = (b0 + i) % NB;
+    st = (st << 1) | ((w[b >> 5] >> (31 - (b & 31))) & 1u);
+  }
+  return st;
+}
 static void had128_host(std::vector<double> &v) {
   for (size_t b = 0; b < v.size(); b += 128)
     for (int h = 1; h < 128; h <<= 1)
@@ -274,6 +469,7 @@ int main(int argc, char **argv) {
   const int reps = argc > 1 ? atoi(argv[1]) : 100;
   const char *which = argc > 2 ? argv[2] : "both";
   const int S = argc > 3 ? atoi(argv[3]) : 4, U1 = argc > 4 ? atoi(argv[4]) : 0;  // U1: one unroll only
+  const int K2 = argc > 5 ? atoi(argv[5]) : 4;  // v3 only: K = K2 / 2
   build_map();
   cudaDeviceProp prop;
   CK(cudaGetDeviceProperties(&prop, 0));
@@ -284,7 +480,7 @@ int main(int argc, char **argv) {
   CK(cudaEventCreate(&e1));
   for (auto sh : shapes) {
     if (strcmp(which, "both") && strncmp(which, sh.what, 4)) continue;
-    const size_t words = (size_t)E * (sh.in / 16) * (sh.out / 16) * WORDS, bytes = words * 4;
+    const size_t words = (size_t)E * (sh.in / 16) * (sh.out / 16) * (U1 == 8 || U1 == 7 || U1 == 6 ? 4 * K2 : WORDS), bytes = words * 4;
     const int nc = (int)ceil(256e6 / bytes);
     std::vector<uint32_t> hw(words);
     uint64_t z = 88172645463325252ull;
@@ -295,7 +491,16 @@ int main(int argc, char **argv) {
     std::vector<float> hx(sh.in);
     for (int i = 0; i < sh.in; i++) hx[i] = sinf(i * 0.37f);
     std::vector<uint32_t *> dw(nc);
-    for (int c = 0; c < nc; c++) { CK(cudaMalloc(&dw[c], bytes)); CK(cudaMemcpy(dw[c], hw.data(), bytes, cudaMemcpyHostToDevice)); }
+    std::vector<uint32_t> hpm;  // pair-major repack for v4 PM (U1 == 6)
+    if (U1 == 6) {
+      const int WT = 4 * K2, kbs = sh.in / 16, nbs = sh.out / 16;
+      hpm.resize(words);
+      for (int e = 0; e < E; e++)
+        for (int kb = 0; kb < kbs; kb++)
+          for (int nb = 0; nb < nbs; nb++)
+            memcpy(&hpm[((((size_t)e * (nbs / 2) + nb / 2) * kbs + kb) * 2 + (nb & 1)) * WT], &hw[(((size_t)e * kbs + kb) * nbs + nb) * WT], WT * 4);
+    }
+    for (int c = 0; c < nc; c++) { CK(cudaMalloc(&dw[c], bytes)); CK(cudaMemcpy(dw[c], U1 == 6 ? hpm.data() : hw.data(), bytes, cudaMemcpyHostToDevice)); }
     float *dx, *dpart, *dy;
     half *dsu, *dsv, *dxh;
     CK(cudaMalloc(&dx, sh.in * 4));
@@ -314,11 +519,107 @@ int main(int argc, char **argv) {
     CK(cudaMalloc(&dxd, (size_t)E * sh.in / 256 * 4));
     CK(cudaMalloc(&dxs, (size_t)E * sh.in / 256 * 4));
     auto run2 = [&](int c) {
-      prep2<<<(E * sh.in / 256 * 32 + 127) / 128, 128>>>(dx, dsu, dxq, dxd, dxs, sh.in, E);
+      prep2<true><<<(E * sh.in / 256 * 32 + 127) / 128, 128>>>(dx, dsu, dxq, dxd, dxs, sh.in, E);
       const int warps = E * (sh.out / 16) * S, blocks = (warps * 32 + 127) / 128;
       t16_gemv2<<<blocks, 128>>>(dw[c], dxq, dxd, dxs, dpart, sh.in, sh.out, E, S);
       post<<<(E * sh.out / 128 * 32 + 127) / 128, 128>>>(dpart, dsv, dy, sh.out, E, S);
     };
+    if (U1 == 7 || U1 == 6) {  // v4: budget-built column-major kernel (6: tiles repacked pair-major)
+      uint32_t *dxp;
+      CK(cudaMalloc(&dxp, (size_t)E * sh.in / 2 * 4));
+      auto run4 = [&](int c) {
+        prep4<<<(E * sh.in / 256 * 32 + 127) / 128, 128>>>(dx, dsu, dxp, dxd, dxs, sh.in, E);
+        const int warps = E * (sh.out / 32) * S, blocks = (warps * 32 + 127) / 128;
+        if (K2 == 3 && U1 == 7) t16_gemv4<3><<<blocks, 128>>>(dw[c], (const uint4 *)dxp, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        if (K2 == 3 && U1 == 6) t16_gemv4<3, true><<<blocks, 128>>>(dw[c], (const uint4 *)dxp, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        if (K2 == 4 && U1 == 7) t16_gemv4<4><<<blocks, 128>>>(dw[c], (const uint4 *)dxp, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        if (K2 == 4 && U1 == 6) t16_gemv4<4, true><<<blocks, 128>>>(dw[c], (const uint4 *)dxp, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        if (K2 == 5 && U1 == 7) t16_gemv4<5><<<blocks, 128>>>(dw[c], (const uint4 *)dxp, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        if (K2 == 5 && U1 == 6) t16_gemv4<5, true><<<blocks, 128>>>(dw[c], (const uint4 *)dxp, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        post<<<(E * sh.out / 128 * 32 + 127) / 128, 128>>>(dpart, dsv, dy, sh.out, E, S);
+      };
+      run4(0);
+      CK(cudaDeviceSynchronize());
+      std::vector<float> hy((size_t)E * sh.out), hd((size_t)E * sh.in / 256);
+      std::vector<uint32_t> hp((size_t)E * sh.in / 2);
+      CK(cudaMemcpy(hy.data(), dy, hy.size() * 4, cudaMemcpyDeviceToHost));
+      CK(cudaMemcpy(hp.data(), dxp, hp.size() * 4, cudaMemcpyDeviceToHost));
+      CK(cudaMemcpy(hd.data(), dxd, hd.size() * 4, cudaMemcpyDeviceToHost));
+      const int e = 1, kbs = sh.in / 16, nbs = sh.out / 16;
+      std::vector<double> y(sh.out, 0.0);
+      const uint32_t *we = hw.data() + (size_t)e * kbs * nbs * 4 * K2;
+      for (int kb = 0; kb < kbs; kb++)
+        for (int nb = 0; nb < nbs; nb++)
+          for (int t = 0; t < 256; t++) {
+            const int k = 16 * kb + t % 16;
+            const uint32_t pw = hp[((size_t)e * sh.in + k) / 2];
+            const int xk = (int8_t)((k & 1) ? (pw >> 16) & 255 : pw & 255);
+            const uint32_t pp = (state_ref_k(we + ((size_t)kb * nbs + nb) * 4 * K2, K2, t) * MULC) & 0xFFFF;
+            y[16 * nb + t / 16] += xk * (double)hd[(size_t)e * sh.in / 256 + k / 256] * (((pp & 0xFF) + (pp >> 8) - 255.0) / 104.51);
+          }
+      had128_host(y);
+      double ymax = 0, err = 0;
+      for (int o = 0; o < sh.out; o++) ymax = fmax(ymax, fabs(y[o] * h2f(hsv[(size_t)e * sh.out + o])));
+      for (int o = 0; o < sh.out; o++) err = fmax(err, fabs(hy[(size_t)e * sh.out + o] - y[o] * h2f(hsv[(size_t)e * sh.out + o])) / ymax);
+      for (int i = 0; i < 20; i++) run4(i % nc);
+      double us = 1e9;
+      for (int t = 0; t < 5; t++) {
+        CK(cudaEventRecord(e0));
+        for (int i = 0; i < reps; i++) run4(i % nc);
+        CK(cudaEventRecord(e1));
+        CK(cudaEventSynchronize(e1));
+        float ms;
+        CK(cudaEventElapsedTime(&ms, e0, e1));
+        us = fmin(us, ms * 1e3 / reps);
+      }
+      printf("%-8s %5.1f MB  v4 %s K=%.1f S=%d: %6.1f us per call (prep + GEMV + post)  %5.0f GB/s  max err %.1e of max |y|\n", sh.what,
+             bytes / 1e6, U1 == 6 ? "pair-major   " : "budget kernel", K2 / 2.0, S, us, bytes / us / 1e3, err);
+      cudaFree(dxp);
+    }
+    if (U1 == 8) {  // v3: column-major positions
+      auto run3 = [&](int c) {
+        prep2<false><<<(E * sh.in / 256 * 32 + 127) / 128, 128>>>(dx, dsu, dxq, dxd, dxs, sh.in, E);
+        const int warps = E * (sh.out / 32) * S, blocks = (warps * 32 + 127) / 128;
+        if (K2 == 3) t16_gemv3<3><<<blocks, 128>>>(dw[c], dxq, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        if (K2 == 4) t16_gemv3<4><<<blocks, 128>>>(dw[c], dxq, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        if (K2 == 5) t16_gemv3<5><<<blocks, 128>>>(dw[c], dxq, dxd, dxs, dpart, sh.in, sh.out, E, S);
+        post<<<(E * sh.out / 128 * 32 + 127) / 128, 128>>>(dpart, dsv, dy, sh.out, E, S);
+      };
+      run3(0);
+      CK(cudaDeviceSynchronize());
+      std::vector<float> hy((size_t)E * sh.out), hd((size_t)E * sh.in / 256);
+      std::vector<int8_t> hq((size_t)E * sh.in);
+      CK(cudaMemcpy(hy.data(), dy, hy.size() * 4, cudaMemcpyDeviceToHost));
+      CK(cudaMemcpy(hq.data(), dxq, hq.size(), cudaMemcpyDeviceToHost));
+      CK(cudaMemcpy(hd.data(), dxd, hd.size() * 4, cudaMemcpyDeviceToHost));
+      const int e = 1, kbs = sh.in / 16, nbs = sh.out / 16;
+      std::vector<double> y(sh.out, 0.0);
+      const uint32_t *we = hw.data() + (size_t)e * kbs * nbs * 4 * K2;
+      for (int kb = 0; kb < kbs; kb++)
+        for (int nb = 0; nb < nbs; nb++)
+          for (int t = 0; t < 256; t++) {
+            const int k = 16 * kb + t % 16;
+            const uint32_t pp = (state_ref_k(we + ((size_t)kb * nbs + nb) * 4 * K2, K2, t) * MULC) & 0xFFFF;
+            y[16 * nb + t / 16] += hq[(size_t)e * sh.in + k] * (double)hd[(size_t)e * sh.in / 256 + k / 256] * (((pp & 0xFF) + (pp >> 8) - 255.0) / 104.51);
+          }
+      had128_host(y);
+      double ymax = 0, err = 0;
+      for (int o = 0; o < sh.out; o++) ymax = fmax(ymax, fabs(y[o] * h2f(hsv[(size_t)e * sh.out + o])));
+      for (int o = 0; o < sh.out; o++) err = fmax(err, fabs(hy[(size_t)e * sh.out + o] - y[o] * h2f(hsv[(size_t)e * sh.out + o])) / ymax);
+      for (int i = 0; i < 20; i++) run3(i % nc);
+      double us = 1e9;
+      for (int t = 0; t < 5; t++) {
+        CK(cudaEventRecord(e0));
+        for (int i = 0; i < reps; i++) run3(i % nc);
+        CK(cudaEventRecord(e1));
+        CK(cudaEventSynchronize(e1));
+        float ms;
+        CK(cudaEventElapsedTime(&ms, e0, e1));
+        us = fmin(us, ms * 1e3 / reps);
+      }
+      printf("%-8s %5.1f MB  v3 column-major tiles K=%.1f S=%d: %6.1f us per call (prep + GEMV + post)  %5.0f GB/s  max err %.1e of max |y|\n", sh.what,
+             bytes / 1e6, K2 / 2.0, S, us, bytes / us / 1e3, err);
+    }
     if (U1 == 9) {  // v2
       run2(0);
       CK(cudaDeviceSynchronize());
@@ -364,7 +665,7 @@ int main(int argc, char **argv) {
       post<<<(E * sh.out / 128 * 32 + 127) / 128, 128>>>(dpart, dsv, dy, sh.out, E, S);
     };
     for (int U : {1, 2, 4}) {
-      if ((U1 && U != U1) || U1 == 9) continue;
+      if ((U1 && U != U1) || U1 >= 6) continue;
       run(0, U);
       CK(cudaDeviceSynchronize());
       // check one expert's outputs against the host reference (fp16 inputs as the device rounds them)
