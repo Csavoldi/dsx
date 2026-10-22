@@ -59,7 +59,7 @@ fn t16_prefill_matches_reference() {
             assert_eq!(bad, 0, "{ty:?} (repacked {repacked}): {bad} decoded weights differ from core::t16::decode_inner");
         }
         g.gemm_f16(tb.ptr, w16.ptr, yb.ptr, nt, k, n, n).unwrap();
-        g.launch(kern("t16_post"), ((n / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(yb.ptr), Arg::P(wb.ptr + trb + 2 * k as u64), Arg::I(n as i32)]).unwrap();
+        g.launch(kern("t16_post"), ((n / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(yb.ptr), Arg::P(wb.ptr + trb + 2 * k as u64), Arg::I(n as i32), Arg::F(1.0)]).unwrap();
         let mut got = vec![0f32; nt * n];
         g.dtoh(&mut got, yb.ptr).unwrap();
         g.sync().unwrap();

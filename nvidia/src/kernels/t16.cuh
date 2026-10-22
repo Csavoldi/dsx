@@ -84,8 +84,8 @@ extern "C" __global__ void t16_pre(const __half *src, __half *dst, const __half 
   dst[i] = __float2half(fb[t] * 0.08838834764831845f);
 }
 
-// y = had128(y) * svh per row, f32; grid (cols / 128, rows), block 128
-extern "C" __global__ void t16_post(float *y, const __half *svh, int cols) {
+// y = had128(y) * svh * gain per row, f32; grid (cols / 128, rows), block 128
+extern "C" __global__ void t16_post(float *y, const __half *svh, int cols, float gain) {
   __shared__ float fb[128];
   const int t = threadIdx.x, c = blockIdx.x * 128 + t;
   const size_t i = (size_t)blockIdx.y * cols + c;
@@ -98,7 +98,7 @@ extern "C" __global__ void t16_post(float *y, const __half *svh, int cols) {
     fb[t] = (t & h) ? other - own : own + other;
     __syncthreads();
   }
-  y[i] = fb[t] * 0.08838834764831845f * __half2float(svh[c]);
+  y[i] = fb[t] * 0.08838834764831845f * __half2float(svh[c]) * gain;
 }
 
 // ---------------------------------------------------------------- decode (docs/t16.md "v4")

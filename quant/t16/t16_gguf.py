@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""t16_gguf.py [--no-engram] OUT PACKDIR BASE_SHARDS...
+"""t16_gguf.py [--no-engram] [--gain ROLE:K=G,...] OUT PACKDIR BASE_SHARDS...
 One GGUF for dsx with T16 routed experts: every tensor and key of BASE (a dsx build, e.g. dsx-ud's 5 shards: dense
 weights, Engram table, tokenizer) except its routed experts, plus the T16 experts that t16_worker.py wrote with
 T16_PACKDIR (PACKDIR/LNN/eNNN.safetensors, keys blk.L.ffn_{gate,up,down}_exps.eNNN.{trellis,suh,svh,mul1}), or the
@@ -12,7 +12,12 @@ trellis | suh (f16 [k]) | svh (f16 [n]) (core/src/t16.rs). The trellis is conver
 (u16 [k/16][n/16][16 K], u32 words read MSB first) to dsx's stored layout: tiles by column (tile (kb, nb) at
 nb * k/16 + kb), each tile's bytes in bit-stream order (every u32 word byte-swapped); t16::from_exl3 is the same.
 Drops split.* and dsx.expert_rot (T16 carries its own Hadamards). Split the result with `dsx split`. --no-engram leaves
-out the Engram table (per_layer_token_embd.weight) for test builds; run them with --engram BASE's shard that has it."""
+out the Engram table (per_layer_token_embd.weight) for test builds; run them with --engram BASE's shard that has it.
+
+--gain multiplies svh (each output's scale) of the matching matrices, e.g. --gain gu:1.5=1.13,down:2=1.02 (ROLE gu =
+gate and up, or down; K = bits per weight). exllamav3's Viterbi reconstruction is MSE-optimal and shrinks weights by
+about 1 - (relative MSE) (0.865x at K 1.5, 0.929x at K 2), and that bias in the expert outputs costs far more KL than
+the error itself; the gain undoes it at no cost (same bytes, same kernels)."""
 import json, os, re, struct, sys
 import numpy as np
 
@@ -76,6 +81,17 @@ def main():
     args = sys.argv[1:]
     no_engram = '--no-engram' in args
     args = [a for a in args if a != '--no-engram']
+    gains = {}   # (role, tw) -> gain
+    if '--gain' in args:
+        i = args.index('--gain')
+        for item in args[i + 1].split(','):
+            rk, g = item.split('=')
+            role, k = rk.split(':')
+            tw = {'1.5': 24, '2': 32, '2.5': 40}[k]
+            for r in (('gate', 'up') if role == 'gu' else ('down',)):
+                gains[(r, tw)] = float(g)
+        del args[i:i + 2]
+        print('svh gains:', {f'{r} K{tw / 16}': g for (r, tw), g in gains.items()})
     out, packdir = args[0], args[1]
     base = [G(p) for p in args[2:]]
     layers = expert_files(packdir)
@@ -142,7 +158,11 @@ def main():
                     for part, want in (('suh', [k]), ('svh', [n])):
                         dt, sh, _, nb = st.info(kk(part))
                         assert dt == 'F16' and sh == want, (kk(part), dt, sh)
-                        f.write(st.read(kk(part)))
+                        b = st.read(kk(part))
+                        g = gains.get((role, tw), 1.0)
+                        if part == 'svh' and g != 1.0:
+                            b = (np.frombuffer(b, dtype='<f2').astype(np.float32) * g).astype('<f2').tobytes()
+                        f.write(b)
             else:
                 g, so = srcd
                 nb = tbytes(ne, ty)

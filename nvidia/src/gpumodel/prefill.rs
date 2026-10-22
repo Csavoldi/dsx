@@ -28,9 +28,23 @@ pub(crate) fn t16_linear(g: &crate::gpu::Gpu, k: &std::collections::HashMap<&'st
     g.launch(k["t16_pre"], ((kin / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(x16), Arg::P(tx16), Arg::P(w + tb), Arg::I(kin as i32)])?;
     g.launch(k["dequant_t16_f16"], ((kin as u32).div_ceil(256), nout as u32, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(w), Arg::P(w16), Arg::I(nout as i32), Arg::I(kin as i32), Arg::I(repacked)])?;
     g.gemm_f16(tx16, w16, y, nt, kin, nout, nout)?;
-    g.launch(k["t16_post"], ((nout / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(y), Arg::P(w + tb + 2 * kin as u64), Arg::I(nout as i32)])?;
+    g.launch(k["t16_post"], ((nout / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(y), Arg::P(w + tb + 2 * kin as u64), Arg::I(nout as i32), Arg::F(t16_gain(nout < kin, k2))])?;
     Ok(())
 }
+/// experiment: extra output gain on T16 matrices in prefill, per role and bits x 2, e.g. DSX_T16_GAIN=gu4=1.06,dn5=1.02
+/// (gu = gate and up, dn = down; k2 3 / 4 / 5 = 1.5 / 2 / 2.5 bits). Default 1: the shipped gain is baked into svh.
+fn t16_gain(gate_up: bool, k2: usize) -> f32 {
+    static G: std::sync::OnceLock<Vec<(bool, usize, f32)>> = std::sync::OnceLock::new();
+    let g = G.get_or_init(|| {
+        std::env::var("DSX_T16_GAIN").unwrap_or_default().split(',').filter_map(|it| {
+            let (rk, v) = it.split_once('=')?;
+            let gu = rk.starts_with("gu");
+            Some((gu, rk[2..].parse().ok()?, v.parse().ok()?))
+        }).collect()
+    });
+    g.iter().find(|e| e.0 == gate_up && e.1 == k2).map_or(1.0, |e| e.2)
+}
+
 /// T16 ids: 1010-1012 stored layout (streamed from RAM or the file), 3010-3012 repacked (GPU store, 2000 + id)
 pub(crate) fn is_t16(ty: i32) -> bool {
     (1010..=1012).contains(&ty) || (3010..=3012).contains(&ty)
