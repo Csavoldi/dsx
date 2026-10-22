@@ -379,8 +379,103 @@ static void gemv_tiles5(const MatK *m, const int32_t *x4, int32_t *out, int nb0,
   else gemv_tiles5_5(m, x4, out, nb0, nb1);
 }
 
+// v6 (any K): v5 with each column's view built from byte-aligned loads. With the tile's u32 words byte-swapped at load
+// (dsx repacks once; same size), a tile is its big-endian bit stream and column c's view ends at byte
+// E_c = end(16c + 15) / 8 (3c + 3, 4c + 4, 5c + 5 bytes at K = 1.5, 2, 2.5): lo = BE32 of bytes [E_c - 4, E_c),
+// hi = BE32 of [E_c - 8, E_c - 4), wrapping before byte 0 to the tile's end. Per 128-bit half (4 columns) one or two
+// 16-byte loads and vpshufb (+ a blend when 4 columns span more than 16 bytes); masks depend only on K, built once.
+typedef struct { int src[4][2][2]; __m128i mask[4][2][2]; int blend[4][2]; int nsrc[4][2]; int tb; } Plan6;  // [vec][half][part]
+
+static Plan6 plan6(int K2) {
+  Plan6 P;
+  memset(&P, 0, sizeof P);
+  P.tb = 16 * K2;  // tile bytes
+  for (int v = 0; v < 4; v++)  // v: 0 lo cols 0-7, 1 lo cols 8-15, 2 hi cols 0-7, 3 hi cols 8-15
+    for (int h = 0; h < 2; h++) {
+      int off[4];
+      for (int i = 0; i < 4; i++) {
+        const int c = 8 * (v & 1) + 4 * h + i, E = hend2(K2, 16 * c + 15) / 8;
+        off[i] = (v < 2 ? E - 4 : E - 8);
+      }
+      // one source if the 4 dwords fit in 16 bytes from off[0], else split 2 + 2
+      const int one = off[3] + 4 - off[0] <= 16;
+      P.nsrc[v][h] = one ? 1 : 2;
+      for (int part = 0; part < P.nsrc[v][h]; part++) {
+        const int base = one ? off[0] : off[2 * part];
+        P.src[v][h][part] = base;
+        int8_t m[16];
+        for (int i = 0; i < 4; i++) {
+          const int mine = one || (i / 2 == part);
+          for (int b = 0; b < 4; b++) m[4 * i + b] = mine ? (int8_t)(off[i] - base + 3 - b) : (int8_t)-1;  // BE32: byte 3 - b
+        }
+        P.mask[v][h][part] = _mm_loadu_si128((const __m128i *)m);
+      }
+    }
+  return P;
+}
+
+// 16 bytes of the tile's stream starting at byte s (s may be negative: wraps to the end)
+static inline __m128i load16w(const uint8_t *t, int s, int tb) {
+  if (s >= 0) return _mm_loadu_si128((const __m128i *)(t + s));
+  const __m128i head = _mm_loadu_si128((const __m128i *)t), tail = _mm_loadu_si128((const __m128i *)(t + tb - 16));
+  switch (s) {  // palignr takes an immediate; the wrap offsets are -1 .. -8
+#define A(k) case -k: return _mm_alignr_epi8(head, tail, 16 - k);
+    A(1) A(2) A(3) A(4) A(5) A(6) A(7) A(8) A(9) A(10) A(11) A(12)
+#undef A
+  }
+  return head;
+}
+
+static inline __m256i view6(const uint8_t *t, const Plan6 *P, int v) {
+  __m128i r[2];
+  for (int h = 0; h < 2; h++) {
+    r[h] = _mm_shuffle_epi8(load16w(t, P->src[v][h][0], P->tb), P->mask[v][h][0]);
+    if (P->nsrc[v][h] == 2) r[h] = _mm_or_si128(r[h], _mm_shuffle_epi8(load16w(t, P->src[v][h][1], P->tb), P->mask[v][h][1]));
+  }
+  return _mm256_set_m128i(r[1], r[0]);
+}
+
+#define WIN6(j)                                                                                                  \
+  {                                                                                                              \
+    const int o = hend2(K2, 15) - hend2(K2, (j));                                                                \
+    const __m256i xj = _mm256_set1_epi32(x4[16 * kb + (j)]);                                                     \
+    const __m256i w0 = o == 0 ? L0 : o < 32 ? _mm256_or_si256(_mm256_srli_epi32(L0, o), _mm256_slli_epi32(H0, 32 - o)) : _mm256_srli_epi32(H0, o - 32); \
+    const __m256i w1 = o == 0 ? L1 : o < 32 ? _mm256_or_si256(_mm256_srli_epi32(L1, o), _mm256_slli_epi32(H1, 32 - o)) : _mm256_srli_epi32(H1, o - 32); \
+    a0 = _mm256_dpbusd_avx_epi32(a0, _mm256_mullo_epi16(w0, mul), xj);                                            \
+    a1 = _mm256_dpbusd_avx_epi32(a1, _mm256_mullo_epi16(w1, mul), xj);                                            \
+  }
+
+#define GEMV6(K2V)                                                                                                    \
+static void gemv_tiles6_##K2V(const MatK *m, const int32_t *x4, int32_t *out, int nb0, int nb1) {                    \
+  enum { K2 = K2V };                                                                                                 \
+  static Plan6 P;                                                                                                    \
+  static int init;                                                                                                   \
+  if (!init) { P = plan6(K2); init = 1; }                                                                            \
+  const int kbs = m->in / 16, tb = 16 * K2;                                                                          \
+  const __m256i mul = _mm256_set1_epi16((short)MUL);                                                                 \
+  for (int nb = nb0; nb < nb1; nb++) {                                                                               \
+    __m256i a0 = _mm256_setzero_si256(), a1 = a0;                                                                    \
+    const uint8_t *t = (const uint8_t *)(m->w) + (size_t)nb * kbs * tb;                                              \
+    for (int kb = 0; kb < kbs; kb++, t += tb) {                                                                      \
+      const __m256i L0 = view6(t, &P, 0), L1 = view6(t, &P, 1), H0 = view6(t, &P, 2), H1 = view6(t, &P, 3);         \
+      WIN6(0) WIN6(1) WIN6(2) WIN6(3) WIN6(4) WIN6(5) WIN6(6) WIN6(7) WIN6(8) WIN6(9) WIN6(10) WIN6(11) WIN6(12) WIN6(13) WIN6(14) WIN6(15) \
+    }                                                                                                                \
+    _mm256_storeu_si256((__m256i *)(out + 16 * nb), a0);                                                             \
+    _mm256_storeu_si256((__m256i *)(out + 16 * nb + 8), a1);                                                         \
+  }                                                                                                                  \
+}
+GEMV6(3)
+GEMV6(4)
+GEMV6(5)
+static void gemv_tiles6(const MatK *m, const int32_t *x4, int32_t *out, int nb0, int nb1) {
+  if (m->K2 == 3) gemv_tiles6_3(m, x4, out, nb0, nb1);
+  else if (m->K2 == 4) gemv_tiles6_4(m, x4, out, nb0, nb1);
+  else gemv_tiles6_5(m, x4, out, nb0, nb1);
+}
+
 // T16V=5: column-major tiles at K = T16K2 / 2 (3, 4, 5); check against the scalar decode, then time 6-expert calls
-static int run_v5(int ne, int calls, int nt, int K2) {
+static int run_v5(int ne, int calls, int nt, int K2, int ver) {
+  void (*kern)(const MatK *, const int32_t *, int32_t *, int, int) = ver == 6 ? gemv_tiles6 : gemv_tiles5;
   // correctness on a small matrix: out[n] = sum_k x[k] * (lo + hi) over column-major positions (row = t % 16)
   {
     MatK t = mkk(256, 64, K2);
@@ -392,7 +487,9 @@ static int run_v5(int ne, int calls, int nt, int K2) {
     tc.w = aligned_alloc(64, (size_t)16 * 4 * 4 * K2 * 4 + 64);
     for (int kb = 0; kb < 16; kb++)
       for (int nb = 0; nb < 4; nb++) memcpy(tc.w + ((size_t)nb * 16 + kb) * 4 * K2, t.w + ((size_t)kb * 4 + nb) * 4 * K2, 4 * K2 * 4);
-    gemv_tiles5(&tc, x4, got, 0, 4);
+    if (ver == 6)
+      for (size_t i = 0; i < (size_t)16 * 4 * 4 * K2; i++) tc.w[i] = __builtin_bswap32(tc.w[i]);  // v6: tiles byte-swapped at load
+    kern(&tc, x4, got, 0, 4);
     int bad = 0;
     for (int n = 0; n < 64; n++) {
       long want = 0;
@@ -404,7 +501,7 @@ static int run_v5(int ne, int calls, int nt, int K2) {
           }
       bad += got[n] != want;
     }
-    printf("check v5 K=%.1f: %d of 64 outputs differ from the scalar exllamav3-indexed decode (column-major positions)\n", K2 / 2.0, bad);
+    printf("check v%d K=%.1f: %d of 64 outputs differ from the scalar exllamav3-indexed decode (column-major positions)\n", ver, K2 / 2.0, bad);
     free(t.w); free(tc.w); free(x4);
   }
   MatK *gate = malloc(ne * sizeof(MatK)), *up = malloc(ne * sizeof(MatK)), *down = malloc(ne * sizeof(MatK));
@@ -433,7 +530,7 @@ static int run_v5(int ne, int calls, int nt, int K2) {
 #pragma omp parallel for schedule(dynamic, 1)
     for (int it = 0; it < 6 * 2 * 18; it++) {
       const int e = it / 36, mtx = (it / 18) % 2, part = it % 18;
-      gemv_tiles5(mtx ? &up[e0 + e] : &gate[e0 + e], x4, mtx ? ou[e] : og[e], part * 8, part * 8 + 8);
+      kern(mtx ? &up[e0 + e] : &gate[e0 + e], x4, mtx ? ou[e] : og[e], part * 8, part * 8 + 8);
     }
     const double tc = now();
     for (int e = 0; e < 6; e++) {
@@ -448,7 +545,7 @@ static int run_v5(int ne, int calls, int nt, int K2) {
 #pragma omp parallel for schedule(dynamic, 1)
     for (int it = 0; it < 6 * 40; it++) {
       const int e = it / 40, part = it % 40;
-      gemv_tiles5(&down[e0 + e], h4[e], od[e], part * 8, part * 8 + 8);
+      kern(&down[e0 + e], h4[e], od[e], part * 8, part * 8 + 8);
     }
     for (int i = 0; i < HID; i++) y[i] = (float)(od[0][i] + od[1][i] + od[2][i] + od[3][i] + od[4][i] + od[5][i]);
     had128(y, HID);
@@ -464,7 +561,7 @@ static int run_v5(int ne, int calls, int nt, int K2) {
 int main(int argc, char **argv) {
   const int ne = argc > 1 ? atoi(argv[1]) : 48, calls = argc > 2 ? atoi(argv[2]) : 200, nt = argc > 3 ? atoi(argv[3]) : 14;
   build_map();
-  if (getenv("T16V") && atoi(getenv("T16V")) == 5) return run_v5(ne, calls, nt, getenv("T16K2") ? atoi(getenv("T16K2")) : 4);
+  if (getenv("T16V") && atoi(getenv("T16V")) >= 5) return run_v5(ne, calls, nt, getenv("T16K2") ? atoi(getenv("T16K2")) : 4, atoi(getenv("T16V")));
   const int ver = getenv("T16V") ? atoi(getenv("T16V")) : 1, v2 = ver >= 2;
   // sanity: the map is a permutation of the 16 x 16 tile
   int seen[256] = {0};
