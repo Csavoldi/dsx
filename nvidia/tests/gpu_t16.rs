@@ -46,14 +46,18 @@ fn t16_prefill_matches_reference() {
         g.htod_sync(xb.ptr, &x16).unwrap();
         let trb = t16::trellis_bytes(k2, k, n) as u64;
         g.launch(kern("t16_pre"), ((k / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(xb.ptr), Arg::P(tb.ptr), Arg::P(wb.ptr + trb), Arg::I(k as i32)]).unwrap();
-        g.launch(kern("dequant_t16_f16"), ((k as u32).div_ceil(256), n as u32, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(wb.ptr), Arg::P(w16.ptr), Arg::I(n as i32), Arg::I(k as i32)]).unwrap();
-        // the decoded inner matrix must equal core's exactly
-        let mut wh = vec![0u16; n * k];
-        g.dtoh(&mut wh, w16.ptr).unwrap();
-        g.sync().unwrap();
+        // the decoded inner matrix must equal core's exactly, from the stored layout and after repack_t16
         let inner = t16::decode_inner(&w[..trb as usize], k2, k, n);
-        let bad = (0..k).flat_map(|i| (0..n).map(move |j| (i, j))).filter(|&(i, j)| half::f16::from_bits(wh[j * k + i]).to_f32() != inner[i * n + j]).count();
-        assert_eq!(bad, 0, "{ty:?}: {bad} decoded weights differ from core::t16::decode_inner");
+        let rp = g.alloc(w.len()).unwrap();
+        g.launch(kern("repack_t16"), (((w.len() / 4) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(wb.ptr), Arg::P(rp.ptr), Arg::I(k as i32), Arg::I(n as i32)]).unwrap();
+        for (src, repacked) in [(wb.ptr, 0), (rp.ptr, 1)] {
+            g.launch(kern("dequant_t16_f16"), ((k as u32).div_ceil(256), n as u32, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(src), Arg::P(w16.ptr), Arg::I(n as i32), Arg::I(k as i32), Arg::I(repacked)]).unwrap();
+            let mut wh = vec![0u16; n * k];
+            g.dtoh(&mut wh, w16.ptr).unwrap();
+            g.sync().unwrap();
+            let bad = (0..k).flat_map(|i| (0..n).map(move |j| (i, j))).filter(|&(i, j)| half::f16::from_bits(wh[j * k + i]).to_f32() != inner[i * n + j]).count();
+            assert_eq!(bad, 0, "{ty:?} (repacked {repacked}): {bad} decoded weights differ from core::t16::decode_inner");
+        }
         g.gemm_f16(tb.ptr, w16.ptr, yb.ptr, nt, k, n, n).unwrap();
         g.launch(kern("t16_post"), ((n / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(yb.ptr), Arg::P(wb.ptr + trb + 2 * k as u64), Arg::I(n as i32)]).unwrap();
         let mut got = vec![0f32; nt * n];

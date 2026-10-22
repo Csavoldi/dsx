@@ -107,12 +107,55 @@ fn cpus(n: usize) -> Vec<usize> {
     match n {
         1 => vec![0],
         8 => (0..8).map(|c| 2 * c).collect(), // one thread per P-core
+        14 => (0..14).collect(),
         _ => (0..n).collect(),
+    }
+}
+
+fn t16_ex(gu: GType, dn: GType, rng: &mut Rng) -> Ex {
+    let mut mat = |ty: GType, k: usize, n: usize| -> Vec<u8> {
+        let k2 = dsx::t16::k2(ty).unwrap();
+        let tb = dsx::t16::trellis_bytes(k2, k, n);
+        let mut v: Vec<u8> = (0..dsx::t16::matrix_bytes(ty, k, n)).map(|_| rng.u64() as u8).collect();
+        for c in v[tb..].chunks_exact_mut(2) {
+            c.copy_from_slice(&f16::from_f32(0.02).to_le_bytes());
+        }
+        v
+    };
+    Ex { gu, dn, gate: mat(gu, DIM, INTER), up: mat(gu, DIM, INTER), down: mat(dn, INTER, DIM) }
+}
+
+/// `t16`: ms per 6-expert call, T16 layouts against a mix of UD-IQ1_M's codebook types, interleaved
+fn t16_bench(nexp: usize, rng: &mut Rng) {
+    use GType::*;
+    dsx::cpu::pool::pin_to(16);
+    let sets: Vec<(&str, Vec<Ex>)> = vec![
+        ("UD IQ mix", make(&[(Iq1S, Iq2Xxs), (Iq2Xxs, Iq2Xs), (Iq1S, Iq2S), (Iq2Xxs, Iq2Xxs), (Iq2Xs, Iq2S), (Iq1S, Iq2Xs)], nexp, rng)),
+        ("T16 1.5/2", (0..nexp).map(|_| t16_ex(T16K15, T16K2, rng)).collect()),
+        ("T16 2/2.5", (0..nexp).map(|_| t16_ex(T16K2, T16K25, rng)).collect()),
+    ];
+    for th in [8usize, 14, 16] {
+        let mut moe = CpuMoe::new(Pool::new(&cpus(th), Duration::from_millis(5)));
+        let mut line = format!("{th:2} threads:");
+        for round in 0..2 {
+            for (name, exs) in &sets {
+                let ew = views(exs);
+                let (g, ms) = layer_rate(&mut moe, &ew, 1, 3, rng);
+                if round == 1 {
+                    line += &format!("  {name} {ms:.3} ms ({g:.1} GB/s)");
+                }
+            }
+        }
+        println!("{line}");
     }
 }
 
 fn main() {
     let quick = std::env::args().any(|a| a == "quick");
+    if std::env::args().any(|a| a == "t16") {
+        t16_bench(if quick { 12 } else { 64 }, &mut Rng(0x2545f4914f6cdd1d));
+        return;
+    }
     let nexp = if quick { 12 } else { 64 };
     let mut rng = Rng(0x2545f4914f6cdd1d);
     use GType::*;

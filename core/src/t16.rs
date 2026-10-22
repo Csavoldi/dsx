@@ -1,10 +1,11 @@
 //! T16 routed experts: exllamav3's bitshift trellis with the T16 codebook (docs/t16.md).
 //!
 //! One expert matrix W (inputs `k`, outputs `n`) is stored as one byte slice, `trellis | suh | svh`:
-//! - trellis: u16 `[k/16][n/16][16 K]`, one circular bit stream of 256 K bits per 16 x 16 tile, tiles in row-major
-//!   tile order (tile row = 16 inputs, tile column = 16 outputs). The stream is read as little-endian u32 words, each
-//!   word MSB first. Position `t` of a tile holds input `t % 16` and output `t / 16` of that tile (column-major
-//!   positions), and its 16-bit state is the window of the stream ending after its own bits.
+//! - trellis: one circular bit stream of 256 K bits (32 K bytes) per 16 x 16 tile, each tile's bytes in stream order
+//!   (byte 0 holds bits 0-7, MSB first), tiles ordered by tile column: tile (kb, nb) (16 inputs kb, 16 outputs nb) at
+//!   index nb * k/16 + kb. Position `t` of a tile holds input `t % 16` and output `t / 16` of that tile (column-major
+//!   positions), and its 16-bit state is the window of the stream ending after its own bits. This is the layout the
+//!   CPU kernel walks; the GPU store repacks to exllamav3's own order (`from_exl3` is the conversion from it).
 //! - suh: f16 `[k]`, svh: f16 `[n]`.
 //!
 //! The expert computes `y = had128(had128(x * suh) @ W_inner) * svh`, with orthonormal 128-wide Walsh-Hadamard blocks.
@@ -49,9 +50,27 @@ pub fn matrix_bytes(ty: GType, k: usize, n: usize) -> usize {
     trellis_bytes(k2, k, n) + 2 * k + 2 * n
 }
 
-/// u16 words per tile
-pub fn tile_words(k2: usize) -> usize {
-    8 * k2
+/// bytes per tile
+pub fn tile_bytes(k2: usize) -> usize {
+    16 * k2
+}
+
+/// exllamav3's trellis (u16 `[k/16][n/16][8 k2]` as little-endian bytes: each tile is u32 words read MSB first) to
+/// dsx's stored layout (tiles by column, each tile's bytes in stream order)
+pub fn from_exl3(exl3: &[u8], k2: usize, k: usize, n: usize) -> Vec<u8> {
+    assert_eq!(exl3.len(), trellis_bytes(k2, k, n));
+    let (kt, nt, tb) = (k / 16, n / 16, tile_bytes(k2));
+    let mut out = vec![0u8; exl3.len()];
+    for kb in 0..kt {
+        for nb in 0..nt {
+            let src = &exl3[(kb * nt + nb) * tb..][..tb];
+            let dst = &mut out[(nb * kt + kb) * tb..][..tb];
+            for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                d.copy_from_slice(&[s[3], s[2], s[1], s[0]]);
+            }
+        }
+    }
+    out
 }
 
 /// the value of a 16-bit state, exactly as exllamav3's T16 decode computes it
@@ -75,15 +94,14 @@ fn bit_end(k2: usize, t: usize) -> usize {
     if k2 % 2 == 1 { (t + 1) * (k2 / 2) + (t + 1) / 2 } else { (t + 1) * (k2 / 2) }
 }
 
-/// the 16-bit state of position t of one tile (`words`: the tile's 8 k2 u16 words as stored)
-pub fn state(words: &[u16], k2: usize, t: usize) -> u32 {
+/// the 16-bit state of position t of one tile (`tile`: its 16 k2 bytes, stream order)
+pub fn state(tile: &[u8], k2: usize, t: usize) -> u32 {
     let nb = 128 * k2;
-    let w32 = |i: usize| -> u32 { words[2 * i] as u32 | (words[2 * i + 1] as u32) << 16 };
     let b0 = (bit_end(k2, t) + nb - 16) % nb;
     let mut st = 0u32;
     for i in 0..16 {
         let b = (b0 + i) % nb;
-        st = (st << 1) | ((w32(b >> 5) >> (31 - (b & 31))) & 1);
+        st = (st << 1) | ((tile[b >> 3] as u32 >> (7 - (b & 7))) & 1);
     }
     st
 }
@@ -95,13 +113,12 @@ fn u16s(b: &[u8]) -> impl Iterator<Item = u16> + '_ {
 /// the inner trellis matrix as f32 `[k][n]` (row = input)
 pub fn decode_inner(trellis: &[u8], k2: usize, k: usize, n: usize) -> Vec<f32> {
     assert_eq!(trellis.len(), trellis_bytes(k2, k, n));
-    let words: Vec<u16> = u16s(trellis).collect();
-    let tw = tile_words(k2);
+    let tb = tile_bytes(k2);
     let (kt, nt) = (k / 16, n / 16);
     let mut w = vec![0f32; k * n];
     for ti in 0..kt {
         for tj in 0..nt {
-            let tile = &words[(ti * nt + tj) * tw..][..tw];
+            let tile = &trellis[(tj * kt + ti) * tb..][..tb];
             for t in 0..256 {
                 let (r, c) = (t % 16, t / 16);
                 w[(16 * ti + r) * n + 16 * tj + c] = value(state(tile, k2, t));
@@ -188,8 +205,8 @@ mod tests {
         // with every bit of the stream set, any window is all ones; with a single set bit at position j, exactly the
         // windows covering it see it
         let k2 = 4;
-        let mut w = vec![0u16; tile_words(k2)];
-        w[1] = 0x8000; // the MSB of u32 word 0 is bit 0 of the stream
+        let mut w = vec![0u8; tile_bytes(k2)];
+        w[0] = 0x80; // the MSB of byte 0 is bit 0 of the stream
         let hits: Vec<usize> = (0..256).filter(|&t| state(&w, k2, t) != 0).collect();
         // bit 0 is covered by windows ending at bits 1..=16, i.e. positions whose end bit (t+1)*2 is in 1..=16
         assert_eq!(hits, (0..8).collect::<Vec<_>>());

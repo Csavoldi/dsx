@@ -144,10 +144,10 @@ fn is_t16(t: GType) -> bool {
     crate::t16::k2(t).is_some()
 }
 
-/// Table / prefill id of a resident type: T16 is stored as is (its own decode kernels, t16.cuh); others are repacked
-/// for the fast kernels (2000 + id) unless the store is raw.
+/// Table / prefill id of a resident type: repacked for the fast kernels (2000 + id; T16: exllamav3's tile order for
+/// t16.cuh) unless the store is raw.
 fn slot_id(t: GType, fast: bool) -> u32 {
-    if fast && !is_t16(t) { 2000 + t as u32 } else { t as u32 }
+    if fast { 2000 + t as u32 } else { t as u32 }
 }
 
 /// T16 decode scratch (t16.cuh t16d_*), for T tokens x K picks
@@ -172,7 +172,7 @@ const T16_SD: usize = 3;
 
 /// Type id of `t` repacked for the fast kernels (expert_fast.cuh), the same bytes per weight.
 pub fn repacked_id(t: GType) -> Result<i32> {
-    if !matches!(t, GType::Iq2Xxs | GType::Iq1S | GType::Iq2Xs | GType::Iq2S) {
+    if !matches!(t, GType::Iq2Xxs | GType::Iq1S | GType::Iq2Xs | GType::Iq2S) && !is_t16(t) {
         gemv_name(t)?; // IQ2_XXS has only the fast (repacked) kernels
     }
     Ok(2000 + t as u32 as i32)
@@ -185,6 +185,13 @@ pub fn repack(g: &Gpu, t: GType, src: u64, dst: u64, rows: usize, k: usize) -> R
 
 fn repack_on(g: &Gpu, side: bool, t: GType, src: u64, dst: u64, rows: usize, k: usize) -> Result<()> {
     repacked_id(t)?;
+    if let Some(k2) = crate::t16::k2(t) {
+        // a matrix of `rows` outputs x `k` inputs: stored layout -> exllamav3's order
+        let words = crate::t16::matrix_bytes(t, k, rows) / 4;
+        let args = [Arg::I(k2 as i32), Arg::P(src), Arg::P(dst), Arg::I(k as i32), Arg::I(rows as i32)];
+        let grid = ((words as u32).div_ceil(256), 1, 1);
+        return if side { g.launch_side(g.kernel("repack_t16")?, grid, 256, 0, &args) } else { g.launch(g.kernel("repack_t16")?, grid, 256, 0, &args) };
+    }
     let blocks = rows * k / t.block().0;
     let args = [Arg::I(t as u32 as i32), Arg::P(src), Arg::P(dst), Arg::I(rows as i32), Arg::I(k as i32)];
     let grid = ((blocks as u32).div_ceil(256), 1, 1);
@@ -223,7 +230,6 @@ impl GpuExperts {
             let mut put = |b: &[u8], t: GType, rows: usize, k: usize| -> Result<u64> {
                 let p = buf.ptr + off;
                 match &stage {
-                    _ if is_t16(t) => g.htod_sync(p, b)?,
                     Some(s) => {
                         g.htod_sync(s.ptr, b)?;
                         repack(g, t, s.ptr, p, rows, k)?;
@@ -423,16 +429,9 @@ impl GpuExperts {
         g.htod_side(stage, raw[0])?;
         g.htod_side(stage + og, raw[1])?;
         g.htod_side(stage + ou, raw[2])?;
-        if is_t16(gu) {
-            // stored as is: copy the staged matrices into the slot
-            g.dtod_side(slot.gate, stage, raw[0].len())?;
-            g.dtod_side(slot.up, stage + og, raw[1].len())?;
-            g.dtod_side(slot.down, stage + ou, raw[2].len())?;
-        } else {
-            repack_on(g, true, gu, stage, slot.gate, inter, dim)?;
-            repack_on(g, true, gu, stage + og, slot.up, inter, dim)?;
-            repack_on(g, true, dn, stage + ou, slot.down, dim, inter)?;
-        }
+        repack_on(g, true, gu, stage, slot.gate, inter, dim)?;
+        repack_on(g, true, gu, stage + og, slot.up, inter, dim)?;
+        repack_on(g, true, dn, stage + ou, slot.down, dim, inter)?;
         g.record(ev, true)?;
         self.swap.as_mut().unwrap().pending.push(Pending { l: new.0, e: new.1, slot, stage: si });
         Ok(true)

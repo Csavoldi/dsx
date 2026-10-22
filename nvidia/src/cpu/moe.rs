@@ -27,6 +27,10 @@ pub struct ExpertW<'a> {
 
 impl ExpertW<'_> {
     pub fn inter(&self, dim: usize) -> usize {
+        if let Some(k2) = crate::t16::k2(self.gu) {
+            // trellis | suh | svh: dim * inter * k2 / 16 + 2 dim + 2 inter bytes
+            return (self.gate.len() - 2 * dim) / (dim * k2 / 16 + 2);
+        }
         self.gate.len() / self.gu.row_bytes(dim)
     }
     pub fn bytes(&self) -> usize {
@@ -68,6 +72,20 @@ pub struct CpuMoe {
     next: [Padded; 2],
     /// the experts of this call are stored in the Hadamard-rotated basis: rotate x and h before quantizing them
     pub rot: bool,
+    t16: T16Scratch,
+}
+
+/// T16 calls (t16k): per (expert, token) the int8 activations of gate, up and down, the raw gate / up outputs and h
+#[derive(Default)]
+struct T16Scratch {
+    ag: Vec<super::t16k::Act>,
+    au: Vec<super::t16k::Act>,
+    ad: Vec<super::t16k::Act>,
+    g: Vec<Vec<f32>>,
+    u: Vec<Vec<f32>>,
+    h: Vec<Vec<f32>>,
+    cnt: Vec<AtomicU32>,
+    next: [Padded; 3],
 }
 
 #[repr(align(128))]
@@ -105,6 +123,7 @@ impl CpuMoe {
             cnt: vec![],
             next: Default::default(),
             rot: false,
+            t16: T16Scratch::default(),
         }
     }
 
@@ -117,6 +136,9 @@ impl CpuMoe {
         let inter = ex[0].inter(dim);
         assert!(inter % QK == 0 && dim % RD == 0);
         let ne = ex.len();
+        if crate::t16::k2(ex[0].gu).is_some() {
+            return self.forward_t16(ex, dim, inter, x, t, w, out);
+        }
         let gu: Vec<GType> = ex.iter().map(|e| e.gu).collect();
         self.xa.reset(t, dim, &gu);
         self.toks.resize_with(ne, Vec::new);
@@ -159,6 +181,135 @@ impl CpuMoe {
             rot: self.rot,
         };
         self.pool.run(&|c: &Ctx| job.work(c));
+    }
+}
+
+impl CpuMoe {
+    /// T16 experts (t16k): workers prepare x per (expert, token, 256-group) for gate and up; barrier; gate / up in
+    /// units of 4 tile columns, and whoever finishes a 256-block of an expert's outputs applies the output Hadamard,
+    /// svh and SwiGLU and prepares that block of h for down; barrier; down in units of 128 outputs (8 tile columns),
+    /// each worker owning its outputs.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_t16(&mut self, ex: &[ExpertW], dim: usize, inter: usize, x: &[f32], t: usize, w: &[f32], out: &mut [f32]) {
+        let ne = ex.len();
+        for e in ex {
+            assert_eq!(e.inter(dim), inter);
+            assert!(crate::t16::k2(e.gu).is_some() && crate::t16::k2(e.dn).is_some(), "T16 mixed with other expert types");
+        }
+        let toks: Vec<Vec<usize>> = (0..ne).map(|e| (0..t).filter(|&j| w[e * t + j] != 0.0).collect()).collect();
+        let s = &mut self.t16;
+        let slots = ne * MAX_TOKENS;
+        for v in [&mut s.ag, &mut s.au, &mut s.ad] {
+            v.resize_with(slots, Default::default);
+        }
+        for (e, tk) in toks.iter().enumerate() {
+            for j in 0..tk.len() {
+                let i = e * MAX_TOKENS + j;
+                for (a, k) in [(&mut s.ag[i], dim), (&mut s.au[i], dim), (&mut s.ad[i], inter)] {
+                    a.x4.resize(k, 0);
+                    a.d.resize(k / 256, 0.0);
+                    a.s.resize(k / 256, 0);
+                }
+            }
+        }
+        for v in [&mut s.g, &mut s.u, &mut s.h] {
+            v.resize_with(slots, Vec::new);
+            for b in v.iter_mut() {
+                b.resize(inter, 0.0);
+            }
+        }
+        let nb = inter / 256;
+        s.cnt.resize_with(ne * nb, || AtomicU32::new(0));
+        for c in &s.cnt[..ne * nb] {
+            c.store(0, Relaxed);
+        }
+        for n in &s.next {
+            n.0.store(0, Relaxed);
+        }
+        struct P<T>(*mut T);
+        unsafe impl<T> Sync for P<T> {}
+        unsafe impl<T> Send for P<T> {}
+        let (ag, au, ad) = (P(s.ag.as_mut_ptr()), P(s.au.as_mut_ptr()), P(s.ad.as_mut_ptr()));
+        let (gb, ub, hb) = (P(s.g.as_mut_ptr()), P(s.u.as_mut_ptr()), P(s.h.as_mut_ptr()));
+        let outp = P(out.as_mut_ptr());
+        let (cnt, next) = (&s.cnt, &s.next);
+        let groups = dim / 256;
+        let work = |c: &Ctx| unsafe {
+            use super::t16k::{gemv, post_block, prep_group, scales};
+            let (ag, au, ad, gb, ub, hb, outp) = (&ag, &au, &ad, &gb, &ub, &hb, &outp);
+            // 1. x for gate and up
+            let units: Vec<(usize, usize)> = toks.iter().enumerate().flat_map(|(e, tk)| (0..tk.len()).map(move |j| (e, j))).collect();
+            loop {
+                let i = next[0].0.fetch_add(1, Relaxed);
+                if i >= units.len() * groups {
+                    break;
+                }
+                let ((e, j), gr) = (units[i / groups], i % groups);
+                let (k2, xr) = (crate::t16::k2(ex[e].gu).unwrap(), &x[toks[e][j] * dim..(toks[e][j] + 1) * dim]);
+                let si = e * MAX_TOKENS + j;
+                prep_group(xr, scales(ex[e].gate, k2, dim, inter).0, gr, &mut *ag.0.add(si));
+                prep_group(xr, scales(ex[e].up, k2, dim, inter).0, gr, &mut *au.0.add(si));
+            }
+            c.barrier();
+            // 2. gate / up, 4 tile columns (64 outputs) per unit
+            let upe = inter / 64;
+            loop {
+                let i = next[1].0.fetch_add(1, Relaxed);
+                if i >= ne * upe {
+                    break;
+                }
+                let (e, u0) = (i / upe, i % upe);
+                let tk = &toks[e];
+                if tk.is_empty() {
+                    continue;
+                }
+                let (k2, k2d) = (crate::t16::k2(ex[e].gu).unwrap(), crate::t16::k2(ex[e].dn).unwrap());
+                for j in 0..tk.len() {
+                    let si = e * MAX_TOKENS + j;
+                    let (g, u) = (&mut *gb.0.add(si), &mut *ub.0.add(si));
+                    gemv(ex[e].gate, k2, dim, inter, &*ag.0.add(si), 4 * u0, 4 * u0 + 4, &mut g[64 * u0..]);
+                    gemv(ex[e].up, k2, dim, inter, &*au.0.add(si), 4 * u0, 4 * u0 + 4, &mut u[64 * u0..]);
+                }
+                let b = u0 / 4;
+                if cnt[e * nb + b].fetch_add(1, AcqRel) == 3 {
+                    let (svg, svu) = (scales(ex[e].gate, k2, dim, inter).1, scales(ex[e].up, k2, dim, inter).1);
+                    for (j, &tok) in tk.iter().enumerate() {
+                        let si = e * MAX_TOKENS + j;
+                        let (g, u, h) = (&mut *gb.0.add(si), &mut *ub.0.add(si), &mut *hb.0.add(si));
+                        for o in [256 * b, 256 * b + 128] {
+                            post_block(&mut g[o..], svg, o);
+                            post_block(&mut u[o..], svu, o);
+                        }
+                        let wt = w[e * t + tok];
+                        for r in 256 * b..256 * b + 256 {
+                            h[r] = crate::numerics::round_bf16(swiglu(g[r], u[r], wt));
+                        }
+                        prep_group(h, scales(ex[e].down, k2d, inter, dim).0, b, &mut *ad.0.add(si));
+                    }
+                }
+            }
+            c.barrier();
+            // 3. down, 128 outputs per unit
+            let mut y = [0f32; 128];
+            loop {
+                let i = next[2].0.fetch_add(1, Relaxed);
+                if i >= dim / 128 {
+                    break;
+                }
+                for (e, tk) in toks.iter().enumerate() {
+                    let k2d = crate::t16::k2(ex[e].dn).unwrap();
+                    let svd = scales(ex[e].down, k2d, inter, dim).1;
+                    for (j, &tok) in tk.iter().enumerate() {
+                        gemv(ex[e].down, k2d, inter, dim, &*ad.0.add(e * MAX_TOKENS + j), 8 * i, 8 * i + 8, &mut y);
+                        post_block(&mut y, svd, 128 * i);
+                        for (r, v) in y.iter().enumerate() {
+                            *outp.0.add(tok * dim + 128 * i + r) += v;
+                        }
+                    }
+                }
+            }
+        };
+        self.pool.run(&work);
     }
 }
 
@@ -416,6 +567,66 @@ mod tests {
                 let err = rel(&got, &want);
                 assert!(err < 1e-5, "T {t}: pooled vs single {err}");
             }
+        }
+    }
+
+    /// T16 experts on the pool against core's f32 reference (t16::forward), sparse routing, several token counts
+    #[test]
+    fn t16_pooled_matches_reference() {
+        use crate::t16;
+        let (dim, inter) = (1024usize, 512usize);
+        let mut seed = 0x1357_9bdf_2468_ace0u64;
+        let mut r = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut mat = |ty: GType, k: usize, n: usize| -> Vec<u8> {
+            let k2 = t16::k2(ty).unwrap();
+            let tb = t16::trellis_bytes(k2, k, n);
+            let mut m: Vec<u8> = (0..t16::matrix_bytes(ty, k, n)).map(|_| r() as u8).collect();
+            for c in m[tb..].chunks_exact_mut(2) {
+                let v = 0.02 * (0.5 + (r() % 1000) as f32 / 1000.0) * if r() % 2 == 0 { 1.0 } else { -1.0 };
+                c.copy_from_slice(&half::f16::from_f32(v).to_le_bytes());
+            }
+            m
+        };
+        let (gu, dn) = (GType::T16K15, GType::T16K25);
+        let mats: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..4).map(|_| (mat(gu, dim, inter), mat(gu, dim, inter), mat(dn, inter, dim))).collect();
+        let ew: Vec<ExpertW> = mats.iter().map(|m| ExpertW { gu, gate: &m.0, up: &m.1, dn, down: &m.2 }).collect();
+        assert_eq!(ew[0].inter(dim), inter);
+        let mut moe = CpuMoe::new(Pool::new(&[0, 1, 2, 3, 4, 5], Duration::from_millis(1)));
+        let mut seed2 = 7u64;
+        let mut f = || {
+            seed2 = seed2.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed2 >> 33) % 2001) as f32 / 1000.0 - 1.0
+        };
+        for t in [1usize, 3] {
+            let x: Vec<f32> = (0..t * dim).map(|_| f()).collect();
+            let w: Vec<f32> = (0..ew.len() * t).map(|i| if i % 3 == 1 { 0.0 } else { 0.2 + 0.1 * (i % 5) as f32 }).collect();
+            // outputs are ~1e-7 here: start from 0, an offset would drown them in f32 rounding
+            let mut want = vec![0f32; t * dim];
+            for (e, m) in mats.iter().enumerate() {
+                for j in 0..t {
+                    let wt = w[e * t + j];
+                    if wt == 0.0 {
+                        continue;
+                    }
+                    let xr = &x[j * dim..(j + 1) * dim];
+                    let (g, u) = (t16::forward(&m.0, gu, dim, inter, xr), t16::forward(&m.1, gu, dim, inter, xr));
+                    let h: Vec<f32> = g.iter().zip(&u).map(|(&g, &u)| swiglu(g, u, wt)).collect();
+                    let y = t16::forward(&m.2, dn, inter, dim, &h);
+                    for (o, v) in want[j * dim..].iter_mut().zip(&y) {
+                        *o += v;
+                    }
+                }
+            }
+            let mut got = vec![0f32; t * dim];
+            moe.forward(&ew, dim, &x, t, &w, &mut got);
+            let err = rel(&got, &want);
+            println!("T16 pooled T {t}: rel err {err:.2e} (int8 activations)");
+            assert!(err < 0.03, "T {t}: T16 pooled vs reference {err}");
         }
     }
 }

@@ -5,11 +5,15 @@ weights, Engram table, tokenizer) except its routed experts, plus the T16 expert
 T16_PACKDIR (PACKDIR/LNN/eNNN.safetensors, keys blk.L.ffn_{gate,up,down}_exps.eNNN.{trellis,suh,svh,mul1}), or the
 full-run worker (same files, keys L{LL}.e{EEE}.{gate,up,down}.{trellis,suh,svh,mul1}).
 
-Each role of each layer becomes one tensor blk.L.ffn_{role}_exps.weight of type T16K15 / T16K2 / T16K25 (dsx ids
+Layers that PACKDIR does not have keep BASE's experts, so one T16 layer can be tested inside a working build.
+Each T16 role of a layer becomes one tensor blk.L.ffn_{role}_exps.weight of type T16K15 / T16K2 / T16K25 (dsx ids
 1010-1012, by the trellis' 16 K u16 per tile), dims [k, n, experts], each expert's matrix stored as
-trellis (u16 [k/16][n/16][16 K], as exllamav3 writes it) | suh (f16 [k]) | svh (f16 [n]) (core/src/t16.rs).
+trellis | suh (f16 [k]) | svh (f16 [n]) (core/src/t16.rs). The trellis is converted from exllamav3's order
+(u16 [k/16][n/16][16 K], u32 words read MSB first) to dsx's stored layout: tiles by column (tile (kb, nb) at
+nb * k/16 + kb), each tile's bytes in bit-stream order (every u32 word byte-swapped); t16::from_exl3 is the same.
 Drops split.* and dsx.expert_rot (T16 carries its own Hadamards). Split the result with `dsx split`."""
 import json, os, re, struct, sys
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import importlib.util
@@ -20,6 +24,12 @@ exec(compile(src, spec.origin, 'exec'), hyb)
 G, nbytes = hyb['G'], hyb['nbytes']
 
 T16_TY = {24: 1010, 32: 1011, 40: 1012}   # u16 per tile -> dsx type id
+
+
+def from_exl3(b, k, n, tw):
+    """exllamav3 trellis bytes -> dsx stored layout (core/src/t16.rs from_exl3)"""
+    a = np.frombuffer(b, dtype='<u4').reshape(k // 16, n // 16, tw // 2)
+    return np.ascontiguousarray(a.transpose(1, 0, 2)).byteswap().tobytes()
 MUL = 0x3A2F
 ROLES = ('gate', 'up', 'down')
 
@@ -65,12 +75,13 @@ def main():
     out, packdir = sys.argv[1], sys.argv[2]
     base = [G(p) for p in sys.argv[3:]]
     layers = expert_files(packdir)
-    is_exp = re.compile(r'blk\.\d+\.ffn_(gate|up|down)_exps(\..*)?\.weight$|blk\.\d+\.ffn_exps_(gu|down)_type$')
+    is_exp = re.compile(r'blk\.(\d+)\.ffn_(gate|up|down)_exps(\..*)?\.weight$|blk\.(\d+)\.ffn_exps_(gu|down)_type$')
     tensors = []   # (name, ne, ty, source): source = (G, offset) or ('t16', L, role, files)
     nexp_base = 0
     for g in base:
         for name, ne, ty, off in g.t:
-            if is_exp.match(name):
+            mm = is_exp.match(name)
+            if mm and int(mm.group(1) or mm.group(4)) in layers:
                 nexp_base += 1
                 continue
             tensors.append((name, ne, ty, (g, g.data + off)))
@@ -121,9 +132,10 @@ def main():
                     assert dt in ('I16', 'U16') and sh == [k // 16, n // 16, tw], (kk('trellis'), dt, sh)
                     mul = st.read(kk('mul1'))
                     assert int.from_bytes(mul[:4], 'little') == MUL, f'{kk("mul1")} is not the T16 codebook'
-                    for part, want in (('trellis', None), ('suh', [k]), ('svh', [n])):
+                    f.write(from_exl3(st.read(kk('trellis')), k, n, tw))
+                    for part, want in (('suh', [k]), ('svh', [n])):
                         dt, sh, _, nb = st.info(kk(part))
-                        if want: assert dt == 'F16' and sh == want, (kk(part), dt, sh)
+                        assert dt == 'F16' and sh == want, (kk(part), dt, sh)
                         f.write(st.read(kk(part)))
             else:
                 g, so = srcd

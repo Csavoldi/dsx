@@ -1,9 +1,10 @@
 // T16 routed experts (core/src/t16.rs, docs/t16.md): exllamav3's bitshift trellis with the T16 codebook.
-// A matrix (k inputs, n outputs) is stored as trellis | suh | svh:
-//   trellis u16 [k/16][n/16][8 k2] (k2 = 2K = 3, 4, 5), a circular stream of 128 k2 bits per 16 x 16 tile, read as
-//   little-endian u32 words, each MSB first; position t holds tile row (input) t % 16 and tile column (output) t / 16,
-//   and its state is the 16-bit window ending after its own bits;
-//   suh f16 [k], svh f16 [n].
+// A matrix (k inputs, n outputs) is trellis | suh | svh: a circular stream of 128 k2 bits per 16 x 16 tile (k2 = 2K
+// = 3, 4, 5); position t holds tile row (input) t % 16 and tile column (output) t / 16, and its state is the 16-bit
+// window ending after its own bits; suh f16 [k], svh f16 [n]. Two trellis layouts:
+//   stored (GGUF, RAM, CPU kernels; type ids 1010-1012): tile (kb, nb) at nb * k/16 + kb, bytes in stream order;
+//   repacked (GPU store; 2000 + id = 3010-3012): exllamav3's own, tile (kb, nb) at kb * n/16 + nb, little-endian u32 words read
+//   MSB first (repack_t16).
 // y = had128(had128(x * suh) @ W_inner) * svh. Prefill computes it on the activations: t16_pre (x * suh, Hadamard),
 // a GEMM with W_inner^T from dequant_t16_f16, then t16_post (Hadamard, * svh).
 
@@ -29,13 +30,41 @@ __device__ __forceinline__ __half t16_value(uint32_t st) {
 
 __device__ __forceinline__ size_t t16_trellis_bytes(int k2, int k, int n) { return (size_t)(k / 16) * (n / 16) * 16 * k2; }
 
-// W_inner^T as f16 [n][k] (row = output) for cuBLAS; grid (k / 256, n), block 256
-extern "C" __global__ void dequant_t16_f16(int k2, const unsigned char *w, __half *out, int n, int k) {
+// state of position t from a stored-layout tile (bytes in stream order)
+__device__ __forceinline__ uint32_t t16_state_stored(const unsigned char *tb, int k2, int t) {
+  const int nb = 128 * k2, nby = 16 * k2;
+  const int b0 = (t16_bit_end(k2, t) - 16 + nb) % nb, y = b0 >> 3;
+  const uint32_t v = (uint32_t)tb[y] << 16 | (uint32_t)tb[(y + 1) % nby] << 8 | tb[(y + 2) % nby];
+  return (v >> (8 - (b0 & 7))) & 0xFFFFu;
+}
+
+// W_inner^T as f16 [n][k] (row = output) for cuBLAS; repacked = 0 stored layout, 1 GPU layout; grid (k / 256, n),
+// block 256
+extern "C" __global__ void dequant_t16_f16(int k2, const unsigned char *w, __half *out, int n, int k, int repacked) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x, j = blockIdx.y;
   if (i >= k) return;
   const int ti = i >> 4, tj = j >> 4, t = (j & 15) * 16 + (i & 15);
-  const uint32_t *tile = (const uint32_t *)(w + ((size_t)ti * (n / 16) + tj) * 16 * k2);
-  out[(size_t)j * k + i] = t16_value(t16_state(tile, k2, t));
+  uint32_t st;
+  if (repacked) st = t16_state((const uint32_t *)(w + ((size_t)ti * (n / 16) + tj) * 16 * k2), k2, t);
+  else st = t16_state_stored(w + ((size_t)tj * (k / 16) + ti) * 16 * k2, k2, t);
+  out[(size_t)j * k + i] = t16_value(st);
+}
+
+// stored layout -> GPU layout (exllamav3's tile order, little-endian u32 words); suh / svh copied. One thread per
+// 4 bytes of the matrix (trellis | suh | svh, the same size).
+extern "C" __global__ void repack_t16(int k2, const unsigned char *src, unsigned char *dst, int k, int n) {
+  const size_t tbytes = t16_trellis_bytes(k2, k, n), total = tbytes + 2 * (size_t)k + 2 * (size_t)n;
+  const size_t o = 4 * ((size_t)blockIdx.x * blockDim.x + threadIdx.x);
+  if (o >= total) return;
+  if (o >= tbytes) {
+    *(uint32_t *)(dst + o) = *(const uint32_t *)(src + o);
+    return;
+  }
+  const int tb = 16 * k2, kt = k / 16, nt = n / 16;
+  const size_t tile = o / tb, in = o % tb;  // destination tile index (kb * nt + nb), byte within it
+  const int kb = (int)(tile / nt), nb = (int)(tile % nt);
+  const unsigned char *s = src + ((size_t)nb * kt + kb) * tb + in;
+  *(uint32_t *)(dst + o) = (uint32_t)s[0] << 24 | (uint32_t)s[1] << 16 | (uint32_t)s[2] << 8 | s[3];
 }
 
 // dst = had128(src * suh) per row, f16; grid (cols / 128, rows), block 128 (dst may be src)

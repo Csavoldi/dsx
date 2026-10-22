@@ -296,12 +296,6 @@ impl Gpu {
         unsafe { check(cu::cuMemcpyDtoDAsync_v2(dst, src, bytes, self.stream), "cuMemcpyDtoDAsync") }
     }
 
-    /// async device->device copy on the side stream
-    pub fn dtod_side(&self, dst: u64, src: u64, bytes: usize) -> Result<()> {
-        self.bind();
-        unsafe { check(cu::cuMemcpyDtoDAsync_v2(dst, src, bytes, self.side), "cuMemcpyDtoDAsync") }
-    }
-
     pub fn kernel(&self, name: &str) -> Result<Kernel> {
         let c = CString::new(name)?;
         let mut f = std::ptr::null_mut();

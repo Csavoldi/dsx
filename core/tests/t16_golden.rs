@@ -26,8 +26,9 @@ fn decoder_matches_exllamav3() {
         let (k, n) = (512, 256);
         let k2 = t16::k2(ty).unwrap();
         // the stored matrix as dsx keeps it: trellis | suh | svh
-        let mut m = get("trellis");
-        assert_eq!(m.len(), t16::trellis_bytes(k2, k, n));
+        let ex = get("trellis");
+        assert_eq!(ex.len(), t16::trellis_bytes(k2, k, n));
+        let mut m = t16::from_exl3(&ex, k2, k, n);
         let mul = get("mul1");
         assert_eq!(u32::from_le_bytes(mul[..4].try_into().unwrap()), t16::MUL, "mul1");
         m.extend(get("suh"));
