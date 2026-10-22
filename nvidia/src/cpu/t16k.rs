@@ -15,7 +15,8 @@ use half::f16;
 pub const C_B: f32 = 0.009567260742;
 pub const C_0: f32 = 2.4375;
 
-/// int8 activations of one matrix input: x4[i] = bytes [q, q, 0, 0] of input i, d / s per 256 inputs
+/// int8 activations of one matrix input as pair words: x4[i / 2] = bytes [q_i, q_i, q_i+1, q_i+1] for even i, so one
+/// vpdpbusd of two windows' product bytes [lo_i hi_i lo_i+1 hi_i+1] gives q_i b_i + q_i+1 b_i+1; d / s per 256 inputs
 #[derive(Default, Clone)]
 pub struct Act {
     pub x4: Vec<i32>,
@@ -44,18 +45,18 @@ pub fn prep_group(x: &[f32], suh: &[u8], gr: usize, a: &mut Act) {
     let m = v.iter().fold(0f32, |m, x| m.max(x.abs()));
     let id = if m > 0.0 { 127.0 / m } else { 0.0 };
     let mut sum = 0i32;
-    for (i, &vi) in v.iter().enumerate() {
-        let q = (vi * id).round_ties_even() as i32;
-        sum += q;
-        let b = (q & 255) as u32;
-        a.x4[256 * gr + i] = (b | b << 8) as i32;
+    for i in (0..256).step_by(2) {
+        let (q0, q1) = ((v[i] * id).round_ties_even() as i32, (v[i + 1] * id).round_ties_even() as i32);
+        sum += q0 + q1;
+        let (b0, b1) = ((q0 & 255) as u32, (q1 & 255) as u32);
+        a.x4[128 * gr + i / 2] = (b0 | b0 << 8 | b1 << 16 | b1 << 24) as i32;
     }
     a.d[gr] = m / 127.0;
     a.s[gr] = sum;
 }
 
 pub fn prep(x: &[f32], suh: &[u8], k: usize, a: &mut Act) {
-    a.x4.resize(k, 0);
+    a.x4.resize(k / 2, 0);
     a.d.resize(k / 256, 0.0);
     a.s.resize(k / 256, 0);
     for gr in 0..k / 256 {
@@ -99,7 +100,8 @@ pub fn gemv_scalar(m: &[u8], k2: usize, k: usize, _n: usize, a: &Act, nb0: usize
                     for r in 0..16 {
                         let p = t16::state(tile, k2, 16 * c + r).wrapping_mul(t16::MUL) & 0xFFFF;
                         let b = (p & 0xFF) + (p >> 8);
-                        acc += b as i64 * (a.x4[16 * kb + r] as i8) as i64;
+                        let q = (a.x4[8 * kb + r / 2] >> (16 * (r % 2))) as i8;
+                        acc += b as i64 * q as i64;
                     }
                 }
                 f += a.d[gr] * (C_B * acc as f32 - C_0 * a.s[gr] as f32);
@@ -157,28 +159,36 @@ fn plans() -> &'static [Plan; 3] {
 
 // window macros of the SIMD kernels (outside t16_kernels so their $-variables are their own); `dp` and `view` resolve
 // at the expansion site
-macro_rules! win {
-    ($acc:ident, $l:ident, $h:ident, $xj:ident, $mul:ident, lo $o:literal) => {
-        $acc = dp($acc, _mm256_mullo_epi16(_mm256_or_si256(_mm256_srli_epi32::<$o>($l), _mm256_slli_epi32::<{ 32 - $o }>($h)), $mul), $xj);
+// Two windows per 32-bit lane: window j (the view H:L shifted right by o_j) in the low half, window j + 1 in the high
+// half (the view shifted by o_j+1 - 16; a negative shift is L shifted left), joined by vpblendw; one vpmullw and one
+// vpdpbusd for both. `lo o`: (L >> o) | (H << 32 - o); `hi o`: H >> o; `zero`: L; `left o`: L << o.
+macro_rules! sh {
+    ($l:ident, $h:ident, lo $o:literal) => {
+        _mm256_or_si256(_mm256_srli_epi32::<$o>($l), _mm256_slli_epi32::<{ 32 - $o }>($h))
     };
-    ($acc:ident, $l:ident, $h:ident, $xj:ident, $mul:ident, zero) => {
-        $acc = dp($acc, _mm256_mullo_epi16($l, $mul), $xj);
+    ($l:ident, $h:ident, hi $o:literal) => {
+        _mm256_srli_epi32::<$o>($h)
     };
-    ($acc:ident, $l:ident, $h:ident, $xj:ident, $mul:ident, hi $o:literal) => {
-        $acc = dp($acc, _mm256_mullo_epi16(_mm256_srli_epi32::<$o>($h), $mul), $xj);
+    ($l:ident, $h:ident, zero) => {
+        $l
+    };
+    ($l:ident, $h:ident, left $o:literal) => {
+        _mm256_slli_epi32::<$o>($l)
     };
 }
 
 macro_rules! tile {
-    ($t:ident, $p:ident, $msk:ident, $x:ident, $kb:ident, $a0:ident, $a1:ident, $mul:ident; $($j:literal: $kind:ident $($o:literal)?),*) => {{
+    ($t:ident, $p:ident, $msk:ident, $x:ident, $kb:ident, $a0:ident, $a1:ident, $mul:ident; $($q:literal: ($ka:ident $($oa:literal)?, $kb2:ident $($ob:literal)?)),*) => {{
         let l0 = view($t, $p, &$msk, 0);
         let l1 = view($t, $p, &$msk, 1);
         let h0 = view($t, $p, &$msk, 2);
         let h1 = view($t, $p, &$msk, 3);
         $(
-            let xj = _mm256_set1_epi32(*$x.get_unchecked(16 * $kb + $j));
-            win!($a0, l0, h0, xj, $mul, $kind $($o)?);
-            win!($a1, l1, h1, xj, $mul, $kind $($o)?);
+            let xq = _mm256_set1_epi32(*$x.get_unchecked(8 * $kb + $q));
+            let w0 = _mm256_blend_epi16::<0b1010_1010>(sh!(l0, h0, $ka $($oa)?), sh!(l0, h0, $kb2 $($ob)?));
+            let w1 = _mm256_blend_epi16::<0b1010_1010>(sh!(l1, h1, $ka $($oa)?), sh!(l1, h1, $kb2 $($ob)?));
+            $a0 = dp($a0, _mm256_mullo_epi16(w0, $mul), xq);
+            $a1 = dp($a1, _mm256_mullo_epi16(w1, $mul), xq);
         )*
     }};
 }
@@ -243,7 +253,7 @@ macro_rules! t16_kernels {
             #[target_feature(enable = $feat)]
             pub(super) unsafe fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
                 unsafe {
-                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.x4.len() >= k);
+                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.x4.len() >= k / 2);
                     let p = &plans()[k2 - 3];
                     let mut msk = [[[_mm_setzero_si128(); 2]; 2]; 4];
                     for v in 0..4 {
@@ -264,9 +274,10 @@ macro_rules! t16_kernels {
                             for kb in 16 * gr..16 * gr + 16 {
                                 let t = col.add(kb * tb);
                                 match k2 {
-                                    3 => tile!(t, p, msk, x, kb, a0, a1, mul; 0: lo 23, 1: lo 21, 2: lo 20, 3: lo 18, 4: lo 17, 5: lo 15, 6: lo 14, 7: lo 12, 8: lo 11, 9: lo 9, 10: lo 8, 11: lo 6, 12: lo 5, 13: lo 3, 14: lo 2, 15: zero),
-                                    4 => tile!(t, p, msk, x, kb, a0, a1, mul; 0: lo 30, 1: lo 28, 2: lo 26, 3: lo 24, 4: lo 22, 5: lo 20, 6: lo 18, 7: lo 16, 8: lo 14, 9: lo 12, 10: lo 10, 11: lo 8, 12: lo 6, 13: lo 4, 14: lo 2, 15: zero),
-                                    _ => tile!(t, p, msk, x, kb, a0, a1, mul; 0: hi 6, 1: hi 3, 2: hi 1, 3: lo 30, 4: lo 28, 5: lo 25, 6: lo 23, 7: lo 20, 8: lo 18, 9: lo 15, 10: lo 13, 11: lo 10, 12: lo 8, 13: lo 5, 14: lo 3, 15: zero),
+                                    // o_j = end(15) - end(j); pair q = windows 2q (shift o) and 2q + 1 (shift o' - 16)
+                                    3 => tile!(t, p, msk, x, kb, a0, a1, mul; 0: (lo 23, lo 5), 1: (lo 20, lo 2), 2: (lo 17, left 1), 3: (lo 14, left 4), 4: (lo 11, left 7), 5: (lo 8, left 10), 6: (lo 5, left 13), 7: (lo 2, left 16)),
+                                    4 => tile!(t, p, msk, x, kb, a0, a1, mul; 0: (lo 30, lo 12), 1: (lo 26, lo 8), 2: (lo 22, lo 4), 3: (lo 18, zero), 4: (lo 14, left 4), 5: (lo 10, left 8), 6: (lo 6, left 12), 7: (lo 2, left 16)),
+                                    _ => tile!(t, p, msk, x, kb, a0, a1, mul; 0: (hi 6, lo 19), 1: (hi 1, lo 14), 2: (lo 28, lo 9), 3: (lo 23, lo 4), 4: (lo 18, left 1), 5: (lo 13, left 6), 6: (lo 8, left 11), 7: (lo 3, left 16)),
                                 }
                             }
                             let d = _mm256_set1_ps(a.d[gr]);

@@ -206,7 +206,7 @@ impl CpuMoe {
             for j in 0..tk.len() {
                 let i = e * MAX_TOKENS + j;
                 for (a, k) in [(&mut s.ag[i], dim), (&mut s.au[i], dim), (&mut s.ad[i], inter)] {
-                    a.x4.resize(k, 0);
+                    a.x4.resize(k / 2, 0);
                     a.d.resize(k / 256, 0.0);
                     a.s.resize(k / 256, 0);
                 }
