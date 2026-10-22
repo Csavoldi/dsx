@@ -862,18 +862,16 @@ extern "C" __global__ void __launch_bounds__(256) mm2(const MmJob* __restrict__ 
 // Scores S[64][32] = Q . R^T on bf16 MFMA with Q split into hi + lo bf16 (f32-accurate); waves: head tile w%4,
 // row tile (w/4)%2, k half w/8 (summed through LDS). Online softmax per head; O[64][512] += P . R with P split
 // hi + lo; waves: head tile w%4, dim tiles (w/4)*8 .. +8. Writes O / L (after the sink) over the query's q row.
-extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restrict__ q, const uint16_t* __restrict__ lin,
-                                                          const uint16_t* __restrict__ comp, const int* __restrict__ cidx,
-                                                          const int* ncomp, int ldc, int woff, float scale, const float* sinks,
-                                                          int blk) {
-    P0_DEV(p0);
+// attn_core: query t (its q row), window rows lo .. lo+nwin-1 read from lin at row p - wsub or, ring, p % WIN, then nc compressed rows comp[cidx[t][..] - woff]
+__device__ __forceinline__ void attn_core(int t, int lo, int nwin, int wsub, bool ring, float* __restrict__ q, const uint16_t* __restrict__ lin,
+                                          const uint16_t* __restrict__ comp, const int* __restrict__ cidx, int nc, int ldc,
+                                          int woff, float scale, const float* sinks) {
     __shared__ uint16_t rows[32][HD + 8];
     __shared__ float sp[2][64][33];
     __shared__ uint16_t ph[64][32 + 8], pl[64][32 + 8];
     __shared__ float hm[64], hl[64], ha[64];
     __shared__ int rowsrc[32];
-    const int t = blockIdx.x, tid = threadIdx.x, lane = tid & 63, w = tid >> 6;
-    const int pos = p0 + t;
+    const int tid = threadIdx.x, lane = tid & 63, w = tid >> 6;
     const int col = lane & 15, g4 = 4 * (lane >> 4);
     // ---- Q fragments for the score role: head tile ht, k half kh (16 k-steps of 16)
     const int ht = w & 3, rtile = (w >> 2) & 1, kh = w >> 3;
@@ -898,17 +896,13 @@ extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restr
 #pragma unroll
     for (int i = 0; i < 8; i++) o[i] = f4{0, 0, 0, 0};
     if (tid < 64) { hm[tid] = -INFINITY; hl[tid] = 0.f; }
-    // blk > 0 (DSpark draft block): every query sees the window before the block and the whole block
-    const int lo = blk > 0 ? max(0, p0 - WIN) : max(0, pos - (WIN - 1));
-    const int nwin = (blk > 0 ? p0 + blk - 1 : pos) - lo + 1;
-    const int nc = comp ? ncomp[t] : 0;
     const int total = nwin + nc;
     for (int r0 = 0; r0 < total; r0 += 32) {
         __syncthreads();
         if (tid < 32) {
             const int rr = r0 + tid;
             int src = -1;
-            if (rr < nwin) src = (lo + rr) - (p0 - WIN);
+            if (rr < nwin) src = ring ? (lo + rr) % WIN : (lo + rr) - wsub;
             else if (rr < total) {
                 const int ci = cidx[(size_t)t * ldc + rr - nwin];
                 src = ci >= 0 ? 0x40000000 | (ci - woff) : -1;
@@ -1010,6 +1004,17 @@ extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restr
 #pragma unroll
         for (int i = 0; i < 8; i++) q[((size_t)t * NH + h) * HD + 16 * (odt0 + i) + col] = round_bf16(o[i][j] / L);
     }
+}
+extern "C" __global__ void __launch_bounds__(1024) attn_m(int p0, float* __restrict__ q, const uint16_t* __restrict__ lin,
+                                                          const uint16_t* __restrict__ comp, const int* __restrict__ cidx,
+                                                          const int* ncomp, int ldc, int woff, float scale, const float* sinks,
+                                                          int blk) {
+    P0_DEV(p0);
+    const int t = blockIdx.x, pos = p0 + t;
+    // blk > 0 (DSpark draft block): every query sees the window before the block and the whole block
+    const int lo = blk > 0 ? max(0, p0 - WIN) : max(0, pos - (WIN - 1));
+    const int nwin = (blk > 0 ? p0 + blk - 1 : pos) - lo + 1;
+    attn_core(t, lo, nwin, p0 - WIN, false, q, lin, comp, cidx, comp ? ncomp[t] : 0, ldc, woff, scale, sinks);
 }
 
 // after attn_m: inverse RoPE on the last 64 dims of each head, then FP8 per 32 (+ bf16 copy) for wo_a. Block per query.

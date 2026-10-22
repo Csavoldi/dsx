@@ -113,6 +113,8 @@ pub struct PfBufs {
     pin: *mut u8,
     ring: std::cell::Cell<usize>,
     max_end: usize,
+    /// batched decode step in progress: dense GEMMs on bgemv_d (DSXA_BMM=1: the prompt-path mm)
+    bmode: std::cell::Cell<bool>,
 }
 
 const RING: usize = 192 << 20;
@@ -208,6 +210,7 @@ impl PfBufs {
             pin: g.host_alloc(RING)?,
             ring: std::cell::Cell::new(0),
             max_end: max_ctx,
+            bmode: std::cell::Cell::new(false),
         })
     }
 }
@@ -347,6 +350,9 @@ impl Decoder {
     }
 
     fn gm(&self, verify: bool, plain: &dyn Fn(&str) -> bool, label: &str, jobs: &[MmJob]) -> Result<()> {
+        if self.pf.as_ref().unwrap().bmode.get() && !plain(label) && std::env::var_os("DSXA_BMM").is_none() {
+            return self.blaunch(label, self.as_v(jobs));
+        }
         if verify && !plain(label) { self.vlaunch(label, self.as_v(jobs), self.st.ptr) } else { self.mm_l(label, jobs) }
     }
 
@@ -360,6 +366,15 @@ impl Decoder {
     /// `draft`: run `tk` (a DSpark block at the current position) through the draft layers instead, bidirectional
     /// inside the block, nothing committed; returns the drafted tokens.
     pub(crate) fn run_chunk_mode(&mut self, tk: &[u32], verify: bool, draft: bool) -> Result<Vec<u32>> {
+        self.run_chunk_full(tk, verify, draft, None)
+    }
+
+    /// Batched decode step (crate::batch): token i at its own position and slot; returns the greedy next tokens.
+    pub(crate) fn run_chunk_b(&mut self, tk: &[u32], b: &crate::batch::Batch) -> Result<Vec<u32>> {
+        self.run_chunk_full(tk, false, false, Some(b))
+    }
+
+    fn run_chunk_full(&mut self, tk: &[u32], verify: bool, draft: bool, bt: Option<&crate::batch::Batch>) -> Result<Vec<u32>> {
         let t = tk.len();
         let p0 = self.pos;
         // DSXA_VPLAIN=a,b: verify the GEMMs whose label contains a or b ("mm" = all) with the prompt-path kernels
@@ -367,13 +382,16 @@ impl Decoder {
         let vk = verify;
         if let Some(pf) = self.pf.as_ref() {
             pf.ring.set(0); // the previous chunk ended with a sync
+            pf.bmode.set(bt.is_some());
         }
-        if p0 + t > self.max_ctx {
+        if bt.is_none() && p0 + t > self.max_ctx {
             anyhow::bail!("context full");
         }
         // Engram rows for every token (host), into the device rows buffer [t][2][ER]
         let mut rows = vec![0u8; t * 2 * ER];
-        if !draft {
+        if let Some(b) = bt {
+            rows.copy_from_slice(&b.erows);
+        } else if !draft {
             self.engram_rows_batch(tk, &mut rows)?;
         }
         let g = &self.g;
@@ -382,7 +400,7 @@ impl Decoder {
         let ti: Vec<i32> = tk.iter().map(|&x| x as i32).collect();
         // verify / draft passes replay a HIP graph per (tokens, draft, 16K-position bucket): inputs through pinned
         // memory, position-dependent kernels read the position from the decode state (p0 = -1)
-        let gmode = (verify || draft) && t <= 16 && self.head.sc.is_none() && std::env::var_os("DSXA_VPLAIN").is_none() && std::env::var("DSXA_VGRAPH").map(|v| v != "0").unwrap_or(true) && !g.profiling();
+        let gmode = bt.is_none() && (verify || draft) && t <= 16 && self.head.sc.is_none() && std::env::var_os("DSXA_VPLAIN").is_none() && std::env::var("DSXA_VGRAPH").map(|v| v != "0").unwrap_or(true) && !g.profiling();
         let bucket = (p0 + t).div_ceil(16384);
         let key = (t, draft, bucket);
         let cached = gmode && self.vgraphs.borrow().contains_key(&key);
@@ -413,7 +431,9 @@ impl Decoder {
         let dsx = self.dspark.as_ref();
         let layers: &[Layer] = if draft { &dsx.unwrap().layers } else { &self.layers };
         // DSpark main_hidden capture (prompt and verify passes): layer -> slot
-        let mh_slot = |li: usize| if draft { None } else { dsx.and_then(|d| d.targets.iter().position(|&x| x == li)) };
+        // batched decode: per-token positions / slots (kernels/batch.h), experts grouped on the device (bgroup)
+        let bx = bt.is_some() && !plain("mm experts");
+        let mh_slot = |li: usize| if draft || bt.is_some() { None } else { dsx.and_then(|d| d.targets.iter().position(|&x| x == li)) };
         let nl = layers.len();
         let hc = |y: u64, round: bool, pm: u64, pa: &HcArgs, pre: u64, prea: &HcArgs, fnw: u64, nmix: u64, xr: u64, xss: u64, eng: Option<(u64, u64)>| -> Result<()> {
             let (ev, es) = eng.unwrap_or((0, 0));
@@ -485,6 +505,13 @@ impl Decoder {
             }
             self.gm(vk, &plain, "mm q_b", &jobs)?;
             let rf = if l.ratio > 0 { self.rope_fc.ptr } else { self.rope_f.ptr };
+            if let Some(b) = bt {
+                g.launch("rope_b", (t as u32, NH as u32, 1), 32, 0, &[Arg::P(pf.q.ptr), Arg::I(NH as i32), Arg::I(HD as i32), Arg::P(rf), Arg::P(b.bpos.ptr), Arg::I(0)])?;
+                if l.idx_wq_b.is_some() {
+                    g.launch("rope_b", (t as u32, IH as u32, 1), 32, 0, &[Arg::P(pf.iq.ptr), Arg::I(IH as i32), Arg::I(ID as i32), Arg::P(self.rope_fc.ptr), Arg::P(b.bpos.ptr), Arg::I(0)])?;
+                }
+                self.batch_attn(b, li, t, rf, wscale)?;
+            } else {
             g.launch("rope_t", (t as u32, NH as u32, 1), 32, 0, &[Arg::P(pf.q.ptr), Arg::I(NH as i32), Arg::I(HD as i32), Arg::P(rf), Arg::I(p0a), Arg::I(0)])?;
             if l.idx_wq_b.is_some() {
                 g.launch("rope_t", (t as u32, IH as u32, 1), 32, 0, &[Arg::P(pf.iq.ptr), Arg::I(IH as i32), Arg::I(ID as i32), Arg::P(self.rope_fc.ptr), Arg::I(p0a), Arg::I(0)])?;
@@ -564,6 +591,7 @@ impl Decoder {
             } else {
                 g.launch("lin_to_ring", (t.min(WIN) as u32, 1, 1), 256, 0, &[Arg::P(pf.lin.ptr), Arg::I(p0a), Arg::I(t as i32), Arg::P(l.ring.ptr)])?;
             }
+            } // not batched
             // wo_a per group, wo_b
             let k_a = l.wo_a.k;
             let tile_bytes = (k_a / 64) * 1024;
@@ -596,21 +624,26 @@ impl Decoder {
             let (kk, ebase) = if draft { (dsx.unwrap().top_k, dsx.unwrap().arena.ptr) } else { (6, self.arena.ptr) };
             if draft {
                 g.launch("route_k_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::I(ne_l as i32), Arg::I(kk as i32), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr)])?;
-            } else if vk && !plain("mm experts") {
-                // verify: no expert counts needed (device grouping)
+            } else if bx || vk && !plain("mm experts") {
+                // verify / batch: no expert counts needed (device grouping)
                 g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
             }
-            if !(draft || (vk && !plain("mm experts"))) {
+            if !(draft || bx || (vk && !plain("mm experts"))) {
                 g.memset(pf.counts.ptr, 0, NE * 4)?;
                 g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
             }
-            if draft || (vk && !plain("mm experts")) {
-                // device grouping: one job per distinct expert and matrix, tokens as MFMA columns
+            if draft || bx || (vk && !plain("mm experts")) {
+                // device grouping: one job per distinct expert (batch: per 16 of its tokens) and matrix, tokens as MFMA columns
+                let (ndyn, dynb) = if let Some(b) = bt { (crate::batch::BG_JOBS, b.dyn_.ptr) } else { (48, pf.dyn_.ptr) };
+                if bt.is_some() {
+                    g.launch("bgroup", (64, 1, 1), 1024, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(dynb), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.y.ptr)])?;
+                } else {
                 g.launch("vgroup", (64, 1, 1), 256, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(pf.dyn_.ptr), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.y.ptr)])?;
+                }
                 // outputs zeroed by vgroup: all expert jobs add, so k can be split (gate/up 4 ways, down 2)
                 let esplit = |m: usize| std::env::var(if m < 2 { "DSXA_ESPLIT_GU" } else { "DSXA_ESPLIT_D" }).ok().and_then(|v| v.parse().ok()).unwrap_or(if m < 2 { 4 } else { 2 });
                 let ej = |m: usize, n: usize, k: usize, xq: u64, xs: u64, ldx: usize, y: u64, ldy: usize, _atomic: i32| crate::verify::VJob {
-                    w: ebase, n: n as i32, k: k as i32, xq, xs, ldx: ldx as i32, y, ldy: ldy as i32, atomic: 1, split: esplit(m), ndyn: 48, dyn_: pf.dyn_.at(m * 48 * 40 * 4), fmt: 1, ..Default::default()
+                    w: ebase, n: n as i32, k: k as i32, xq, xs, ldx: ldx as i32, y, ldy: ldy as i32, atomic: 1, split: esplit(m), ndyn: ndyn as i32, dyn_: dynb + (m * ndyn * 40 * 4) as u64, fmt: 1, ..Default::default()
                 };
                 self.vlaunch("verify experts gu", vec![ej(0, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.gg.ptr, INTER, 0), ej(1, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.uu.ptr, INTER, 0)], self.st.ptr)?;
                 let rtot = t * kk;
@@ -621,7 +654,7 @@ impl Decoder {
                 sj.yatomic = 1;
                 let mut sv = self.as_v(&[sj]);
                 sv[0].atomic = 1;
-                self.vlaunch("verify shared down", sv, self.st.ptr)?;
+                if bt.is_some() { self.blaunch("batch shared down", sv)?; } else { self.vlaunch("verify shared down", sv, self.st.ptr)?; }
                 self.vlaunch("verify experts down", vec![ej(2, D, INTER, pf.hq.ptr, pf.hs.ptr, INTER, pf.y.ptr, D, 1)], self.st.ptr)?;
                 continue;
             }
@@ -681,6 +714,14 @@ impl Decoder {
                 w("y", f(&pf.y, D)?)?;
                 w("r", f(&pf.r, 8192)?)?;
                 w("xf", f(&pf.xr_f, D)?)?;
+                w("g", f(&pf.gg, 6 * INTER)?)?;
+                w("u", f(&pf.uu, 6 * INTER)?)?;
+                w("shg", f(&pf.sg, INTER)?)?;
+                w("shu", f(&pf.su, INTER)?)?;
+                let sel: Vec<i32> = g.dtoh(pf.sel.ptr, 6)?;
+                w("sel", sel.iter().flat_map(|x| x.to_le_bytes()).collect())?;
+                w("wts", f(&pf.wts, 6)?)?;
+                w("wrow", f(&pf.wrow, 6)?)?;
             }
             if let Ok(dir) = std::env::var("DSX_DUMP") {
                 // h after this layer for every position (post step applied on a copy) vs the reference dumps
@@ -703,6 +744,15 @@ impl Decoder {
         let last = &layers[nl - 1];
         let onorm = if draft { dsx.unwrap().norm.ptr } else { self.out_norm.ptr };
         hc(pf.y.ptr, true, pf.mix_f.ptr, &last.hc_ffn, 0, &none, 0, 0, 0, 0, None)?;
+        if let Some(b) = bt {
+            for lt in 0..t {
+                let (hrow, mrow) = (pf.h.at(lt * HC * D * 4), pf.mix_f.at(lt * 80 * 32 * 4));
+                g.launch("hc_final", (1, 1, 1), 256, 0, &[Arg::P(hrow), Arg::P(mrow), Arg::B(bytes(&last.hc_ffn)), Arg::P(onorm), Arg::P(self.xfin.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(0), Arg::P(0), Arg::P(b.xb.at(lt * D * 2)), Arg::P(b.xl.at(lt * D * 2))])?;
+            }
+            self.batch_head(b, t)?;
+            let v: Vec<i32> = g.dtoh(b.next.ptr, t)?;
+            return Ok(v.iter().map(|&x| x as u32).collect());
+        }
         if verify {
             let pm = self.accp(nl - 1, A_HMIX_F);
             let batched = self.head.sc.is_none();
@@ -805,6 +855,60 @@ impl Decoder {
         self.pos = p0 + keep;
         g.htod(self.st.ptr, &[self.pos as i32])?;
         Ok(())
+    }
+}
+
+impl Decoder {
+    /// Batched decode, layer li after the q / kv / compressor projections: window row into each slot's ring,
+    /// compressor + indexer keys, indexer top-k per token, sparse attention, inverse RoPE + FP8 for wo_a
+    fn batch_attn(&self, b: &crate::batch::Batch, li: usize, t: usize, rf: u64, wscale: f32) -> Result<()> {
+        let g = &self.g;
+        let c = &self.cfg;
+        let pf = self.pf.as_ref().unwrap();
+        let l = &self.layers[li];
+        let (bp, bs) = (b.bpos.ptr, b.bslot.ptr);
+        let ring_stride = (WIN * HD) as i64;
+        g.launch("kv_b", (t as u32, 1, 1), 512, 0, &[Arg::P(pf.kvraw.ptr), Arg::P(l.kv_norm.ptr), Arg::P(rf), Arg::P(bp), Arg::P(bs), Arg::P(b.rings[li].ptr), Arg::P((ring_stride) as u64)])?;
+        if l.kv_src {
+            let r = b.rows[li] as i64;
+            g.launch(
+                "comp_b",
+                (t as u32, 1, 1),
+                512,
+                0,
+                &[Arg::P(bp), Arg::P(bs), Arg::I(l.ratio as i32), Arg::P(pf.ckv.ptr), Arg::P(pf.cg.ptr), Arg::P(b.cst[li].as_ref().unwrap().ptr), Arg::P((4 * HD as i64) as u64), Arg::P(l.comp_norm.as_ref().unwrap().ptr), Arg::P(l.idx_wk.as_ref().unwrap().ptr), Arg::P(l.idx_knorm.as_ref().unwrap().ptr), Arg::P(b.comp[li].as_ref().unwrap().ptr), Arg::P((r * HD as i64) as u64), Arg::P(b.idx[li].as_ref().unwrap().ptr), Arg::P((r * ID as i64) as u64), Arg::P(self.rope_fc.ptr), Arg::F(c.eps)],
+            )?;
+        }
+        let maxp = b.step_pos.iter().copied().max().unwrap_or(0) + 1;
+        if l.idx_src {
+            let ks = l.idxk_src;
+            let kc = b.idx[ks].as_ref().unwrap().ptr;
+            let kstride = (b.rows[ks] * ID) as i64;
+            let after = li > c.cand_layer;
+            let lds = b.lds() as i32;
+            let chunks = ((maxp / l.ratio.max(1)).max(16384)).div_ceil(1024) as u32;
+            let (rows, nrows) = if after { (pf.keep.ptr, pf.nkeep.ptr) } else { (0, 0) };
+            let isc = |grid: u32, rows: u64, nrows: u64| {
+                g.launch("iscore_b", (grid, t as u32, 1), 256, 0, &[Arg::P(bp), Arg::P(bs), Arg::I(l.ratio as i32), Arg::P(pf.iq.ptr), Arg::P(pf.iw.ptr), Arg::F(wscale), Arg::P(kc), Arg::P((kstride) as u64), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::P(b.score.ptr), Arg::I(lds)])
+            };
+            isc(chunks, rows, nrows)?;
+            if li == c.cand_layer {
+                g.launch("icand_b", (t as u32, 1, 1), 1024, 0, &[Arg::P(bp), Arg::I(l.ratio as i32), Arg::I(c.cand_block as i32), Arg::I(c.cand_blocks as i32), Arg::P(b.score.ptr), Arg::I(lds), Arg::P(b.bsc.ptr), Arg::P(b.kb.ptr), Arg::P(pf.keep.ptr), Arg::P(pf.nkeep.ptr)])?;
+                isc(16, pf.keep.ptr, pf.nkeep.ptr)?;
+            }
+            let use_keep = after || li == c.cand_layer;
+            let (rows, nrows) = if use_keep { (pf.keep.ptr, pf.nkeep.ptr) } else { (0, 0) };
+            g.launch("itopk_b", (t as u32, 1, 1), 1024, 0, &[Arg::P(bp), Arg::I(l.ratio as i32), Arg::P(b.score.ptr), Arg::I(lds), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::I(c.idx_topk as i32), Arg::I(WIN as i32), Arg::P(pf.cidx.ptr), Arg::I(512), Arg::P(pf.ncomp.ptr), Arg::I(0)])?;
+        }
+        let (comp, cstride) = if l.ratio > 0 { (b.comp[l.comp_src].as_ref().unwrap().ptr, (b.rows[l.comp_src] * HD) as i64) } else { (0, 0) };
+        g.launch(
+            "attn_b",
+            (t as u32, 1, 1),
+            1024,
+            0,
+            &[Arg::P(bp), Arg::P(bs), Arg::P(pf.q.ptr), Arg::P(b.rings[li].ptr), Arg::P((ring_stride) as u64), Arg::P(comp), Arg::P((cstride) as u64), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr)],
+        )?;
+        g.launch("attn_out_b", (t as u32, (NH / 8) as u32, 1), 256, 0, &[Arg::P(bp), Arg::P(pf.q.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])
     }
 }
 

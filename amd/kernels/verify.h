@@ -321,3 +321,163 @@ extern "C" __global__ void vgroup(int T, int K, const int* sel, const float* wts
         }
     }
 }
+
+// Batched decode (B independent tokens): device grouping of N = T*K (token, pick) pairs, up to BG_PAIRS, by expert.
+// One job per 16 of an expert's pairs (the hottest experts get several), in the vgroup job layout, so vgemv_x runs them
+// unchanged: [fmt, ntok, woff lo/hi, soff lo/hi, mul bits, pad, rows[16], orows[16]]; jobs [3][BG_JOBS] (gate, up, down),
+// unused ones with ntok 0. All blocks zero the k-split outputs (gate/up rows [N][INTER], y [T][D]); block 0 groups.
+// Launch: grid >= 1, block 1024.
+#ifndef BG_PAIRS
+#define BG_PAIRS 2048
+#endif
+#define BG_JOBS (NE + BG_PAIRS / 16)
+extern "C" __global__ void __launch_bounds__(1024) bgroup(int T, int K, const int* sel, const float* wts, const ExpertMat* tab, int* dyn,
+                                                          float* wrow, int* npairs, float* gg, float* uu, float* y) {
+    __shared__ int cnt[NE], base[NE + 1];
+    __shared__ int rank[BG_PAIRS];
+    const int N = T * K, i = threadIdx.x;
+    {
+        const int gi = blockIdx.x * blockDim.x + i, gs = gridDim.x * blockDim.x;
+        for (int q = gi; q < N * INTER; q += gs) { gg[q] = 0.f; uu[q] = 0.f; }
+        for (int q = gi; q < T * D; q += gs) y[q] = 0.f;
+    }
+    if (blockIdx.x != 0) return;
+    if (i == 0) *npairs = N;
+    for (int e = i; e < NE; e += blockDim.x) cnt[e] = 0;
+    __syncthreads();
+    for (int p = i; p < N; p += blockDim.x) {
+        wrow[p] = wts[p];
+        rank[p] = atomicAdd(&cnt[sel[p]], 1);
+    }
+    __syncthreads();
+    if (i == 0) {   // job base per expert: one job per started 16 pairs
+        int b = 0;
+        for (int e = 0; e < NE; e++) { base[e] = b; b += (cnt[e] + 15) >> 4; }
+        base[NE] = b;
+    }
+    __syncthreads();
+    const int nj = base[NE];
+    // headers (all three matrices); unused slots ntok 0
+    for (int q = i; q < 3 * BG_JOBS; q += blockDim.x) {
+        const int m = q / BG_JOBS, j = q % BG_JOBS;
+        int* d = dyn + (size_t)q * 40;
+        if (j >= nj) { d[1] = 0; continue; }
+        int lo = 0, hi = NE - 1;   // expert of job j: the last e with base[e] <= j (and a non-empty range)
+        while (lo < hi) { const int mid = (lo + hi + 1) >> 1; if (base[mid] <= j) lo = mid; else hi = mid - 1; }
+        const int e = lo, ch = j - base[e];
+        const ExpertMat em = tab[e * 3 + m];
+        d[0] = em.fmt == E_FP4 ? 1 : (em.fmt == E_CB3 ? 2 : 3);
+        d[1] = min(16, cnt[e] - 16 * ch);
+        d[2] = (int)(em.woff & 0xFFFFFFFF); d[3] = (int)(em.woff >> 32);
+        d[4] = (int)(em.soff & 0xFFFFFFFF); d[5] = (int)(em.soff >> 32);
+        d[6] = __float_as_int(em.mul);
+    }
+    // members: pair p goes to job base[e] + rank/16, column rank%16
+    for (int p = i; p < N; p += blockDim.x) {
+        const int e = sel[p], j = base[e] + (rank[p] >> 4), c = rank[p] & 15;
+        for (int m = 0; m < 3; m++) {
+            int* d = dyn + (size_t)(m * BG_JOBS + j) * 40;
+            // gate/up: activation row = token, output row = pair; down: activation row = pair, output row = token
+            d[8 + c] = m < 2 ? p / K : p;
+            d[24 + c] = m < 2 ? p : p / K;
+        }
+    }
+}
+
+// Batched decode, dense matrices: vgemv's layout (one wave per 16-row tile and k-slice) over up to 16 * G tokens in
+// G groups of 16; each weight fragment is loaded once and multiplied into every group (accumulators acc[G]), so the
+// dense weights stream once per step whatever the batch. Static jobs only (fmt 0 FP8, fmt 4 BF16; no epilogue).
+template <int G>
+DEV void bwave_dense(const VJob& J, int rt, int u0, int u1, int lane, f4 (&acc)[G]) {
+    const int col = lane & 15, g8 = 8 * (lane >> 4), g4 = 4 * (lane >> 4);
+#pragma unroll
+    for (int gi = 0; gi < G; gi++) acc[gi] = f4{0, 0, 0, 0};
+    if (J.fmt == 0) {
+        const int KP = J.k / 64, KB = J.k / 32;
+        const u4v* wp = (const u4v*)J.w + (size_t)rt * KP * 64 + lane;
+        const uint8_t* sp = (const uint8_t*)J.sc + (size_t)(rt >> 1) * KB;
+        for (int kp = u0; kp < u1; kp++) {
+            const u4v w = __builtin_nontemporal_load(wp + (size_t)kp * 64);
+            const float ws0 = __uint_as_float((uint32_t)sp[2 * kp] << 23), ws1 = __uint_as_float((uint32_t)sp[2 * kp + 1] << 23);
+            const uint64_t a0 = (uint64_t)w.y << 32 | w.x, a1 = (uint64_t)w.w << 32 | w.z;
+#pragma unroll
+            for (int gi = 0; gi < G; gi++) {
+                const int tok = gi * 16 + col;
+                const bool live = tok < J.ntok;
+                const int xrow = live ? (J.rows ? J.rows[tok] : tok) : 0;
+                const uint8_t* xq = J.xq + (size_t)xrow * J.ldx;
+                const float* xs = J.xs + (size_t)xrow * (J.ldx / 32);
+                const uint64_t x0 = live ? *reinterpret_cast<const uint64_t*>(xq + kp * 64 + g8) : 0ull;
+                const uint64_t x1 = live ? *reinterpret_cast<const uint64_t*>(xq + kp * 64 + 32 + g8) : 0ull;
+                const float s0 = live ? xs[2 * kp] * ws0 : 0.f, s1 = live ? xs[2 * kp + 1] * ws1 : 0.f;
+                const f4 d0 = mfma_fp8(a0, x0, f4{0, 0, 0, 0});
+                const f4 d1 = mfma_fp8(a1, x1, f4{0, 0, 0, 0});
+                acc[gi] += d0 * s0 + d1 * s1;
+            }
+        }
+#pragma unroll
+        for (int gi = 0; gi < G; gi++) acc[gi] *= 2.f;
+        return;
+    }
+    // fmt 4: BF16 weights, bf16 activations
+    const int KQ = J.k / 32;
+    const u4v* wp = (const u4v*)J.w + (size_t)rt * KQ * 64 + lane;
+    for (int kq = u0; kq < u1; kq++) {
+        const u4v w = __builtin_nontemporal_load(wp + (size_t)kq * 64);
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+            const uint32_t w0 = h ? w.z : w.x, w1 = h ? w.w : w.y;
+            s4v a;
+            a[0] = (short)(w0 & 0xFFFF); a[1] = (short)(w0 >> 16); a[2] = (short)(w1 & 0xFFFF); a[3] = (short)(w1 >> 16);
+#pragma unroll
+            for (int gi = 0; gi < G; gi++) {
+                const int tok = gi * 16 + col;
+                const bool live = tok < J.ntok;
+                const int xrow = live ? (J.rows ? J.rows[tok] : tok) : 0;
+                const uint64_t bv = live ? *reinterpret_cast<const uint64_t*>(J.xb + (size_t)xrow * J.ldx + kq * 32 + 16 * h + g4) : 0ull;
+                acc[gi] = mfma_bf16(a, *reinterpret_cast<const s4v*>(&bv), acc[gi]);
+                if (J.xl) {
+                    const uint64_t lv = live ? *reinterpret_cast<const uint64_t*>(J.xl + (size_t)xrow * J.ldx + kq * 32 + 16 * h + g4) : 0ull;
+                    acc[gi] = mfma_bf16(a, *reinterpret_cast<const s4v*>(&lv), acc[gi]);
+                }
+            }
+        }
+    }
+}
+
+template <int G>
+DEV void bgemv_impl(const VJob& J, int b) {
+    const int lane = threadIdx.x & 63, wv = threadIdx.x >> 6;
+    const int RB = (J.n + 63) / 64;
+    const int rb = b % RB, sl = b / RB;
+    const int rt = rb * 4 + wv;
+    if (rt * 16 >= J.n) return;
+    const int KU = J.fmt == 0 ? 64 : 32;
+    const int KUs = J.k / KU;
+    const int u0 = KUs * sl / J.split, u1 = KUs * (sl + 1) / J.split;
+    f4 acc[G];
+    bwave_dense<G>(J, rt, u0, u1, lane, acc);
+    const int col = lane & 15, r0 = rt * 16 + 4 * (lane >> 4);
+#pragma unroll
+    for (int gi = 0; gi < G; gi++) {
+        const int tok = gi * 16 + col;
+        if (tok >= J.ntok) break;
+        const int orow = J.orows ? J.orows[tok] : tok;
+        float* yp = J.y + (size_t)orow * J.ldy + r0;
+        for (int j = 0; j < 4; j++) {
+            if (J.atomic) atomicAdd(yp + j, acc[gi][j]);
+            else yp[j] = acc[gi][j];
+        }
+    }
+}
+
+#define BGEMV(G)                                                                                              \
+    extern "C" __global__ void __launch_bounds__(256) bgemv_d##G(VJobs js) {                                  \
+        int b = blockIdx.x, ji = 0;                                                                           \
+        while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;                                 \
+        bgemv_impl<G>(js.j[ji], b);                                                                           \
+    }
+BGEMV(2)
+BGEMV(4)
+BGEMV(8)
+BGEMV(16)

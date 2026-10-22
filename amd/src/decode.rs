@@ -1456,7 +1456,9 @@ impl Decoder {
             self.jobs(jobs, 2, Some(li))?;
             if let (true, Some(_), Ok(dir)) = (li == 0, &self.dump, std::env::var("DSXA_DUMPQ")) {
                 let p = self.pos;
-                for (n, off, cnt) in [("a", A_A, D), ("logits", A_LOGITS, NE), ("y", A_Y, D), ("r", A_R, 8192)] {
+                let sel: Vec<i32> = g.dtoh(self.route.ptr, 16)?;
+                std::fs::write(format!("{dir}/sel_p{p}.bin"), sel.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
+                for (n, off, cnt) in [("a", A_A, D), ("logits", A_LOGITS, NE), ("y", A_Y, D), ("r", A_R, 8192), ("g", A_G, 6 * INTER), ("u", A_U, 6 * INTER), ("shg", A_SHG, INTER), ("shu", A_SHU, INTER)] {
                     let v: Vec<f32> = g.dtoh(self.accp(0, off), cnt)?;
                     std::fs::write(format!("{dir}/{n}_p{p}.bin"), v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
                 }
@@ -1569,6 +1571,32 @@ impl Decoder {
         out.par_chunks_mut(2 * ENG_ROW_BYTES).enumerate().for_each(|(i, o)| {
             for (ei, (wb, sb)) in tabs.iter().enumerate() {
                 let ids = engram_hashes(c, &hist[..base_len + i + 1], ei);
+                let ob = &mut o[ei * ENG_ROW_BYTES..(ei + 1) * ENG_ROW_BYTES];
+                for (r, &id) in ids.iter().enumerate() {
+                    let id = id as usize;
+                    ob[r * 256..(r + 1) * 256].copy_from_slice(&wb[id * hd..id * hd + 256]);
+                    ob[24 * 256 + r * 8..24 * 256 + r * 8 + 8].copy_from_slice(&sb[id * (hd / 32)..id * (hd / 32) + 8]);
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Engram rows of a batched decode step: token i's row from its own history hists[i] (ending with the token)
+    pub(crate) fn engram_rows_multi(&self, hists: &[&[i64]], out: &mut [u8]) -> Result<()> {
+        use rayon::prelude::*;
+        let c = &self.cfg;
+        let est = self.engram_st.as_ref().context("engram tables")?;
+        let hd = c.engram_dim;
+        let mut tabs = vec![];
+        for &l in &c.engram_layers {
+            let wt = est.get(&format!("layers.{l}.engram.embed.weight"))?;
+            let sct = est.get(&format!("layers.{l}.engram.embed.scale"))?;
+            tabs.push((est.bytes(wt), est.bytes(sct)));
+        }
+        out.par_chunks_mut(2 * ENG_ROW_BYTES).zip(hists.par_iter()).for_each(|(o, h)| {
+            for (ei, (wb, sb)) in tabs.iter().enumerate() {
+                let ids = engram_hashes(c, h, ei);
                 let ob = &mut o[ei * ENG_ROW_BYTES..(ei + 1) * ENG_ROW_BYTES];
                 for (r, &id) in ids.iter().enumerate() {
                     let id = id as usize;

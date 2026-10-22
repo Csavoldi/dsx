@@ -424,7 +424,7 @@ DEV void route_top6(const float* logits, const float* bias, float route_scale, R
         sc[j] = sqrtf(sp);
         key[j] = sc[j] + bias[e];
     }
-    float sum = 0;
+    float sum = 0, wsel[6];
     for (int s = 0; s < 6; s++) {
         // best (key desc, index asc) among this lane's remaining picks, then across the wave
         float bk = -INFINITY;
@@ -442,11 +442,13 @@ DEV void route_top6(const float* logits, const float* bias, float route_scale, R
         const float scv = __shfl(bj >= 0 ? sc[bj < 0 ? 0 : bj] : 0.f, bi & 63);
         if (lane == (bi & 63)) key[bi >> 6] = -INFINITY;
         if (lane == 0) r->ids[s] = bi;
-        r->wts[s] = scv;
+        wsel[s] = scv;
         sum += scv;
     }
+    // weights stored once, by one lane (all lanes storing the raw score first raced with the normalization: route_t
+    // could keep the 6th pick's raw score)
     if (lane == 0)
-        for (int s = 0; s < 6; s++) r->wts[s] = r->wts[s] / (sum + 1e-20f) * route_scale;
+        for (int s = 0; s < 6; s++) r->wts[s] = wsel[s] / (sum + 1e-20f) * route_scale;
 }
 
 // One GEMV block of a multi-job launch. 256 threads.
@@ -1644,3 +1646,4 @@ extern "C" __global__ void hc_mix_t(const float* pmix, HcArgs pa, const float* p
     }
 }
 #include "verify.h"
+#include "batch.h"

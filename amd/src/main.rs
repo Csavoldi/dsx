@@ -9,6 +9,7 @@ mod prefill;
 mod selftest;
 mod serve;
 mod verify;
+mod batch;
 mod dspark;
 
 use anyhow::{Context, Result};
@@ -190,6 +191,11 @@ fn bench(dec: &mut Decoder, c: usize, steps: usize, prof: bool) -> Result<()> {
 }
 
 fn eval_run(dec: &mut Decoder, eval: &Path, seqs: usize, len: usize) -> Result<String> {
+    eval_run_m(dec, eval, seqs, len, false)
+}
+
+/// `prompt`: every token through the prompt path (a one-token prefill) instead of the decode step
+fn eval_run_m(dec: &mut Decoder, eval: &Path, seqs: usize, len: usize, prompt: bool) -> Result<String> {
     let rd = |f: &str| std::fs::read(eval.join(f));
     let toks: Vec<u32> = rd("heldout.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
     let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
@@ -201,7 +207,7 @@ fn eval_run(dec: &mut Decoder, eval: &Path, seqs: usize, len: usize) -> Result<S
         dec.reset()?;
         let seq = &toks[sq * len..(sq + 1) * len];
         for p in 0..len - 1 {
-            dec.step(seq[p])?;
+            if prompt { dec.prefill(&seq[p..p + 1])?; } else { dec.step(seq[p])?; }
             let l = dec.logits()?;
             let lq = log_softmax(&l);
             nll -= lq[seq[p + 1] as usize];
@@ -217,8 +223,48 @@ fn eval_run(dec: &mut Decoder, eval: &Path, seqs: usize, len: usize) -> Result<S
     Ok(format!("{{\"tokens\": {cnt}, \"nll\": {:.6}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", nll / cnt as f64, (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64))
 }
 
+/// eval_run through batched decode: the SEQS sequences (each REP times, so B = SEQS * REP) decoded together from
+/// empty slots, teacher-forced, one batched step per position
+fn beval_run(dec: &mut Decoder, eval: &Path, seqs: usize, rep: usize, len: usize) -> Result<String> {
+    let rd = |f: &str| std::fs::read(eval.join(f));
+    let toks: Vec<u32> = rd("heldout.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
+    let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
+    let tlp: Vec<f32> = rd("teacher_lp.f32")?.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+    let topk = 256;
+    let bsz = seqs * rep;
+    let mut b = dec.new_batch(bsz, len + 16)?;
+    let slots: Vec<usize> = (0..bsz).collect();
+    let (mut nll, mut kl, mut agree, mut cnt) = (vec![0f64; rep], vec![0f64; rep], vec![0usize; rep], 0usize);
+    let t0 = Instant::now();
+    let mut tstep = 0f64;
+    for p in 0..len - 1 {
+        let feed: Vec<u32> = (0..bsz).map(|i| toks[(i % seqs) * len + p]).collect();
+        let ts = Instant::now();
+        dec.batch_step(&mut b, &slots, &feed)?;
+        tstep += ts.elapsed().as_secs_f64();
+        for i in 0..bsz {
+            let (sq, r) = (i % seqs, i / seqs);
+            let l = dec.batch_logits(&b, i)?;
+            let lq = log_softmax(&l);
+            nll[r] -= lq[toks[sq * len + p + 1] as usize];
+            let row = sq * (len - 1) + p;
+            let (ti, tl) = (&tidx[row * topk..(row + 1) * topk], &tlp[row * topk..(row + 1) * topk]);
+            kl[r] += ti.iter().zip(tl).map(|(&i, &lt)| (lt as f64).exp() * (lt as f64 - lq[i as usize])).sum::<f64>();
+            let am = l.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |a, (i, &v)| if v > a.1 { (i, v) } else { a }).0;
+            agree[r] += (am as i32 == ti[0]) as usize;
+        }
+        cnt += seqs;
+        if (p + 1) % 256 == 0 {
+            eprintln!("pos {}: kl {:.4} ({:.0} s, {:.1} ms/step)", p + 1, kl[0] / cnt as f64, t0.elapsed().as_secs_f64(), tstep * 1e3 / (p + 1) as f64);
+        }
+    }
+    let per: Vec<String> = (0..rep).map(|r| format!("{{\"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", (nll[r] / cnt as f64).exp(), kl[r] / cnt as f64, agree[r] as f64 / cnt as f64)).collect();
+    Ok(format!("{{\"batch\": {bsz}, \"tokens\": {cnt}, \"ms_per_step\": {:.2}, \"replicas\": [{}]}}", tstep * 1e3 / (len - 1) as f64, per.join(", ")))
+}
+
 fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<()> {
-    let mut dec = Decoder::load(model, ctx, rank, &[], None)?;
+    let nl = std::env::var("DSXA_LAYERS").ok().and_then(|v| v.parse().ok());
+    let mut dec = Decoder::load(model, ctx, rank, &[], nl)?;
     dec.load_dspark(model)?;
     eprintln!("dev: ready, waiting for {}", cmd.display());
     loop {
@@ -359,12 +405,111 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                             println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
                         }
                     }
+                    "bcheck" => {
+                        // bcheck N [CTX]: two different prompts decoded greedily N tokens each, single-stream vs one
+                        // batched pass of both (slots 1 and 3 of 4); prints where the token streams first differ
+                        let n: usize = w[1].parse()?;
+                        let ctx: usize = w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(8192);
+                        let prompts: Vec<Vec<u32>> = vec![(0..300).map(|i| ((i * 7919 + 13) % 120000) as u32).collect(), (0..1500).map(|i| ((i * 104729 + 7) % 120000) as u32).collect()];
+                        let mut refs = vec![];
+                        let mut b = dec.new_batch(4, ctx)?;
+                        let mut first = vec![];
+                        for (pi, pr) in prompts.iter().enumerate() {
+                            dec.reset()?;
+                            let mut tok = dec.prefill(pr)?;
+                            dec.load_slot(&mut b, 1 + 2 * pi)?;
+                            first.push(tok);
+                            let mut out = vec![tok];
+                            for _ in 1..n {
+                                tok = dec.step(tok)?;
+                                out.push(tok);
+                            }
+                            refs.push(out);
+                        }
+                        let mut toks = first.clone();
+                        let mut got = vec![first.clone()];
+                        let t0 = Instant::now();
+                        for _ in 1..n {
+                            toks = dec.batch_step(&mut b, &[1, 3], &toks)?;
+                            got.push(toks.clone());
+                        }
+                        println!("batched {} steps of 2: {:.1} ms/step", n - 1, t0.elapsed().as_secs_f64() * 1e3 / (n - 1).max(1) as f64);
+                        for pi in 0..2 {
+                            let gs: Vec<u32> = got.iter().map(|v| v[pi]).collect();
+                            let d = (0..n).find(|&i| gs[i] != refs[pi][i]);
+                            println!("prompt {pi}: first difference at {:?} of {n}\n  single {:?}\n  batch  {:?}", d, &refs[pi][..n.min(24)], &gs[..n.min(24)]);
+                        }
+                    }
+                    "blogit" => {
+                        // blogit CTX [SLOT] [TEXTFILE]: logits of one token after a chat prompt: decode step vs batched step
+                        // (slot SLOT of 4) vs the prompt path over prompt + token
+                        let ctx: usize = w[1].parse()?;
+                        let slot: usize = w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(2);
+                        let text = match w.get(3) { Some(f) => std::fs::read_to_string(f)?, None => "Write a Rust function that parses a CSV line with quoted fields, and explain the edge cases.".into() };
+                        let tok = tokenizers::Tokenizer::from_file(model.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let chat = format!("<｜begin▁of▁sentence｜><｜User｜>{text}<｜Assistant｜></think>");
+                        let ids: Vec<u32> = tok.encode(chat.as_str(), false).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().to_vec();
+                        let mut b = dec.new_batch(4, ctx)?;
+                        dec.reset()?;
+                        let t1 = dec.prefill(&ids)?;
+                        dec.load_slot(&mut b, slot)?;
+                        let _ = dec.step(t1)?;
+                        let l1 = dec.logits()?;
+                        let nb = dec.batch_step(&mut b, &[slot], &[t1])?;
+                        let l2 = dec.batch_logits(&b, 0)?;
+                        dec.reset()?;
+                        let mut ids2 = ids.clone();
+                        ids2.push(t1);
+                        let _ = dec.prefill(&ids2)?;
+                        let l3 = dec.logits()?;
+                        let rel = |a: &[f32], r: &[f32]| (a.iter().zip(r).map(|(x, y)| (x - y) * (x - y)).sum::<f32>() / r.iter().map(|y| y * y).sum::<f32>()).sqrt();
+                        let top = |l: &[f32]| { let mut ix: Vec<usize> = (0..l.len()).collect(); ix.sort_by(|&a, &b| l[b].partial_cmp(&l[a]).unwrap()); ix[..5].to_vec() };
+                        println!("prompt {} tokens, next {t1}; batch argmax {}", ids.len(), nb[0]);
+                        println!("  decode top5 {:?}\n  batch  top5 {:?} rel {:.2e}\n  prompt top5 {:?} rel {:.2e}", top(&l1), top(&l2), rel(&l2, &l1), top(&l3), rel(&l3, &l1));
+                    }
+                    "bbench" => {
+                        // bbench B CTX [STEPS] [PROMPT]: B slots, each holding the same PROMPT-token context (default
+                        // CTX/2), STEPS batched steps; tok/s and the kernel profile of one step
+                        let bsz: usize = w[1].parse()?;
+                        let ctx: usize = w[2].parse()?;
+                        let steps: usize = w.get(3).map(|s| s.parse()).transpose()?.unwrap_or(16);
+                        let plen: usize = w.get(4).map(|s| s.parse()).transpose()?.unwrap_or(ctx / 2);
+                        let need = batch::Batch::state_bytes(&dec, bsz, ctx);
+                        println!("batch state: {:.1} GB", need as f64 / 1e9);
+                        let mut b = dec.new_batch(bsz, ctx)?;
+                        dec.reset()?;
+                        let pr: Vec<u32> = (0..plen).map(|i| ((i * 7919 + 13) % 120000) as u32).collect();
+                        let first = dec.prefill(&pr)?;
+                        for s in 0..bsz {
+                            dec.load_slot(&mut b, s)?;
+                        }
+                        let slots: Vec<usize> = (0..bsz).collect();
+                        let mut toks: Vec<u32> = (0..bsz).map(|i| (first + i as u32 * 31) % 120000).collect();
+                        toks = dec.batch_step(&mut b, &slots, &toks)?;
+                        dec.g.sync()?;
+                        let t0 = Instant::now();
+                        for _ in 0..steps {
+                            toks = dec.batch_step(&mut b, &slots, &toks)?;
+                        }
+                        dec.g.sync()?;
+                        let s = t0.elapsed().as_secs_f64() / steps as f64;
+                        println!("B={bsz} ctx~{plen}: {:.1} ms/step = {:.0} tok/s", s * 1e3, bsz as f64 / s);
+                        dec.g.prof_start();
+                        let r = dec.batch_step(&mut b, &slots, &toks);
+                        let p = dec.g.prof_end()?;
+                        r?;
+                        let tot: f32 = p.iter().map(|x| x.1).sum();
+                        println!("  one step: {:.0} us in kernels ({} launches)", tot, p.iter().map(|x| x.2).sum::<usize>());
+                        for (nm, t, k) in p.iter().take(30) {
+                            println!("  {nm:<28} {t:>10.0} us {k:>6} launches");
+                        }
+                    }
                     "vwaves" => dsx_amd_vwaves(w[1].parse()?),
                     "env" => {
                         // env K [V]: set (or with no value, remove) a variable read at run time by debug switches
                         unsafe {
                             match w.get(2) {
-                                Some(v) => std::env::set_var(w[1], v),
+                                Some(_) => std::env::set_var(w[1], w[2..].join(" ")),
                                 None => std::env::remove_var(w[1]),
                             }
                         }
@@ -427,6 +572,35 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         }
                         ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
                         println!("  decode after it: {:.0} us median ({:.1} tok/s)", ts[8], 1e6 / ts[8]);
+                    }
+                    "pcmp" => {
+                        // pcmp EVALDIR N: residual stream after every layer, decode (eager) vs the prompt path one token at a
+                        // time, positions 0..N of eval sequence 0; prints rel error per layer at each position
+                        let n: usize = w[2].parse()?;
+                        let toks: Vec<u32> = std::fs::read(Path::new(w[1]).join("heldout.i32"))?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
+                        let dir = "/root/pcmp";
+                        std::fs::create_dir_all(dir)?;
+                        dec.reset()?;
+                        for p in 0..n {
+                            let (_, d) = dec.step_dump(toks[p])?;
+                            for (li, h) in d.iter().enumerate() {
+                                std::fs::write(format!("{dir}/ref_p{p}_l{li:02}.bin"), h.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
+                            }
+                        }
+                        dec.reset()?;
+                        unsafe { std::env::set_var("DSX_DUMP", dir) };
+                        for p in 0..n {
+                            dec.prefill(&toks[p..p + 1])?;
+                        }
+                        unsafe { std::env::remove_var("DSX_DUMP") };
+                    }
+                    "peval" => {
+                        let r = eval_run_m(&mut dec, Path::new(w[1]), w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(8), 1024, true)?;
+                        println!("{r}");
+                    }
+                    "beval" => {
+                        let r = beval_run(&mut dec, Path::new(w[1]), w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(8), w.get(3).map(|s| s.parse()).transpose()?.unwrap_or(1), 1024)?;
+                        println!("{r}");
                     }
                     "eval" => {
                         let r = eval_run(&mut dec, Path::new(w[1]), w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(8), 1024)?;

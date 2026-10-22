@@ -99,6 +99,54 @@ impl Decoder {
     }
 }
 
+impl Decoder {
+    /// batched decode, dense jobs (fmt 0 / 4, static, no epilogue) over up to 256 tokens: bgemv_d{G} streams each
+    /// weight once for G groups of 16 tokens; k-split toward VWAVES waves (outputs zeroed first unless they add)
+    pub(crate) fn blaunch(&self, label: &str, mut jobs: Vec<VJob>) -> Result<()> {
+        let nt = jobs.iter().map(|j| j.ntok).max().unwrap_or(0) as usize;
+        if nt <= 16 {
+            return self.vlaunch(label, jobs, self.st.ptr);
+        }
+        anyhow::ensure!(nt <= 256 && jobs.iter().all(|j| j.ndyn == 0 && (j.fmt == 0 || j.fmt == 4) && j.epi == 0));
+        let gsz = nt.div_ceil(16).next_power_of_two().max(2);
+        let target = std::env::var("DSXA_BWAVES").ok().and_then(|v| v.parse().ok()).unwrap_or(VWAVES.load(std::sync::atomic::Ordering::Relaxed));
+        for chunk in jobs.chunks_mut(VMAX) {
+            let tiles: usize = chunk.iter().map(|j| (j.n as usize).div_ceil(16)).sum();
+            let mut blocks = 0u32;
+            for j in chunk.iter_mut() {
+                if j.split == 0 {
+                    let units = j.k as usize / if j.fmt == 0 { 64 } else { 32 };
+                    let mut s = 1;
+                    while tiles * s < target && s * 2 <= units / 2 {
+                        s *= 2;
+                    }
+                    j.split = s as i32;
+                }
+                if j.split > 1 && j.atomic == 0 {
+                    j.atomic = 1;
+                    j.zero = 1;
+                }
+                j.blocks = ((j.n as usize).div_ceil(64) * j.split as usize) as i32;
+                blocks += j.blocks as u32;
+            }
+            let n = chunk.len();
+            let mut arr = [chunk[0]; VMAX];
+            arr[..n].copy_from_slice(chunk);
+            let js = VJobs { j: arr, n: n as i32, cb3lo: self.cb3[0], cb3hi: self.cb3[1], cb2: self.cb2 };
+            let b = unsafe { std::slice::from_raw_parts(&js as *const VJobs as *const u8, std::mem::size_of::<VJobs>()).to_vec() };
+            if chunk.iter().any(|j| j.zero != 0) {
+                let elems: usize = chunk.iter().filter(|j| j.zero != 0).map(|j| (j.n * j.ntok) as usize).sum();
+                self.g.launch("vzero", (elems.div_ceil(1024).clamp(1, 1216) as u32, 1, 1), 256, 0, &[Arg::B(b.clone())])?;
+            }
+            self.g.set_label(Some(label));
+            let r = self.g.launch(&format!("bgemv_d{gsz}"), (blocks, 1, 1), 256, 0, &[Arg::B(b)]);
+            self.g.set_label(None);
+            r?;
+        }
+        Ok(())
+    }
+}
+
 /// self-test hook: one static vgemv job over `ntok` activation rows
 #[allow(clippy::too_many_arguments)]
 pub fn test_vgemv(g: &crate::hip::Gpu, fmt: i32, w: u64, sc: u64, soff: i64, n: usize, k: usize, xq: u64, xs: u64, xb: u64, ntok: usize, y: u64, split: i32) -> Result<()> {
