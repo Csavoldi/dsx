@@ -23,7 +23,7 @@ import numpy as np
 
 Q8_0, Q3_K, Q2_0, PTQ1_0, IQ2_XXS = 8, 11, 42, 143, 16
 F32, F16, I8, I32 = 0, 1, 24, 26
-TIER_TYPE = {"ptq1": PTQ1_0, "q2_0": Q2_0, "q3_k": Q3_K, "iq2xxs": IQ2_XXS}
+TIER_TYPE = {"ptq1": PTQ1_0, "q2_0": Q2_0, "q3_k": Q3_K, "iq2xxs": IQ2_XXS, "q8_0": Q8_0}   # q8_0: in-place holes for external quantizers (quant/t16)
 TYPE_TIER = {v: k for k, v in TIER_TYPE.items()}
 # (weights per block, bytes per block)
 BLOCK = {F32: (1, 4), F16: (1, 2), I8: (1, 1), I32: (1, 4), Q8_0: (32, 34), Q2_0: (64, 18), Q3_K: (256, 110),

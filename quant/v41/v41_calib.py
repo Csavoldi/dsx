@@ -285,6 +285,51 @@ def cmd_prep_ids(a):
     log(f"prep-ids: {tokens.shape} tokens from {a.ids}")
 
 
+def cmd_prep_mix(a):
+    """BASE calibration dir (tokens/meta) + MIX jsonl ({"text", "domain"} per line, rendered like cmd_prep's corpus:
+    chat turns in DeepSeek's template) -> WORK: BASE's sequences as they are (fit / held-out split kept) followed by
+    the mix packed into --seq sequences per domain, all fit; engram hashes recomputed for everything."""
+    from transformers import AutoTokenizer
+    os.makedirs(WORK, exist_ok=True)
+    tok = AutoTokenizer.from_pretrained(MAIN)
+    BOS, EOS = tok.bos_token_id, tok.eos_token_id
+    base = np.load(os.path.join(a.base, "tokens.npy"))
+    bm = json.load(open(os.path.join(a.base, "meta.json")))
+    S = base.shape[1]
+    by = defaultdict(list)
+    for line in open(a.mix):
+        r = json.loads(line)
+        by[r["domain"]].append(r["text"])
+    seqs, doms = [], []
+    for dom, texts in by.items():
+        cur = [BOS]
+        for t in texts:
+            special = t.startswith("<｜User｜>") or t.startswith("<｜System｜>") or t.startswith("<｜begin▁of▁sentence｜>")
+            if t.startswith("<｜begin▁of▁sentence｜>"):
+                t = t[len("<｜begin▁of▁sentence｜>"):]
+            ids = tok.encode(t, add_special_tokens=False)[: S - 1]
+            if not special:
+                ids = ids + [EOS]
+            while ids:
+                room = S - len(cur)
+                cur += ids[:room]; ids = ids[room:]
+                if len(cur) == S:
+                    seqs.append(cur); doms.append(dom); cur = [BOS]
+                    ids = ids[: S // 2]
+        log(f"prep-mix: {dom}: {sum(d == dom for d in doms)} sequences from {len(texts)} texts")
+    tokens = np.concatenate([base, np.array(seqs, dtype=np.int32).reshape(-1, S)])
+    np.save(wpath("tokens.npy"), tokens)
+    json.dump({"n": len(tokens), "seq": S, "domains": bm["domains"] + doms, "is_eval": bm["is_eval"] + [False] * len(seqs),
+               "corpus": f"{bm.get('corpus')} + {a.mix}"}, open(wpath("meta.json"), "w"))
+    args = model_args(len(tokens), S)
+    layout = M.EngramLayout.from_args(args)
+    hs = M.NgramHashState(args, layout, tok)
+    with torch.inference_mode():
+        hashes = hs(torch.from_numpy(tokens).long(), 0)
+    np.save(wpath("hashes.npy"), hashes.numpy())
+    log(f"prep-mix: {tokens.shape} tokens ({len(seqs)} new, all fit), hashes {tuple(hashes.shape)}")
+
+
 # ---------------------------------------------------------------------------------------------------------- init
 def h_memmap(L, mode, N, S):
     os.makedirs(wpath("h"), exist_ok=True)
@@ -440,6 +485,45 @@ def act_hessians(xf, W1, W3, gf, lim):
     return H1, H2
 
 
+_DUMP_POOL, _DUMP_PENDING, _DUMPED = None, [], set()
+
+
+def dump_expert(L, ex, W1, W3, W2, H1, H2, lim, n_fit):
+    """V41_DUMP_ALL=DIR: every expert's weights (bf16) and fit Hessians (fp32; None below --min-fit tokens) to
+    DIR/LNN/eNNN.pt, written on a thread and renamed into place, for an external quantizer (quant/t16/t16_worker.py).
+    DIR/LNN/DONE marks a finished layer (every expert dumped, the unrouted ones without H)."""
+    global _DUMP_POOL
+    from concurrent.futures import ThreadPoolExecutor
+    if _DUMP_POOL is None:
+        _DUMP_POOL = ThreadPoolExecutor(int(os.environ.get("V41_DUMP_THREADS", "4")))
+    d = os.path.join(os.environ["V41_DUMP_ALL"], f"L{L:02d}")
+    os.makedirs(d, exist_ok=True)
+    obj = {"L": L, "ex": ex, "W1": W1.bfloat16().cpu(), "W3": W3.bfloat16().cpu(), "W2": W2.bfloat16().cpu(),
+           "H1": None if H1 is None else H1.float().cpu(), "H2": None if H2 is None else H2.float().cpu(),
+           "lim": lim, "n_fit": n_fit}
+    def write(obj=obj, f=os.path.join(d, f"e{ex:03d}.pt")):
+        torch.save(obj, f + ".tmp")
+        os.replace(f + ".tmp", f)
+    while len(_DUMP_PENDING) >= 16:      # bound the host copies in flight (~200 MB each)
+        _DUMP_PENDING.pop(0).result()
+    _DUMP_PENDING.append(_DUMP_POOL.submit(write))
+    _DUMPED.add((L, ex))
+
+
+def dump_finish(L, blk):
+    """the experts no token reached (weights only), then DONE once every write has landed"""
+    for ex in range(NE):
+        if (L, ex) not in _DUMPED:
+            e = blk.ffn.experts[ex]
+            W1 = K.dequant_fp4_weight(e.w1.weight, e.w1.scale)
+            W3 = K.dequant_fp4_weight(e.w3.weight, e.w3.scale)
+            W2 = K.dequant_fp4_weight(e.w2.weight, e.w2.scale)
+            dump_expert(L, ex, W1, W3, W2, None, None, 0.0, 0)
+    while _DUMP_PENDING:
+        _DUMP_PENDING.pop(0).result()
+    open(os.path.join(os.environ["V41_DUMP_ALL"], f"L{L:02d}", "DONE"), "w").close()
+
+
 def screen_expert(exp, xe, ge, fit, lim, min_fit, damps=(0.01,), key=None):
     """GPTQ + RTN at every tier on the fit tokens, output error on the held-out tokens.  Returns a stats dict."""
     W1 = K.dequant_fp4_weight(exp.w1.weight, exp.w1.scale)
@@ -462,6 +546,8 @@ def screen_expert(exp, xe, ge, fit, lim, min_fit, damps=(0.01,), key=None):
         torch.save({"L": key[0], "ex": key[1], "W1": W1.bfloat16().cpu(), "W3": W3.bfloat16().cpu(), "W2": W2.bfloat16().cpu(),
                     "H1": H1.cpu(), "H2": H2.cpu(), "xv": xv.cpu(), "gv": gv.cpu(), "lim": lim, "n_fit": st["n_fit"]},
                    os.path.join(dump, f"L{key[0]:02d}_e{key[1]:03d}.pt"))
+    if key is not None and os.environ.get("V41_DUMP_ALL"):
+        dump_expert(key[0], key[1], W1, W3, W2, H1 if do_gptq else None, H2 if do_gptq else None, lim, st["n_fit"])
     if not len(xv):
         return st
     Y = expert_f(xv, W1, W3, W2, gv, lim)
@@ -635,6 +721,8 @@ def cmd_layer(a):
                 "seconds": round(time.time() - t0, 1), "tiers": TIERS, "min_fit": a.min_fit, "damps": a.damps}
         os.makedirs(wpath("stats"), exist_ok=True)
         json.dump({"summary": summ, "experts": stats}, open(wpath("stats", f"L{L:02d}.json"), "w"))
+    if os.environ.get("V41_DUMP_ALL"):
+        dump_finish(L, blk)
     if a.gc and L >= 1:
         for p in (wpath("h", f"L{L - 1:02d}.bin"), wpath("shared", f"L{L - 1:02d}.pt")):   # shared: 3 GB/layer from L21
             if os.path.exists(p):
@@ -665,6 +753,10 @@ def cmd_head(a):
     pre = np.load(wpath("pre", f"L{L:02d}.npy"))
     res = {}
     am = np.zeros((N, S - 1), np.int32) if a.save_argmax else None   # argmax at position p = the model's guess for p+1
+    if a.teacher_out:   # Lucebox-format teacher: heldout.i32 [N][S], teacher_idx.i32 / teacher_lp.f32 [N*(S-1)][K]
+        os.makedirs(a.teacher_out, exist_ok=True)
+        tokens.astype("<i4").tofile(os.path.join(a.teacher_out, "heldout.i32"))
+        t_idx = np.zeros((N, S - 1, a.topk), np.int32); t_lp = np.zeros((N, S - 1, a.topk), np.float32)
     t0 = time.time()
     with torch.inference_mode():
         for i in range(N):
@@ -680,6 +772,9 @@ def cmd_head(a):
                 hit += int((lg.argmax(-1) == t).sum())
                 if am is not None:
                     am[i, c:c + lg.shape[0]] = lg.argmax(-1).cpu().numpy()
+                if a.teacher_out:
+                    v, ix = torch.log_softmax(lg, -1).topk(a.topk, dim=-1)
+                    t_idx[i, c:c + lg.shape[0]] = ix.int().cpu().numpy(); t_lp[i, c:c + lg.shape[0]] = v.cpu().numpy()
             key = (meta["domains"][i], "eval" if meta["is_eval"][i] else "fit")
             r = res.setdefault(key, [0.0, 0, 0])
             r[0] += nll; r[1] += hit; r[2] += S - 1
@@ -693,6 +788,10 @@ def cmd_head(a):
               open(wpath("stats", f"head_L{L:02d}.json"), "w"), indent=1)
     if am is not None:
         np.save(wpath("stats", f"head_argmax_L{L:02d}.npy"), am)
+    if a.teacher_out:
+        t_idx.astype("<i4").tofile(os.path.join(a.teacher_out, "teacher_idx.i32"))
+        t_lp.astype("<f4").tofile(os.path.join(a.teacher_out, "teacher_lp.f32"))
+        log(f"teacher: {N} x {S} tokens, top-{a.topk} -> {a.teacher_out}")
     for k, v in out.items():
         log(f"head L{L}: {k:22s} ppl {v['ppl']:9.3f}  top1 {v['top1']:.3f}  ({v['tokens']} tokens)")
 
@@ -704,11 +803,14 @@ def main():
     p.add_argument("--corpus", default=None, help="build_corpus.py output dir (agentic-first V4.1 mix)")
     p.add_argument("--think-weight", type=int, default=0, help="share of reasoning traces (think.jsonl) next to the mix's 32")
     sub.add_parser("init")
+    p = sub.add_parser("prep-mix"); p.add_argument("--base", required=True); p.add_argument("--mix", required=True)
     p = sub.add_parser("prep-ids"); p.add_argument("ids", nargs="+"); p.add_argument("--domain", default="custom")
     p.add_argument("--rows", type=int, default=1, help="split the ids into this many equal sequences")
     p = sub.add_parser("head"); p.add_argument("--layer", type=int, default=40, help="h/L to read (40 = after the last block)")
     p.add_argument("--device", default="cuda")
     p.add_argument("--save-argmax", action="store_true", help="also write stats/head_argmax_LNN.npy (int32 [N, S-1])")
+    p.add_argument("--teacher-out", help="also write a Lucebox-format teacher (heldout.i32, teacher_idx.i32, teacher_lp.f32)")
+    p.add_argument("--topk", type=int, default=256)
     p = sub.add_parser("layer"); p.add_argument("layer", type=int); p.add_argument("--batch", type=int, default=0, help="sequences per attention batch (0: ~4K tokens)")
     p.add_argument("--device", default="cuda")
     p.add_argument("--no-gptq", action="store_true"); p.add_argument("--gptq-experts", type=int, default=NE); p.add_argument("--min-fit", type=int, default=32)
@@ -719,7 +821,7 @@ def main():
     p.add_argument("--screen-only", default=None, metavar="TAG",
                    help="write stats/LNN_TAG.json only; no h/pre/shared/route output, no --gc")
     a = ap.parse_args()
-    {"prep": cmd_prep, "prep-ids": cmd_prep_ids, "init": cmd_init, "layer": cmd_layer, "head": cmd_head}[a.cmd](a)
+    {"prep": cmd_prep, "prep-mix": cmd_prep_mix, "prep-ids": cmd_prep_ids, "init": cmd_init, "layer": cmd_layer, "head": cmd_head}[a.cmd](a)
 
 
 if __name__ == "__main__":
