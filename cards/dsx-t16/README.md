@@ -45,7 +45,7 @@ model's top-256 log-probs).
 
 | | |
 |---|---|
-| Size | 302 GB in 4 GGUF shards: the model (141 GB in 3) + the Engram table at Q6_K (161 GB); tokenizer included |
+| Size | 302 GB in 4 GGUF shards: the model (141 GB in 3) + the Engram table at Q6_K (161 GB); tokenizer included. 252 GB with the IQ4_NL Engram table (`iq4nl-engram/`) |
 | Experts | T16 trellis: 1.5 / 1.5 / 2 bits (gate / up / down) in layers 0-19, 2 / 2 / 2.5 in layers 20-39; ~1.9 bpw |
 | Quality vs FP8 | KL 0.194 · top-1 81.4% · perplexity 9.60 (FP8: 8.56) |
 | Speed, 2x RTX 3090 | 34.9 tok/s decode, 36.8 with `--defer-rank 3` · ~365 tok/s prefill (3K prompt) |
@@ -120,6 +120,15 @@ CUDA_ARCHS=86 cargo build --release -p dsx --features cuda      # 86 = RTX 30xx,
 
 ./target/release/dsx-server --model ../dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf \
   --host 0.0.0.0 --port 8090 --ctx 131072 --arena-gb 110 --rank ../dsx-t16/expert-rank.json --defer-rank 3
+```
+
+**Smaller download (252 GB):** the same model with Unsloth's IQ4_NL Engram table (111 GB instead of 161) is in
+`iq4nl-engram/`: KL 0.196 / top-1 80.9% instead of 0.194 / 81.4%.
+
+```bash
+hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --include "iq4nl-engram/*" expert-rank.json vision.safetensors --local-dir dsx-t16
+# then --model dsx-t16/iq4nl-engram/DeepSeek-V4.1-Flash-1017-dsx-t16-iq4nl-00001-of-00004.gguf
+#      --vision dsx-t16/vision.safetensors
 ```
 
 The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-rank 3` for the best quality. Open
