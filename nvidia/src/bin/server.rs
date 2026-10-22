@@ -13,9 +13,9 @@ use tokenizers::Tokenizer;
 #[derive(Parser)]
 #[command(about = "OpenAI / Anthropic compatible API server for DeepSeek-V4.1-Flash (dsx)")]
 struct Cli {
-    /// DeepSeek V4.1 tokenizer.json
+    /// DeepSeek V4.1 tokenizer.json; default: the one stored in the model GGUF (`dsx.tokenizer_json`)
     #[arg(long)]
-    tokenizer: PathBuf,
+    tokenizer: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
     #[arg(long, default_value_t = 8090)]
@@ -102,7 +102,15 @@ async fn main() -> Result<()> {
     if let Some(v) = &cli.vision {
         tracing::info!("vision: {}", v.display());
     }
-    let tok = Arc::new(Tokenizer::from_file(&cli.tokenizer).map_err(|e| anyhow!("{}: {e}", cli.tokenizer.display()))?);
+    let tok = Arc::new(match (&cli.tokenizer, &cli.model) {
+        (Some(t), _) => Tokenizer::from_file(t).map_err(|e| anyhow!("{}: {e}", t.display()))?,
+        (None, Some(m)) if m.is_file() => {
+            let g = dsx::gguf::Gguf::open(m)?;
+            let s = g.kv.get("dsx.tokenizer_json").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("{} has no dsx.tokenizer_json: pass --tokenizer", m.display()))?;
+            s.parse::<Tokenizer>().map_err(|e| anyhow!("dsx.tokenizer_json in {}: {e}", m.display()))?
+        }
+        _ => return Err(anyhow!("--tokenizer is required unless the model GGUF stores dsx.tokenizer_json")),
+    });
     let engine = if cli.mock {
         let (tok, mode, delay) = (tok.clone(), if cli.mock_echo { MockMode::Echo } else { MockMode::Scripted }, cli.mock_delay_ms);
         EngineHandle::spawn(move || {

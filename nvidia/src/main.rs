@@ -170,6 +170,9 @@ enum Cmd {
         /// another GGUF's tensors (e.g. the Engram table, per_layer_token_embd) as one more shard at the end
         #[arg(long)]
         add: Option<PathBuf>,
+        /// store this tokenizer.json in the metadata (`dsx.tokenizer_json`): dsx-server then needs no --tokenizer
+        #[arg(long)]
+        tokenizer_json: Option<PathBuf>,
     },
     /// Render answered chat requests (JSON lines: system, user, effort, reasoning, answer) as training-style text with
     /// the server's V4.1 template: prompt, reasoning, `</think>`, answer, end of sentence. JSON lines {"text"} to stdout.
@@ -629,7 +632,7 @@ fn main() -> Result<()> {
             w.flush()?;
             println!("{}: {} tensors, {:.2} GB", out.display(), names.len(), off as f64 / 1e9);
         }
-        Cmd::Split { input, prefix, shards, name, expert_rot_from, add } => {
+        Cmd::Split { input, prefix, shards, name, expert_rot_from, add, tokenizer_json } => {
             let mut arrays = vec![];
             if let Some(q) = &expert_rot_from {
                 let nl = dsx::gguf::Gguf::open(&input)?.u64("deepseek41.num_hidden_layers")? as usize;
@@ -642,7 +645,13 @@ fn main() -> Result<()> {
                 println!("dsx.expert_rot: {} of {nl} layers rotated", rot.iter().filter(|&&r| r != 0).count());
                 arrays.push(("dsx.expert_rot".to_string(), rot));
             }
-            let paths = dsx::gguf::split(&input, &prefix, shards, name.as_deref(), &arrays, add.as_deref())?;
+            let mut strs = vec![];
+            if let Some(f) = &tokenizer_json {
+                let s = std::fs::read_to_string(f)?;
+                s.parse::<tokenizers::Tokenizer>().map_err(|e| anyhow::anyhow!("{}: {e}", f.display()))?;
+                strs.push(("dsx.tokenizer_json".to_string(), s));
+            }
+            let paths = dsx::gguf::split(&input, &prefix, shards, name.as_deref(), &arrays, &strs, add.as_deref())?;
             let (a, b) = (dsx::gguf::Gguf::open(&input)?, dsx::gguf::Gguf::open(&paths[0])?);
             let xa = add.as_deref().map(dsx::gguf::Gguf::open).transpose()?;
             let na = a.order.len() + xa.as_ref().map_or(0, |x| x.order.len());
@@ -653,8 +662,11 @@ fn main() -> Result<()> {
                     anyhow::ensure!(x.dims == y.dims && x.ty == y.ty && src.bytes(x) == b.bytes(y), "tensor {k} differs");
                 }
             }
-            let kv_same = a.kv.iter().all(|(k, v)| b.kv.get(k) == Some(v) || (name.is_some() && k == "general.name") || arrays.iter().any(|(n, _)| n == k));
+            let kv_same = a.kv.iter().all(|(k, v)| b.kv.get(k) == Some(v) || (name.is_some() && k == "general.name") || arrays.iter().any(|(n, _)| n == k) || strs.iter().any(|(n, _)| n == k));
             anyhow::ensure!(kv_same, "metadata differs");
+            for (k, v) in &strs {
+                anyhow::ensure!(b.kv.get(k).and_then(|x| x.as_str()) == Some(v.as_str()), "{k} not stored");
+            }
             println!("{na} tensors and {} metadata keys match", a.kv.len());
         }
         Cmd::Render { input } => {

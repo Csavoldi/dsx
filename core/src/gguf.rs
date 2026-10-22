@@ -321,9 +321,10 @@ impl Gguf {
 /// Write `src` as `n` llama.cpp-style split files `<prefix>-0000k-of-0000n.gguf`, tensors in file order, balanced by
 /// bytes. Shard 1 carries all metadata; every shard carries `split.no`, `split.count`, `split.tensors.count`.
 /// `name` replaces `general.name`; `u32_arrays` adds (or replaces) u32 array keys (e.g. `dsx.expert_rot`).
+/// `str_kvs` adds (or replaces) string keys (e.g. `dsx.tokenizer_json`).
 /// `add`: another GGUF whose tensors (not metadata) go into one more shard at the end, e.g. an Engram table that is a
 /// single tensor larger than any balanced shard; `n` counts that shard too.
-pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays: &[(String, Vec<u32>)], add: Option<&Path>) -> Result<Vec<PathBuf>> {
+pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays: &[(String, Vec<u32>)], str_kvs: &[(String, String)], add: Option<&Path>) -> Result<Vec<PathBuf>> {
     use std::io::{BufWriter, Write};
     let g = Gguf::open(src)?;
     anyhow::ensure!(g.paths.len() == 1, "{} is already split", src.display());
@@ -344,7 +345,7 @@ pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays:
         let k = c.string()?;
         let t = c.u32()?;
         c.value(t)?;
-        let replaced = u32_arrays.iter().any(|(n, _)| *n == k);
+        let replaced = u32_arrays.iter().any(|(n, _)| *n == k) || str_kvs.iter().any(|(n, _)| *n == k);
         if !(name.is_some() && k == "general.name") && !replaced {
             kv_raw.extend(&map[p0..c.p]);
         } else if replaced {
@@ -360,6 +361,14 @@ pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays:
         for v in vals {
             kv_raw.extend(v.to_le_bytes());
         }
+        nkv += 1;
+    }
+    for (key, val) in str_kvs {
+        kv_raw.extend((key.len() as u64).to_le_bytes());
+        kv_raw.extend(key.as_bytes());
+        kv_raw.extend(8u32.to_le_bytes()); // string
+        kv_raw.extend((val.len() as u64).to_le_bytes());
+        kv_raw.extend(val.as_bytes());
         nkv += 1;
     }
     if let Some(nm) = name {
@@ -456,7 +465,7 @@ mod split_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let prefix = dir.join("t").to_string_lossy().into_owned();
         let rot: Vec<u32> = (0..26).map(|l| if l % 3 == 0 { 128 } else { 0 }).collect();
-        let p = super::split(src, &prefix, 2, None, &[("dsx.expert_rot".into(), rot.clone())], None).unwrap();
+        let p = super::split(src, &prefix, 2, None, &[("dsx.expert_rot".into(), rot.clone())], &[], None).unwrap();
         let g = super::Gguf::open(&p[0]).unwrap();
         assert_eq!(g.arr_u64("dsx.expert_rot").unwrap(), rot.iter().map(|&v| v as u64).collect::<Vec<_>>());
         for f in p {
