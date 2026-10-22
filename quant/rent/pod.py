@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """pod.py - rent and release one RunPod GPU pod for a quantization run.
 
-  pod.py up STATE [--gpu ID] [--image IMAGE] [--disk GB]     rent, wait for ssh, write STATE (json: id, ip, port, cost)
+  pod.py up STATE [--gpu ID] [--image IMAGE] [--disk GB] [--cloud C]  rent, wait for ssh, write STATE (json: id, ip, port, cost)
   pod.py down STATE                                           terminate the pod in STATE
   pod.py ssh STATE CMD...                                     run CMD on it (also: -put SRC... DEST, -get SRC DEST)
 
@@ -56,7 +56,7 @@ def create(a, cloud):
 def up(a):
     """Rent; a pod without an ssh address within --wait seconds is terminated and another one rented (up to --tries)."""
     for attempt in range(a.tries):
-        cloud = "SECURE" if attempt % 2 == 0 else "COMMUNITY"
+        cloud = a.cloud if a.cloud != "ALT" else ("SECURE" if attempt % 2 == 0 else "COMMUNITY")
         try:
             d = create(a, cloud)
         except urllib.error.HTTPError as e:
@@ -107,6 +107,7 @@ def main():
     q.add_argument("--name", default="dsx-quant")
     q.add_argument("--wait", type=int, default=120, help="seconds to ssh before a pod is replaced")
     q.add_argument("--tries", type=int, default=6)
+    q.add_argument("--cloud", default="ALT", choices=["ALT", "SECURE", "COMMUNITY"], help="ALT: secure, then community")
     q = s.add_parser("down")
     q.add_argument("state")
     q = s.add_parser("ssh")

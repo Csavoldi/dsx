@@ -32,6 +32,29 @@ PY
 sed -i 's/^codebook_mul1_mult = 0x83DCD12D/codebook_mul1_mult = 0x3A2F/' "$DST/exllamav3/modules/quant/exl3_lib/quantize.py"
 grep -n "codebook_mul1_mult" "$DST/exllamav3/modules/quant/exl3_lib/quantize.py"
 grep -c "0x3A2F" "$Q"/quantize_tiles_kernel.cuh
-# 4. the dense fractional-K quantizer (K = 1.5 / 2.5 / 3.5): same indices as exllamav3's generic kernel, ~5x faster
+# 4. column-major positions inside each tile (position t = row t % 16, column t // 16), the order dsx's T16 kernels
+#    read; EXL3_T16_ORDER=tc keeps exllamav3's tensor-core order. Only the quantizer uses this tree, so its own
+#    tensor-core reconstruct / inference kernels (which assume the stock order) are not used on these trellises
+python3 - "$DST/exllamav3/modules/quant/exl3_lib/quantize.py" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "    The cached index maps row-major tile elements into the lane/interleave order used by the CUDA encoder.\n    \"\"\"\n"
+new = old + ("    if os.environ.get(\"EXL3_T16_ORDER\", \"cm\") != \"tc\":   # T16 patch: column-major positions\n"
+             "        return torch.tensor([(t % 16) * 16 + t // 16 for t in range(256)], dtype = torch.int, device = device)\n")
+assert s.count(old) == 1
+open(p, "w").write(s.replace(old, new))
+print("tile order: column-major unless EXL3_T16_ORDER=tc")
+PY
+# 5. H stays on the GPU after finalize: exllamav3 moves it to the CPU for the proxy error and the scale refit, which
+#    under a pod's cgroup CPU cap (2 threads per worker) ran ~20x slower than on the GPU
+python3 - "$DST/exllamav3/modules/quant/exl3_lib/quantize.py" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '        H = H.cpu()\n        H_data["H"] = H.cpu()\n'
+assert s.count(old) == 1
+open(p, "w").write(s.replace(old, '        H_data["H"] = H   # T16 patch: kept on the GPU\n'))
+print("H kept on the GPU")
+PY
+# 6. the dense fractional-K quantizer (K = 1.5 / 2.5 / 3.5): same indices as exllamav3's generic kernel, ~5x faster
 python3 "$(dirname "$0")/patch_qtf_opt.py" "$DST"
 echo "T16 tree ready: $DST"
