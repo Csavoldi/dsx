@@ -321,10 +321,19 @@ impl Gguf {
 /// Write `src` as `n` llama.cpp-style split files `<prefix>-0000k-of-0000n.gguf`, tensors in file order, balanced by
 /// bytes. Shard 1 carries all metadata; every shard carries `split.no`, `split.count`, `split.tensors.count`.
 /// `name` replaces `general.name`; `u32_arrays` adds (or replaces) u32 array keys (e.g. `dsx.expert_rot`).
-pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays: &[(String, Vec<u32>)]) -> Result<Vec<PathBuf>> {
+/// `add`: another GGUF whose tensors (not metadata) go into one more shard at the end, e.g. an Engram table that is a
+/// single tensor larger than any balanced shard; `n` counts that shard too.
+pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays: &[(String, Vec<u32>)], add: Option<&Path>) -> Result<Vec<PathBuf>> {
     use std::io::{BufWriter, Write};
     let g = Gguf::open(src)?;
     anyhow::ensure!(g.paths.len() == 1, "{} is already split", src.display());
+    let xg = add.map(Gguf::open).transpose()?;
+    if let Some(x) = &xg {
+        anyhow::ensure!(n >= 2, "--add needs at least 2 shards");
+        anyhow::ensure!(x.order.iter().all(|k| !g.tensors.contains_key(k)), "tensor names of the added file collide");
+    }
+    let n_main = n - xg.is_some() as usize;
+    let n_tensors = g.order.len() + xg.as_ref().map_or(0, |x| x.order.len());
     let map = &g.maps[0];
     // the metadata section verbatim: after magic, version, tensor count, kv count
     let mut c = Cursor { b: map, p: 24 };
@@ -366,15 +375,18 @@ pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays:
     let align = g.kv.get("general.alignment").and_then(|v| v.as_u64()).unwrap_or(32);
     let total: u64 = g.order.iter().map(|k| g.tensors[k].bytes).sum();
     // cut points: shard s ends at the first tensor boundary past s/n of the bytes
-    let mut groups: Vec<Vec<&TensorInfo>> = vec![vec![]; n];
+    let mut groups: Vec<Vec<(&Gguf, &TensorInfo)>> = vec![vec![]; n];
     let mut acc = 0u64;
     for k in &g.order {
         let t = &g.tensors[k];
-        let s = ((acc as u128 * n as u128 / total as u128) as usize).min(n - 1);
-        groups[s].push(t);
+        let s = ((acc as u128 * n_main as u128 / total as u128) as usize).min(n_main - 1);
+        groups[s].push((&g, t));
         acc += t.bytes;
     }
-    anyhow::ensure!(groups.iter().all(|v| !v.is_empty()), "too many shards for {} tensors", g.order.len());
+    if let Some(x) = &xg {
+        groups[n - 1] = x.order.iter().map(|k| (x, &x.tensors[k])).collect();
+    }
+    anyhow::ensure!(groups.iter().all(|v| !v.is_empty()), "too many shards for {} tensors", n_tensors);
     let s64 = |w: &mut Vec<u8>, s: &str| {
         w.extend((s.len() as u64).to_le_bytes());
         w.extend(s.as_bytes());
@@ -401,9 +413,9 @@ pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays:
         h.extend((n as u16).to_le_bytes());
         s64(&mut h, "split.tensors.count");
         h.extend(5u32.to_le_bytes());
-        h.extend((g.order.len() as i32).to_le_bytes());
+        h.extend((n_tensors as i32).to_le_bytes());
         let mut off = 0u64;
-        for t in ts {
+        for (_, t) in ts {
             s64(&mut h, &t.name);
             h.extend((t.dims.len() as u32).to_le_bytes());
             for d in &t.dims {
@@ -418,8 +430,8 @@ pub fn split(src: &Path, prefix: &str, n: usize, name: Option<&str>, u32_arrays:
         let mut w = BufWriter::with_capacity(64 << 20, File::create(&path).with_context(|| format!("create {}", path.display()))?);
         w.write_all(&h)?;
         let mut pos = 0u64;
-        for t in ts {
-            w.write_all(g.bytes(t))?;
+        for (src, t) in ts {
+            w.write_all(src.bytes(t))?;
             pos += t.bytes;
             let pad = pos.div_ceil(align) * align - pos;
             w.write_all(&vec![0u8; pad as usize])?;
@@ -444,7 +456,7 @@ mod split_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let prefix = dir.join("t").to_string_lossy().into_owned();
         let rot: Vec<u32> = (0..26).map(|l| if l % 3 == 0 { 128 } else { 0 }).collect();
-        let p = super::split(src, &prefix, 2, None, &[("dsx.expert_rot".into(), rot.clone())]).unwrap();
+        let p = super::split(src, &prefix, 2, None, &[("dsx.expert_rot".into(), rot.clone())], None).unwrap();
         let g = super::Gguf::open(&p[0]).unwrap();
         assert_eq!(g.arr_u64("dsx.expert_rot").unwrap(), rot.iter().map(|&v| v as u64).collect::<Vec<_>>());
         for f in p {
