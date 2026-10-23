@@ -433,6 +433,92 @@ mod tests {
         f32_matvec(e.dn, e.down, e.inter(dim), &h)
     }
 
+    /// T16 experts over a 16-token window with sparse routing (prefill's CPU share): equal to running each token
+    /// alone, and bit-identical on 40 reruns with 14 threads while other threads compete for the cores
+    #[test]
+    fn t16_window_reproducible_under_load() {
+        let (dim, inter, ne, t) = (2048usize, 1024usize, 64usize, 16usize);
+        let mut s = 0x1234_5678_9abc_def0u64;
+        let mut rnd = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let mut mat = |ty: GType, k: usize, n: usize| -> Vec<u8> {
+            let tb = crate::t16::trellis_bytes(crate::t16::k2(ty).unwrap(), k, n);
+            let mut v: Vec<u8> = (0..crate::t16::matrix_bytes(ty, k, n)).map(|_| rnd() as u8).collect();
+            for c in v[tb..].chunks_exact_mut(2) {
+                c.copy_from_slice(&half::f16::from_f32(0.02).to_le_bytes());
+            }
+            v
+        };
+        let mats: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..ne).map(|_| (mat(GType::T16K15, dim, inter), mat(GType::T16K15, dim, inter), mat(GType::T16K2, inter, dim))).collect();
+        let ex: Vec<ExpertW> = mats.iter().map(|m| ExpertW { gu: GType::T16K15, gate: &m.0, up: &m.1, dn: GType::T16K2, down: &m.2 }).collect();
+        let mut r = 0x9e37_79b9u64;
+        let mut rnd2 = || {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            r
+        };
+        let x: Vec<f32> = (0..t * dim).map(|_| (rnd2() % 2001) as f32 / 1000.0 - 1.0).collect();
+        // each expert gets 1-3 of the tokens
+        let mut w = vec![0f32; ne * t];
+        for e in 0..ne {
+            for _ in 0..1 + rnd2() % 3 {
+                w[e * t + (rnd2() % t as u64) as usize] = 0.1 + (rnd2() % 100) as f32 / 200.0;
+            }
+        }
+        let mut cm = CpuMoe::new(Pool::new(&(0..14).collect::<Vec<_>>(), Duration::from_millis(5)));
+        let mut win = vec![0f32; t * dim];
+        cm.forward(&ex, dim, &x, t, &w, &mut win);
+        // competing load on the same cores (prefill's host thread and rayon helpers), so pool threads get preempted
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hogs: Vec<_> = (0..20)
+            .map(|_| {
+                let st = stop.clone();
+                std::thread::spawn(move || {
+                    let mut v = 0u64;
+                    while !st.load(Relaxed) {
+                        v = v.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        std::hint::black_box(v);
+                    }
+                })
+            })
+            .collect();
+        let _guard = scopeguard_stop(stop.clone());
+        for rep in 0..40 {
+            let mut win2 = vec![0f32; t * dim];
+            cm.forward(&ex, dim, &x, t, &w, &mut win2);
+            let diff = win.iter().zip(&win2).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(diff, 0, "window forward not reproducible: rerun {rep}, {diff} outputs differ");
+        }
+        stop.store(true, Relaxed);
+        for h in hogs {
+            h.join().unwrap();
+        }
+        let mut single = vec![0f32; t * dim];
+        for j in 0..t {
+            let wj: Vec<f32> = (0..ne).map(|e| w[e * t + j]).collect();
+            cm.forward(&ex, dim, &x[j * dim..(j + 1) * dim], 1, &wj, &mut single[j * dim..(j + 1) * dim]);
+        }
+        let e = rel(&win, &single);
+        println!("window vs single tokens: rel {e:.2e}");
+        assert!(e < 1e-5, "window vs single tokens: rel {e}");
+    }
+
+    /// stops the hog threads if an assertion unwinds
+    fn scopeguard_stop(s: std::sync::Arc<std::sync::atomic::AtomicBool>) -> impl Drop {
+        struct G(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for G {
+            fn drop(&mut self) {
+                self.0.store(true, Relaxed);
+            }
+        }
+        G(s)
+    }
+
     fn rel(a: &[f32], b: &[f32]) -> f64 {
         let num: f64 = a.iter().zip(b).map(|(&x, &y)| ((x - y) as f64).powi(2)).sum();
         let den: f64 = b.iter().map(|&y| (y as f64).powi(2)).sum();

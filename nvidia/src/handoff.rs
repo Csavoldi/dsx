@@ -110,7 +110,43 @@ impl Xch {
     }
 }
 
+/// A prefill layer's share of routed experts for the CPU worker (prefill_moe): token windows of at most MAX_TOKENS
+/// rows, each with its experts and their [expert][t] routing weights over the window's rows; x [n][dim] in; out
+/// [n][dim] = the sum of the CPU experts' outputs.
+#[derive(Default)]
+pub struct PrefillJob {
+    pub layer: usize,
+    pub n: usize,
+    pub windows: Vec<(usize, usize, Vec<usize>, Vec<f32>)>,
+    pub x: Vec<f32>,
+    pub out: Vec<f32>,
+}
+
+/// The worker takes a submitted job between decode handoffs (prefill has none): state 0 idle, 1 submitted, 2 done.
+#[derive(Default)]
+pub struct PrefillChan {
+    pub state: AtomicU32,
+    pub job: std::sync::Mutex<PrefillJob>,
+}
+
+impl PrefillChan {
+    pub fn submit(&self, job: PrefillJob) {
+        *self.job.lock().unwrap() = job;
+        self.state.store(1, Ordering::Release);
+    }
+    /// wait for the submitted job and take it back (with its out)
+    pub fn wait(&self) -> PrefillJob {
+        while self.state.load(Ordering::Acquire) != 2 {
+            std::hint::spin_loop();
+        }
+        let j = std::mem::take(&mut *self.job.lock().unwrap());
+        self.state.store(0, Ordering::Release);
+        j
+    }
+}
+
 pub struct CpuWorker {
+    pub pre: Arc<PrefillChan>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     pub busy_ns: Arc<std::sync::atomic::AtomicU64>,
@@ -154,6 +190,8 @@ impl CpuWorker {
         let split_ns: Arc<[std::sync::atomic::AtomicU64; 3]> = Arc::new(Default::default());
         let leg1_ns: Arc<Vec<[std::sync::atomic::AtomicU64; 2]>> = Arc::new((0..m.cfg.n_layers).map(|_| Default::default()).collect());
         let (st, busy, split, leg1) = (stop.clone(), busy_ns.clone(), split_ns.clone(), leg1_ns.clone());
+        let pre: Arc<PrefillChan> = Arc::new(PrefillChan::default());
+        let pc = pre.clone();
         let handle = std::thread::Builder::new()
             .name("cpu-experts".into())
             .spawn(move || {
@@ -182,6 +220,58 @@ impl CpuWorker {
                     while xch.flag(ROUTE).load(Ordering::Acquire) < seq {
                         if st.load(Ordering::Relaxed) {
                             return;
+                        }
+                        if pc.state.load(Ordering::Acquire) == 1 {
+                            // a prefill layer's CPU experts (no decode handoff is pending during prefill)
+                            let mut job = std::mem::take(&mut *pc.job.lock().unwrap());
+                            let ws = |l: usize, ids: &[usize]| -> Vec<ExpertW> {
+                                ids.iter()
+                                    .map(|&e| {
+                                        let x = &m.layers[l].experts[e];
+                                        match arena.and_then(|a| a.get(l, e)) {
+                                            Some([g, u, dn]) => ExpertW { gu: x.gate.ty, gate: g, up: u, dn: x.down.ty, down: dn },
+                                            None => ExpertW { gu: x.gate.ty, gate: x.gate.bytes(), up: x.up.bytes(), dn: x.down.ty, down: x.down.bytes() },
+                                        }
+                                    })
+                                    .collect()
+                            };
+                            cm.rot = m.cfg.expert_rot[job.layer];
+                            job.out.clear();
+                            job.out.resize(job.n * d, 0.0);
+                            for (t0, t, ids, w) in &job.windows {
+                                if !ids.is_empty() && !noop {
+                                    let ex = ws(job.layer, ids);
+                                    cm.forward(&ex, d, &job.x[t0 * d..(t0 + t) * d], *t, w, &mut job.out[t0 * d..(t0 + t) * d]);
+                                }
+                            }
+                            if std::env::var_os("DSX_PRE_CPU_CHECK").is_some() {
+                                // debugging: the job again token by token (t = 1 calls), relative error vs the windows
+                                let mut o2 = vec![0f32; job.n * d];
+                                for (t0, t, ids, w) in &job.windows {
+                                    if ids.is_empty() {
+                                        continue;
+                                    }
+                                    let ex = ws(job.layer, ids);
+                                    for j in 0..*t {
+                                        let wj: Vec<f32> = (0..ids.len()).map(|i| w[i * t + j]).collect();
+                                        let sel: Vec<usize> = (0..ids.len()).filter(|&i| wj[i] != 0.0).collect();
+                                        if sel.is_empty() {
+                                            continue;
+                                        }
+                                        let exj: Vec<ExpertW> = sel.iter().map(|&i| ex[i]).collect();
+                                        let wjj: Vec<f32> = sel.iter().map(|&i| wj[i]).collect();
+                                        let r = t0 + j;
+                                        cm.forward(&exj, d, &job.x[r * d..(r + 1) * d], 1, &wjj, &mut o2[r * d..(r + 1) * d]);
+                                    }
+                                }
+                                let num: f64 = job.out.iter().zip(&o2).map(|(a, b)| ((a - b) as f64).powi(2)).sum();
+                                let den: f64 = o2.iter().map(|b| (*b as f64).powi(2)).sum();
+                                let nexp: usize = job.windows.iter().map(|w| w.2.len()).sum();
+                                let maxw = job.windows.iter().map(|w| w.2.len()).max().unwrap_or(0);
+                                eprintln!("pre-cpu check layer {}: n {}, {} windows, {nexp} expert-windows (max {maxw}), windows vs single tokens rel {:.2e}", job.layer, job.n, job.windows.len(), (num / den.max(1e-30)).sqrt());
+                            }
+                            *pc.job.lock().unwrap() = job;
+                            pc.state.store(2, Ordering::Release);
                         }
                         std::hint::spin_loop();
                     }
@@ -282,7 +372,7 @@ impl CpuWorker {
                 }
             })
             .expect("spawn cpu-experts");
-        CpuWorker { stop, handle: Some(handle), busy_ns, split_ns, leg1_ns, on_cpu, score, picks }
+        CpuWorker { pre, stop, handle: Some(handle), busy_ns, split_ns, leg1_ns, on_cpu, score, picks }
     }
 }
 

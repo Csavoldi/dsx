@@ -233,6 +233,26 @@ fn noise_rel(li: usize) -> Option<f32> {
 /// and the streaming aux GPUs. Default 2: an aux GPU also computes its resident experts (twice the main GPU's on 2x
 /// RTX 3090), and on PCIe 3.0 x16 links an expert's compute costs about as much as its copy; best of 1-3 on an 8K
 /// prompt (warm prefill 15.6 s streaming on the main GPU alone, 14.4-15.4 s at 1, 12.9-13.3 s at 2, 13.5 s at 3)
+/// chunks longer than this (DSX_PREFILL_CPU_MAX_N, default 1024) stream every expert: at 3000 tokens the CPU share
+/// made prefill 5% slower (few experts have few tokens there, and the x download stalls the stream)
+fn prefill_cpu_max_n() -> usize {
+    static P: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("DSX_PREFILL_CPU_MAX_N").ok().and_then(|v| v.parse().ok()).unwrap_or(1024))
+}
+
+/// DSX_PREFILL_CPU=0: prefill streams every expert no GPU holds (no CPU share)
+fn prefill_cpu() -> bool {
+    static P: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("DSX_PREFILL_CPU").map_or(true, |v| v != "0"))
+}
+
+/// DSX_PRE_CPU_US: the CPU's estimated time per expert-token in prefill (default 200: 1.2 ms per 6-expert token at 14
+/// threads on .102)
+fn pre_cpu_us() -> f64 {
+    static P: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("DSX_PRE_CPU_US").ok().and_then(|v| v.parse().ok()).unwrap_or(200.0))
+}
+
 fn stream_main_weight() -> f64 {
     static W: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *W.get_or_init(|| std::env::var("DSX_STREAM_MAIN_W").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0))
@@ -997,9 +1017,45 @@ impl GpuModel<'_> {
         let mut queued: Vec<f64> = bw.iter().enumerate().map(|(j, b)| if j == 0 { 0.0 } else { (n * d * 6) as f64 / b }).collect();
         let mut aux_spans: Vec<Vec<(usize, usize, usize)>> = vec![vec![]; self.aux.len()];
         let mut main_spans = Vec::with_capacity(spans.len());
+        // the CPU worker's share: of the experts no GPU holds, those with the fewest tokens, while the CPU's estimated
+        // time (pre_cpu_us per expert-token) stays below what is left for the main GPU's link (a few-token expert
+        // costs the link its whole weight, the CPU only a GEMV per token)
+        let resident = |e: usize| self.exp0.as_ref().is_some_and(|s| s.has(li, e)) || self.aux.iter().any(|a| a.pre.is_some() && !self.skip_experts && a.exp.has(li, e));
+        let mut on_cpu = vec![false; c.n_experts];
+        let mut cpu_spans = vec![];
+        if self.worker.is_some() && prefill_cpu() && n <= prefill_cpu_max_n() {
+            // the link speed in 4 GB/s steps: startup measurement noise must not move experts between the CPU and the
+            // GPU (a different split changes the order of the f32 sums, and so the outputs in the last bits)
+            let link = ((self.main_gbs / 4.0).round() * 4.0).max(1.0) * 1e9;
+            let mut cand: Vec<(usize, usize, f64)> = spans
+                .iter()
+                .filter(|sp| !resident(sp.0))
+                .map(|sp| {
+                    let ex = &ml.experts[sp.0];
+                    (sp.0, sp.2, (ex.gate.bytes().len() + ex.up.bytes().len() + ex.down.bytes().len()) as f64)
+                })
+                .collect();
+            cand.sort_by_key(|c| c.1);
+            let mut link_s: f64 = cand.iter().map(|c| c.2 / link).sum();
+            let mut cpu_s = 0.0;
+            for &(e, nt, bytes) in &cand {
+                let (cc, cl) = (nt as f64 * pre_cpu_us() * 1e-6, bytes / link);
+                if cpu_s + cc > link_s - cl {
+                    break;
+                }
+                cpu_s += cc;
+                link_s -= cl;
+                on_cpu[e] = true;
+            }
+        }
+        let dry = std::env::var_os("DSX_PRE_CPU_DRY").is_some();
         for sp in spans {
             let e = sp.0;
-            if self.exp0.as_ref().is_some_and(|s| s.has(li, e)) {
+            if on_cpu[e] {
+                cpu_spans.push(sp);
+            }
+            if on_cpu[e] && !dry {
+            } else if self.exp0.as_ref().is_some_and(|s| s.has(li, e)) {
                 main_spans.push(sp);
             } else if let Some(i) = self.aux.iter().position(|a| a.pre.is_some() && !self.skip_experts && a.exp.has(li, e)) {
                 aux_spans[i].push(sp);
@@ -1012,6 +1068,33 @@ impl GpuModel<'_> {
             }
         }
         let spans = main_spans;
+        // the CPU's experts start now, in windows of MAX_TOKENS rows, and run through the GPUs' whole layer
+        let cpu_job = !cpu_spans.is_empty();
+        if cpu_job {
+            let mt = crate::cpu::moe::MAX_TOKENS;
+            let mut job = crate::handoff::PrefillJob { layer: li, n, windows: vec![], x: self.g.download::<f32>(x, n * d)?, out: vec![] };
+            for t0 in (0..n).step_by(mt) {
+                let t = mt.min(n - t0);
+                let (mut ids, mut w) = (vec![], vec![]);
+                for &(e, off, nt) in &cpu_spans {
+                    let rows = &all_rows[off..off + nt];
+                    if !rows.iter().any(|&r| (r as usize) >= t0 && (r as usize) < t0 + t) {
+                        continue;
+                    }
+                    let i = ids.len();
+                    ids.push(e);
+                    w.resize((i + 1) * t, 0.0);
+                    for (k, &r) in rows.iter().enumerate() {
+                        let r = r as usize;
+                        if r >= t0 && r < t0 + t {
+                            w[i * t + r - t0] = all_w[off + k];
+                        }
+                    }
+                }
+                job.windows.push((t0, t, ids, w));
+            }
+            self.worker.as_ref().unwrap().pre.submit(job);
+        }
         let use_aux = aux_spans.iter().any(|v| !v.is_empty());
         if use_aux {
             self.prefill_ship_x(pb, x, n)?;
@@ -1075,7 +1158,48 @@ impl GpuModel<'_> {
             self.g.launch(self.k["add_inplace"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(pb.out.ptr), Arg::P(pb.go.ptr), Arg::I((n * d) as i32)])?;
         }
         self.prof_mark("prefill moe . wait aux GPUs + add", tp2)?;
-        // a = bf16(out)
+        if cpu_job {
+            let tp3 = std::time::Instant::now();
+            let job = self.worker.as_ref().unwrap().pre.wait();
+            self.prof_mark("prefill moe . wait CPU experts", tp3)?;
+            if std::env::var_os("DSX_PRE_CPU_DRY").is_some() {
+                // debugging: the GPUs computed these experts too; the CPU's sums are dropped. DSX_PRE_CPU_CMP=1: the
+                // CPU's experts once more on the GPU alone, into a zeroed buffer, against the CPU's sums
+                if std::env::var_os("DSX_PRE_CPU_CMP").is_some() {
+                    let cmp = self.g.alloc(n * d * 4)?;
+                    self.g.memset(cmp.ptr, n * d * 4)?;
+                    let mut q = ExpQueue { g: &self.g, k: &self.k, gather: "gather_f16", x, rows: pb.rows.ptr, wrow: pb.wrow.ptr, gx16: pb.gx16.ptr, tx16: pb.tx16.ptr, gg: pb.gg.ptr, gu: pb.gu.ptr, h16: pb.h16.ptr, go: pb.go.ptr, w16: pb.w16.ptr, out: cmp.ptr, store: self.exp0.as_ref(), estage: &pb.estage, ev_ready: &pb.ev_ready, ev_free: &pb.ev_free, nstaged: 0 };
+                    q.start()?;
+                    for &(e, off, nt) in &cpu_spans {
+                        self.queue_expert(&mut q, li, e, off, nt)?;
+                    }
+                    let gpu: Vec<f32> = self.g.download(cmp.ptr, n * d)?;
+                    let num: f64 = job.out.iter().zip(&gpu).map(|(a, b)| ((a - b) as f64).powi(2)).sum();
+                    let den: f64 = gpu.iter().map(|b| (*b as f64).powi(2)).sum();
+                    let (mut worst, mut wr) = (0f64, 0usize);
+                    for r in 0..n {
+                        let nr: f64 = (0..d).map(|i| ((job.out[r * d + i] - gpu[r * d + i]) as f64).powi(2)).sum();
+                        let dr: f64 = (0..d).map(|i| (gpu[r * d + i] as f64).powi(2)).sum();
+                        if dr > 0.0 && (nr / dr).sqrt() > worst {
+                            worst = (nr / dr).sqrt();
+                            wr = r;
+                        }
+                    }
+                    eprintln!("pre-cpu cmp layer {li}: r0 {r0} n {n}, {} experts on the CPU, CPU vs GPU rel {:.3e}, worst row {wr} rel {worst:.3e}", cpu_spans.len(), (num / den.max(1e-30)).sqrt());
+                }
+                return self.finish_moe(pb, r0, n);
+            }
+            // in stream order: the last experts may still be using go (a synchronous copy is not ordered against the
+            // stream and overwrote it, nondeterministic outputs); from pageable memory the call returns once staged
+            self.g.htod(pb.go.ptr, &job.out)?;
+            self.g.launch(self.k["add_inplace"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(pb.out.ptr), Arg::P(pb.go.ptr), Arg::I((n * d) as i32)])?;
+        }
+        self.finish_moe(pb, r0, n)
+    }
+
+    /// a = bf16(out)
+    fn finish_moe(&self, pb: &PrefillBufs, r0: usize, n: usize) -> Result<()> {
+        let d = self.m.cfg.dim;
         let a = pb.a.ptr + (r0 * d * 4) as u64;
         self.g.dtod(a, pb.out.ptr, n * d * 4)?;
         self.g.launch(self.k["round_bf16"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(a), Arg::I((n * d) as i32)])
