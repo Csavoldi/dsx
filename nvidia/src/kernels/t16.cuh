@@ -250,9 +250,13 @@ __device__ __forceinline__ void t16d_gemv_k(const uint4 *__restrict__ xp, const 
   // the warp's two tile columns (nb0, nb0 + 1: TW words a tile row) for a whole 256-group go to shared memory with
   // cp.async, double-buffered: the next group's 16 rows stream in while this group is computed. Bytes in flight per
   // warp, not latency, bound this kernel; the arithmetic and its order are unchanged (bit-identical).
+  // The group's 16 x rows (32 B each, the dp4a operand) come along: ncu's stall sampling put 47% of warp stalls on dp4a
+  // waiting for its per-iteration x load from global.
   constexpr int TW = 2 * WT, CH = TW / 4;
   __shared__ __align__(16) uint32_t sm[4][2][16 * TW];
+  __shared__ __align__(16) uint4 smx[4][2][32];
   uint32_t(*const buf)[16 * TW] = sm[(threadIdx.x >> 5) & 3];
+  uint4(*const xbuf)[32] = smx[(threadIdx.x >> 5) & 3];
   const uint32_t *tw = (const uint32_t *)t16_mat(sl, base, role) + ((size_t)16 * g0 * nbs + (nb & ~1)) * WT;
   auto issue = [&](int gr, int bi) {
     const uint32_t *src = tw + (size_t)(gr - g0) * 16 * step;
@@ -261,6 +265,8 @@ __device__ __forceinline__ void t16d_gemv_k(const uint4 *__restrict__ xp, const 
       const uint32_t d = (uint32_t)__cvta_generic_to_shared(&buf[bi][row * TW + 4 * ch]);
       asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(d), "l"(src + (size_t)row * step + 4 * ch));
     }
+    const uint32_t dx = (uint32_t)__cvta_generic_to_shared(&xbuf[bi][lane]);
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 16;" ::"r"(dx), "l"(xe + 2 * 16 * (gr - g0) + lane));
     asm volatile("cp.async.commit_group;");
   };
   issue(g0, 0);
@@ -274,11 +280,11 @@ __device__ __forceinline__ void t16d_gemv_k(const uint4 *__restrict__ xp, const 
     // four dp4a chains (an exact integer sum in any order), so one warp's dependent dp4a latency is not the limit
     int ac[4] = {0, 0, 0, 0};
 #pragma unroll 4
-    for (int i = 0; i < 16; i++, xe += 2) {
+    for (int i = 0; i < 16; i++) {
       uint32_t p[16];
       const uint32_t *w = &buf[bi][i * TW + lo];
       t16_prod16w<K2>(w[i0], w[i1], w[i2], sh, p);
-      const uint4 xa = __ldg(xe), xb = __ldg(xe + 1);
+      const uint4 xa = xbuf[bi][2 * i], xb = xbuf[bi][2 * i + 1];
       const uint32_t xw[8] = {xa.x, xa.y, xa.z, xa.w, xb.x, xb.y, xb.z, xb.w};
 #pragma unroll
       for (int q = 0; q < 8; q++) ac[q & 3] = t16_dp4a(__byte_perm(p[2 * q], p[2 * q + 1], 0x5410), (int)xw[q], ac[q & 3]);
