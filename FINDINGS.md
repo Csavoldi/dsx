@@ -313,8 +313,39 @@ change the output.
 Not split: with the expert stream halved, an 8K prefill spends ~4.4 s gathering Engram rows from disk on the host while
 both GPUs wait (`DSX_PROF`), next to ~2.8 s of attention.
 
+## 8d. Where the time goes on .102 (2026-10-22, T16 IQ4_NL build)
+
+**Decode** (DSX_EVPROF, 3000-token prompt, no deferral, ~31.8 ms/token): GPU0's attention segment 13.0 ms (q 3.2, o
+projection 4.7, engram 1.1, sparse attention 1.1, hc and norms 1.7, kv / compressor / indexer 1.2), router 0.8,
+shared expert 2.5 (overlapped), waiting for the CPU's experts 9.2 (4.8 with --defer-rank 3; the CPU's forward is
+12.5 ms/token for ~22% of the picks). GPU0 runs ~1,700 kernels per token; its gaps inside active stages total ~1 ms
+per token, so a Volta-style megakernel has ~3% to win here (Volta's all-GPU step had 12%). The host enqueues ahead
+(5 us per launch, blocked in cuStreamSynchronize the rest). Dense Q8_0 GEMVs: q_b / o_b at 766-796 GB/s, the
+shared expert at 650 (off the critical path); gemv_q8r4 (4 rows per warp) is 0.45-0.85x of gemv_q8r and stays
+unused. Busy GPU clocks: GPU0 median 1,740 MHz (P2, 250 W cap), GPU1 1,950. CPU experts: an isolated 1-expert call
+reads at ~36 GB/s against a 42.4 GB/s RAM ceiling (sc102), so the CPU side is RAM-bound; in decode an expert costs
+~235 us vs ~205 us isolated.
+
+**Prefill**: the arena in 4 KiB pages copied to GPU0 at 13.5 GB/s; hugepages give 24.6 (3000 tokens 426 -> 529
+tok/s). The T16 dequant kernel wrote ~130 GB/s (one thread per weight); 16 weights per thread gives 611-660 GB/s.
+Short turns: the CPU share (experts no GPU holds, fewest tokens first, until the CPU's estimated time meets the
+link's) makes real server turns on a 2.4-3.4K cached conversation 1137 -> 738 ms (~60 new tokens) and 2227 -> 1698
+ms (~300). In the 60-token turn the arena copies run at ~15 GB/s while the CPU reads the same DRAM: short turns are
+now near the RAM floor (bytes of the experts touched / ~42 GB/s). Long prompts: in a 3000-token prefill GPU0's link
+is idle 2.0 of 5.1 s (attention, router, shared expert); filling it needs ~1.2 GB of staging per layer.
+Benchmarking note: a fresh `dsx gen` pays ~0.43 s of lazy CUDA module loading in its first prefill; server turns
+(scripts turns.py / turns2.py on .102) are the reference for short prompts.
+
+**Next-layer prediction for decode** (DSX_PREGATE=1 + DSX_PREGATE_DUMP, 500 tokens): copying the 1 / 2 / 3 best
+predicted non-resident experts per layer into GPU0 would catch 36 / 54 / 62% of the CPU's picks (35 / 61 / 78
+copies per token, half or more wasted).
+
 ## 9. Negative results
 
+- **Speculative decoding (DSpark), re-measured 2026-10-22** on the T16 build with the multi-token CPU kernel: verify
+  passes of 2 / 3 / 4 tokens cost 51 / 69 / 77 ms against a 33 ms decode step (1.55 / 2.08 / 2.34 steps), so a chain
+  needs >55-68% acceptance per draft to break even before the draft's own cost, and loses against --defer-rank 3
+  (26.7 ms/token; deferral applies only to 1-token passes). Earlier:
 - **Speculative decoding (DSpark).** A verify pass of 2 tokens costs 55 ms (1.5 decode steps), of 3 tokens ~70 ms,
   after moving verify onto decode kernels (from 101 / 109 ms). Most of what remains is the CPU's expert work, which
   grows with the union of the tokens' experts (20.9 distinct experts per layer for 6 tokens vs 6.0 for one). With the
