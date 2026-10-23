@@ -397,36 +397,52 @@ copies per token, half or more wasted).
   It misses the bar (KL change ≤ 0.001), so neither flag ships. The persistent gather alone gains 0.4-0.6%, at its kill line.
   The loader reports the FP8 conversion as exact, so the KL change likely comes from the kernel's arithmetic, which is still to be checked.
 
-## 9b. Decode levers in progress (2026-10-23 night, paused by lxe at 04:30 PT)
+## 9b. Decode: small kernels, launch structure and the Dev 4 merge (2026-10-23)
 
-Branch `small-kernels` (github, worktree ~/deepseek-quant-dev1) holds five decode changes on top of f1f53e4. None is
-on main or in production. Logs and scripts are in bench/results/2026-10-22-102 (win25-win29).
+Branch `integrate` (github) = `small-kernels` (Dev 1) + main + Dev 4's `window-dev4` (engram FP8 E1/E2, cp.async T16
+decode GEMV) + `budget-102` docs. Not yet on main or in production. Logs and scripts: bench/results/2026-10-22-102
+(win25-win35). Every number below is teacher-forced `eval --decode` on .102 (1 seq x 1023 steps, defer 3, adapt 8,
+2 interleaved rounds, mean tok/s) unless it says otherwise.
 
-**Where the token goes.** nsys of production decode (window 25: `nsys profile -t cuda`, gen 120 tokens after 300,
-defer 3; tracing costs 2%, 36.95 → 36.08 tok/s; split with bench/nsys_token_split.py) gives 26.9 ms per token (median),
-GPU0 busy 19.5 ms and idle 7.6 ms. The idle time is mostly the wait for the CPU's experts (3.2 ms between the shared
-expert and hc_add_post, 0.7 ms more before combine), 1.4 ms in ~1,630 launch gaps under 3 µs, and 0.65 ms between
-tokens. The between-token gap comes from host work: the pageable logits copy ~50 µs, argmax ~35 µs, adapt_step
-~340 µs (8 commits, a 155 µs candidate scan and sort, 8 swap launches), and ~170 µs before GPU0's first kernel
-(embedding, two synchronous uploads, enqueue_aux for GPU1's whole token). The LM head GEMV takes 0.82 ms (Q8_0,
-703 MB at 853 GB/s, floor 0.75 ms). q_b runs at 766 GB/s, o_b at 810, the shared expert's gate/up at ~715 and down at ~830.
+**Result.** Production base (f1f53e4) 33.86 tok/s; integrate with every kept change and FP8 engram 37.03 (+9.4%).
+Free-running gen (120 tokens after 300) 36.7 -> 41.0 tok/s. GPU0 compute per token (nsys) 19.49 -> 17.77 ms.
 
-| lever | change | 3090 measurement | state |
-|---|---|---|---|
-| 4 | hc_pre + rmsnorm in one launch (`hc_pre_norm`: 5 blocks, each recomputes the sum in rmsnorm's order) | 6.25 → 4.6 µs per call, 81 per token (bench/hc_fuse.cu) | bit-identical in production (eval --decode with DSX_ADAPT=0: KL 0.160876 for base and new) |
-| 4 | rope split across heads (grid y) | 3.95 → 1.97 µs per launch, 93 per token | bit-identical (same check) |
-| 4b | hc mixes (hc_part + hc_reduce_finish) on a third GPU0 stream beside attention / MoE, joined before the next h write or mix read | in the window 27 trace with 4 + 4b + 7a: GPU0 busy 19.49 → 18.29 ms/token, token median 26.90 → 25.87 ms (the CPU took 20.3% vs 20.6% of picks in the two traced runs) | bit-identical (same check); speed not yet measured teacher-forced |
-| 7a | adapt_step before the logits sync, its on_cpu flags applied after it | between-token gap 0.65 → 0.25 ms | **hurts residency**: untraced gen CPU share 22.9% → 26.2% (CPU busy 14.0 → 16.4 ms/token, tok/s equal at 36.7); teacher-forced KL 0.151 → 0.158-0.162 (base with DSX_ADAPT=0: 0.161). Commits now run ~1 ms earlier, before last token's copies finish, and the scores miss the current token's late layers. Rework: keep commit_ready after the sync and move only the scan and begin_swap before it, or make the scan cheaper and keep it where it was |
-| 7b | enqueue GPU1's token after GPU0's layer-0 attention (was before layer 0) | ~0.15 ms of the gap (trace) | built, not run on .102 |
-| 4c | router_topk + publish_route in one launch (`router_publish`: 384 threads score, the same warp selection) | 5090: 8.50 → 3.62 µs per layer, 300 random tokens bit-identical (bench/router_fuse.cu); 3090 not measured | built, not run on .102 |
+**Where the token went before (window 25 nsys).** 26.9 ms/token; GPU0 busy 19.5, idle 7.6: ~3.9 ms waiting for the
+CPU's experts, 1.4 ms in ~1,630 launch gaps under 3 us, 0.65 ms between tokens (host: logits copy 86 us, adapt
+scan 154 us, 8 swap launches ~120 us, prologue). LM head 0.82 ms (703 MB at 853 GB/s). q_b 766 GB/s, o_b 810.
 
-To resume: build each arm with `CUDA_ARCHS=86 cargo build --release -p dsx --features cuda` in its own target dir (the
-GPU code compiles only with `--features cuda`, and git-archive trees fool a shared target dir), check md5s and new
-symbols, then run bench/results/2026-10-22-102/win28.sh: a teacher-forced A/B of base / A (7a + 4) / B (+ 4b) /
-C (+ 7b + 4c), all with the eval timing print, then a DSX_ADAPT=0 exactness pair and nsys. Drop or rework 7a before
-anything ships. Kill criteria: 4 + 4b + 4c below 0.4 ms/token teacher-forced, or any KL change with DSX_ADAPT=0.
-Dev 4's lever 5 (T16 GEMV restructure, branches t16-inflight / window-dev4) and E1 with the bit-identical
-gemv_fp8b32_o (engram-fp8 29a4506) are recorded in docs/budget-102.md section 8 on Dev 4's budget-102 branch.
+| step (cumulative) | change | tok/s | exact? | state |
+|---|---|---|---|---|
+| K | hc_pre + rmsnorm fused (5 blocks, rmsnorm's sum order); rope split across heads; hc mixes on a third GPU0 stream beside attention / MoE; router_topk + publish_route fused (384 threads score) | 33.9 -> 35.05 (+3.4%, windows 30-31) | yes (adapt-0 KL equal; with adapt on too) | on |
+| Q | gemv_q8r1: one-token Q8_0 GEMV in 40 registers instead of 62 | +0.4% (window 31) | yes | on |
+| QA | GPU1's token enqueued after GPU0's layer-0 attention | +0.35% (window 31) | yes | on (DSX_AUX_LATE=0 off) |
+| S | split-k GEMVs: one vector load per 4 weights; one-token *_sk1 variants | +0.45% (window 33) | yes | on |
+| C | combine_post: combine + deferred injection + 16-byte post copy in one launch | +0.6% (window 33) | yes | on |
+| F2 | wo_a rounding in its GEMV; shared gate + up + swiglu in one launch | +0.3% (window 33) | yes | on |
+| Y | attention merge + inverse RoPE + fake FP8 in one launch (sparse_attn_merge_rf); q_b RoPE in the GEMV epilogue | +0.5% (window 34) | merge_rf yes on 5090 and 3090; **q_b RoPE no on sm_86** (1 ulp in ~700 of 4096 rotated values; exact on sm_120) | merge_rf on; q_b RoPE off (DSX_QB_ROPE=1) |
+| Z | kv / compressor / indexer branch on the par stream beside q_b | +0.1% (0.04 ms) | not checked alone | off (DSX_PAR_ATTN=1): under the 0.1 ms bar |
+| W | closing hc_post inside o_b's GEMV and combine_post | ~0 | yes (bench) | off (DSX_FUSE4=1) |
+| T | Dev 4: cp.async T16 decode GEMV | +1.1% | Dev 4's hash test (5090) | on |
+| E | Dev 4: FP8 engram wkv with gemv_fp8b32_o (DSX_ENGRAM_FP8=1) | +1.7% | yes on .102 (window 35: KL equal to F16 at the same GPU0 experts) | opt-in; candidate default |
+
+**Exactness.** Window 35 (adapt 0, same 1568 GPU0 experts): base KL 0.160876; integrate with Y-Z-W-T on 0.170395 (+0.0095);
+FP8 engram changes nothing beyond that. The fused q_b RoPE is the one kernel found inexact on the 3090; Z and T were
+not checked alone. Next: rerun the adapt-0 pair with DSX_QB_ROPE off (expected equal to base), then with T and Z
+separately. Make rope's rotation explicit (__fmaf_rn / __fmul_rn) in rope itself so fused and unfused kernels share
+it on every arch.
+
+**Lessons.** FMA contraction of the same expression differs between kernels and between sm_86 and sm_120: write the
+form out with intrinsics, and check bit-equality on the 3090, not only the 5090. KL with the adaptive cache on takes a
+few discrete values per run (0.1509, 0.1516, 0.1578, ...) by the cache's trajectory, so exactness checks run at
+DSX_ADAPT=0 with equal GPU0 expert counts. An isolated GEMV bench hits the 250 W limit and overstated gemv_q8r1
+(bench -10..-30%, decode +0.4%). Moving the adapt step before the logits sync (DSX_ADAPT_EARLY=1) raised the CPU share
+22.9 -> 26.2% at the same swap count, cause not found; opt-in. Fusing q_a's rmsnorm into its split-k GEMV (last block
+normalizes in rmsnorm's order) was exact but slower (5.6 -> 9.8 us): dropped.
+
+**Not done.** T16 decode chain: gate/up preps and gate/up GEMVs could each be one launch (grid y = role, ~0.2 ms),
+left for Dev 4's t16-inflight work. Between-token host work (~0.55 ms: pageable logits copy, adapt scan, swap
+launches) needs a profile of the scan before changing it. GPU0 still waits ~3.9 ms/token for the CPU's experts
+(DRAM-bound, defer rank fixed at 3).
 
 ## 10. Open problems
 

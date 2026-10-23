@@ -182,6 +182,7 @@ pub struct GpuModel<'m> {
     fuse2: bool,
     /// one token: attention merge + inverse RoPE + fake FP8 in one launch (DSX_FUSE3=0: separate)
     fuse3: bool,
+    qb_rope: bool,
     /// one token: the sublayers' closing hc_post inside o_b's GEMV and combine_post (DSX_FUSE4=1; off by default)
     fuse4: bool,
     post_attn_done: bool,
@@ -488,6 +489,7 @@ impl<'m> GpuModel<'m> {
             combine_fused: std::env::var("DSX_COMBINE_FUSED").map_or(true, |v| v != "0"),
             fuse2: std::env::var("DSX_FUSE2").map_or(true, |v| v != "0"),
             fuse3: std::env::var("DSX_FUSE3").map_or(true, |v| v != "0"),
+            qb_rope: std::env::var("DSX_QB_ROPE").is_ok_and(|v| v == "1"),
             // window 34: 36.05 -> 36.03 tok/s teacher-forced (no gain): opt-in
             fuse4: std::env::var("DSX_FUSE4").is_ok_and(|v| v == "1"),
             post_attn_done: false,
@@ -1371,7 +1373,9 @@ impl<'m> GpuModel<'m> {
         }
         // q_b's RoPE in the GEMV's epilogue (gemv_q8r1_rope) when q_b is the one-row-per-warp Q8_0 one
         let qb = &l.q_b;
-        if self.fuse3 && self.q8r1 && qb.ty == GType::Q8_0 && qb.q8r && !qb.act_fp8 && qb.rows >= 2048 && qb.rows % 4 == 0 && hd % 4 == 0 {
+        // off by default (DSX_QB_ROPE=1): on sm_86 its rotation differs from rope by 1 ulp in ~700 of 4096 values
+        // (bench/qb_rope.cu on the 3090; exact on the 5090), and window 35's adapt-0 KL moved 0.160876 -> 0.170395
+        if self.qb_rope && self.fuse3 && self.q8r1 && qb.ty == GType::Q8_0 && qb.q8r && !qb.act_fp8 && qb.rows >= 2048 && qb.rows % 4 == 0 && hd % 4 == 0 {
             let (wp, sp, _) = qb.ptrs(0);
             let f = if compressed { &self.freqs.1 } else { &self.freqs.0 };
             self.g.launch(self.k["gemv_q8r1_rope"], ((qb.rows / 4) as u32, 1, 1), 128, 0, &[Arg::P(wp), Arg::P(self.qr.ptr), Arg::P(self.q.ptr), Arg::I(qb.rows as i32), Arg::I(qb.cols as i32), Arg::P(sp), Arg::P(f.ptr), Arg::I(hd as i32), Arg::I(c.rope_dim as i32), Arg::I(t as i32)])?;

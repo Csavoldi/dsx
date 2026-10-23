@@ -1,0 +1,21 @@
+== base
+experts resident: GPU0 1568 (13.3 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 44.15 s (23.17 tok/s)
+{"tokens": 1023, "nll": 2.312076, "ppl": 10.0954, "kl_top256": 0.160876, "top1_agree": 0.832845}
+== T
+experts resident: GPU0 1568 (13.3 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 43.61 s (23.46 tok/s)
+{"tokens": 1023, "nll": 2.318534, "ppl": 10.1608, "kl_top256": 0.170395, "top1_agree": 0.822092}
+== E-same
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1568 (13.3 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 43.20 s (23.68 tok/s)
+{"tokens": 1023, "nll": 2.318534, "ppl": 10.1608, "kl_top256": 0.170395, "top1_agree": 0.822092}
+== E
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1605 (13.6 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 43.05 s (23.76 tok/s)
+{"tokens": 1023, "nll": 2.312458, "ppl": 10.0992, "kl_top256": 0.168373, "top1_agree": 0.826002}
+WIN35-DONE Fri Oct 23 09:39:39 AM PDT 2026
