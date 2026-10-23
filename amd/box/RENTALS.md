@@ -13,3 +13,4 @@ Budget for the batched runner (lxe, 2026-10-23, relayed by Supervisor): $100 of 
 | # | start | end | hours | cost | running total (from #3) | purpose |
 |---|---|---|---|---|---|---|
 | 3 | 2026-10-23 00:23 | 03:20 | 2.95 | $11.21 | $11.21 | runner: FP4 slots, scheduler, prefill, small-batch kernels, speculation |
+| 4 | 2026-10-23 03:27 | 03:30 | 0.05 | $0.19 | $11.40 | dense few-token product microbenchmark (RUNNER.md item 1) |

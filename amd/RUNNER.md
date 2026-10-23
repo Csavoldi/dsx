@@ -48,6 +48,12 @@ Measure each step on the box (beval KL, bbench / long-context benches), commit b
    Predicted gain: 2.5-3 ms per step (~12%) with a kernel that keeps >= 40 KB per CU in flight and no k-split
    zeroing. Confirming measurement first: a standalone microbenchmark of the wo_b shape (5120 x 8192 FP8, 8 tokens)
    on the MI325X. Kill if it does not reach 3.5 TB/s.
+   Result (2026-10-23, amd/results/dgemv-bench-2026-10-23.txt): killed. At 8 tokens the best variants reach
+   2.94 TB/s (q_b, 2 tiles per wave sharing activation loads) and 2.53 TB/s (wo_b), against 2.77 / 2.41 for the
+   current structure; loading whole k-slices first or partial sums without atomics do no better. Throughput falls
+   with tokens (wo_b 3.78 / 2.41 / 1.47 TB/s at 1 / 8 / 16 tokens) for reasons these variants do not remove, and
+   small products (wq_a 6.5 MB, sh_w1 11.8 MB) stay at 1-1.7 TB/s: launch ramp and tail dominate them, which only
+   fusing products would fix.
 2. Small kernels. prep_t 1.67 ms (240 launches), hc_step 1.07, hc_mix_t 1.01, rope / kv / attn_out / route / bgroup
    ~1.5: ~5.3 ms in ~600 launches for under 100 MB of traffic (floor < 0.1 ms; ~1.5-3 us per launch minimum).
    Predicted gain: ~2 ms by staging the activation (norm + FP8 quantization) inside the dense products' blocks, as

@@ -1,0 +1,378 @@
+wo_b    5120x8192  tok  1  A U=2          S=1      72.5 us   0.58 TB/s
+wo_b    5120x8192  tok  1  A U=4          S=1      59.2 us   0.71 TB/s
+wo_b    5120x8192  tok  1  D R=2 U=2      S=1      76.2 us   0.55 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=2      S=1      97.5 us   0.43 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=1      S=1      95.7 us   0.44 TB/s
+wo_b    5120x8192  tok  1  D R=8 U=1      S=1     130.2 us   0.32 TB/s
+wo_b    5120x8192  tok  1  A U=2          S=2      40.3 us   1.04 TB/s
+wo_b    5120x8192  tok  1  A U=4          S=2      32.9 us   1.28 TB/s
+wo_b    5120x8192  tok  1  D R=2 U=2      S=2      40.1 us   1.05 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=2      S=2      51.0 us   0.82 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=1      S=2      49.7 us   0.84 TB/s
+wo_b    5120x8192  tok  1  D R=8 U=1      S=2      67.2 us   0.62 TB/s
+wo_b    5120x8192  tok  1  A U=2          S=4      26.1 us   1.61 TB/s
+wo_b    5120x8192  tok  1  A U=4          S=4      19.8 us   2.12 TB/s
+wo_b    5120x8192  tok  1  D R=2 U=2      S=4      21.8 us   1.93 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=2      S=4      27.3 us   1.54 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=1      S=4      26.6 us   1.58 TB/s
+wo_b    5120x8192  tok  1  D R=8 U=1      S=4      35.5 us   1.18 TB/s
+wo_b    5120x8192  tok  1  B load-all32   S=4      19.7 us   2.13 TB/s
+wo_b    5120x8192  tok  1  A U=2          S=8      16.3 us   2.58 TB/s
+wo_b    5120x8192  tok  1  A U=4          S=8      12.5 us   3.35 TB/s
+wo_b    5120x8192  tok  1  D R=2 U=2      S=8      14.1 us   2.98 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=2      S=8      16.0 us   2.62 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=1      S=8      15.5 us   2.72 TB/s
+wo_b    5120x8192  tok  1  D R=8 U=1      S=8      20.2 us   2.08 TB/s
+wo_b    5120x8192  tok  1  B load-all     S=8      13.0 us   3.24 TB/s
+wo_b    5120x8192  tok  1  C partials     S=8      15.8 us   2.66 TB/s
+wo_b    5120x8192  tok  1  A U=2          S=16     12.0 us   3.50 TB/s
+wo_b    5120x8192  tok  1  A U=4          S=16     13.3 us   3.17 TB/s
+wo_b    5120x8192  tok  1  D R=2 U=2      S=16     11.3 us   3.71 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=2      S=16     12.4 us   3.38 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=1      S=16     11.7 us   3.59 TB/s
+wo_b    5120x8192  tok  1  D R=8 U=1      S=16     13.1 us   3.21 TB/s
+wo_b    5120x8192  tok  1  B load-all     S=16     12.2 us   3.45 TB/s
+wo_b    5120x8192  tok  1  C partials     S=16     17.0 us   2.46 TB/s
+wo_b    5120x8192  tok  1  A U=2          S=32     11.4 us   3.67 TB/s
+wo_b    5120x8192  tok  1  A U=4          S=32     12.9 us   3.27 TB/s
+wo_b    5120x8192  tok  1  D R=2 U=2      S=32     14.4 us   2.92 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=2      S=32     12.4 us   3.38 TB/s
+wo_b    5120x8192  tok  1  D R=4 U=1      S=32     11.7 us   3.60 TB/s
+wo_b    5120x8192  tok  1  D R=8 U=1      S=32     14.5 us   2.90 TB/s
+wo_b    5120x8192  tok  1  B load-all     S=32     13.2 us   3.18 TB/s
+wo_b    5120x8192  tok  1  C partials     S=32     21.1 us   1.99 TB/s
+wo_b    5120x8192  tok  8  A U=2          S=1      92.5 us   0.45 TB/s
+wo_b    5120x8192  tok  8  A U=4          S=1      68.7 us   0.61 TB/s
+wo_b    5120x8192  tok  8  D R=2 U=2      S=1      81.1 us   0.52 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=2      S=1     102.6 us   0.41 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=1      S=1     100.7 us   0.42 TB/s
+wo_b    5120x8192  tok  8  D R=8 U=1      S=1     137.0 us   0.31 TB/s
+wo_b    5120x8192  tok  8  A U=2          S=2      48.7 us   0.86 TB/s
+wo_b    5120x8192  tok  8  A U=4          S=2      36.8 us   1.14 TB/s
+wo_b    5120x8192  tok  8  D R=2 U=2      S=2      42.8 us   0.98 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=2      S=2      53.8 us   0.78 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=1      S=2      52.7 us   0.80 TB/s
+wo_b    5120x8192  tok  8  D R=8 U=1      S=2      71.8 us   0.58 TB/s
+wo_b    5120x8192  tok  8  A U=2          S=4      33.5 us   1.25 TB/s
+wo_b    5120x8192  tok  8  A U=4          S=4      23.9 us   1.76 TB/s
+wo_b    5120x8192  tok  8  D R=2 U=2      S=4      23.8 us   1.76 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=2      S=4      29.4 us   1.43 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=1      S=4      29.0 us   1.45 TB/s
+wo_b    5120x8192  tok  8  D R=8 U=1      S=4      39.3 us   1.07 TB/s
+wo_b    5120x8192  tok  8  B load-all32   S=4      29.7 us   1.41 TB/s
+wo_b    5120x8192  tok  8  A U=2          S=8      21.5 us   1.95 TB/s
+wo_b    5120x8192  tok  8  A U=4          S=8      17.4 us   2.41 TB/s
+wo_b    5120x8192  tok  8  D R=2 U=2      S=8      16.6 us   2.53 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=2      S=8      19.0 us   2.21 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=1      S=8      18.7 us   2.25 TB/s
+wo_b    5120x8192  tok  8  D R=8 U=1      S=8      24.2 us   1.73 TB/s
+wo_b    5120x8192  tok  8  B load-all     S=8      20.9 us   2.01 TB/s
+wo_b    5120x8192  tok  8  C partials     S=8      23.3 us   1.80 TB/s
+wo_b    5120x8192  tok  8  A U=2          S=16     19.4 us   2.16 TB/s
+wo_b    5120x8192  tok  8  A U=4          S=16     19.6 us   2.14 TB/s
+wo_b    5120x8192  tok  8  D R=2 U=2      S=16     16.7 us   2.51 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=2      S=16     18.8 us   2.24 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=1      S=16     17.9 us   2.35 TB/s
+wo_b    5120x8192  tok  8  D R=8 U=1      S=16     19.8 us   2.12 TB/s
+wo_b    5120x8192  tok  8  B load-all     S=16     20.4 us   2.06 TB/s
+wo_b    5120x8192  tok  8  C partials     S=16     23.7 us   1.77 TB/s
+wo_b    5120x8192  tok  8  A U=2          S=32     22.0 us   1.91 TB/s
+wo_b    5120x8192  tok  8  A U=4          S=32     21.5 us   1.96 TB/s
+wo_b    5120x8192  tok  8  D R=2 U=2      S=32     22.7 us   1.85 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=2      S=32     25.4 us   1.65 TB/s
+wo_b    5120x8192  tok  8  D R=4 U=1      S=32     24.4 us   1.72 TB/s
+wo_b    5120x8192  tok  8  D R=8 U=1      S=32     29.2 us   1.44 TB/s
+wo_b    5120x8192  tok  8  B load-all     S=32     25.3 us   1.66 TB/s
+wo_b    5120x8192  tok  8  C partials     S=32     27.9 us   1.51 TB/s
+wo_b    5120x8192  tok 16  A U=2          S=1     106.9 us   0.39 TB/s
+wo_b    5120x8192  tok 16  A U=4          S=1      75.7 us   0.55 TB/s
+wo_b    5120x8192  tok 16  D R=2 U=2      S=1      87.8 us   0.48 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=2      S=1     109.8 us   0.38 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=1      S=1     107.7 us   0.39 TB/s
+wo_b    5120x8192  tok 16  D R=8 U=1      S=1     148.2 us   0.28 TB/s
+wo_b    5120x8192  tok 16  A U=2          S=2      56.6 us   0.74 TB/s
+wo_b    5120x8192  tok 16  A U=4          S=2      40.7 us   1.03 TB/s
+wo_b    5120x8192  tok 16  D R=2 U=2      S=2      46.9 us   0.90 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=2      S=2      58.5 us   0.72 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=1      S=2      57.4 us   0.73 TB/s
+wo_b    5120x8192  tok 16  D R=8 U=1      S=2      80.3 us   0.52 TB/s
+wo_b    5120x8192  tok 16  A U=2          S=4      40.7 us   1.03 TB/s
+wo_b    5120x8192  tok 16  A U=4          S=4      31.9 us   1.32 TB/s
+wo_b    5120x8192  tok 16  D R=2 U=2      S=4      26.8 us   1.57 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=2      S=4      33.1 us   1.27 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=1      S=4      32.6 us   1.29 TB/s
+wo_b    5120x8192  tok 16  D R=8 U=1      S=4      46.2 us   0.91 TB/s
+wo_b    5120x8192  tok 16  B load-all32   S=4      38.9 us   1.08 TB/s
+wo_b    5120x8192  tok 16  A U=2          S=8      29.5 us   1.42 TB/s
+wo_b    5120x8192  tok 16  A U=4          S=8      28.7 us   1.46 TB/s
+wo_b    5120x8192  tok 16  D R=2 U=2      S=8      23.2 us   1.81 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=2      S=8      23.0 us   1.83 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=1      S=8      22.7 us   1.85 TB/s
+wo_b    5120x8192  tok 16  D R=8 U=1      S=8      29.9 us   1.40 TB/s
+wo_b    5120x8192  tok 16  B load-all     S=8      30.1 us   1.40 TB/s
+wo_b    5120x8192  tok 16  C partials     S=8      30.4 us   1.38 TB/s
+wo_b    5120x8192  tok 16  A U=2          S=16     32.1 us   1.31 TB/s
+wo_b    5120x8192  tok 16  A U=4          S=16     30.2 us   1.39 TB/s
+wo_b    5120x8192  tok 16  D R=2 U=2      S=16     28.6 us   1.47 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=2      S=16     29.4 us   1.43 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=1      S=16     28.5 us   1.48 TB/s
+wo_b    5120x8192  tok 16  D R=8 U=1      S=16     26.6 us   1.58 TB/s
+wo_b    5120x8192  tok 16  B load-all     S=16     30.9 us   1.36 TB/s
+wo_b    5120x8192  tok 16  C partials     S=16     29.5 us   1.42 TB/s
+wo_b    5120x8192  tok 16  A U=2          S=32     38.0 us   1.11 TB/s
+wo_b    5120x8192  tok 16  A U=4          S=32     37.2 us   1.13 TB/s
+wo_b    5120x8192  tok 16  D R=2 U=2      S=32     36.2 us   1.16 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=2      S=32     42.8 us   0.98 TB/s
+wo_b    5120x8192  tok 16  D R=4 U=1      S=32     41.6 us   1.01 TB/s
+wo_b    5120x8192  tok 16  D R=8 U=1      S=32     46.4 us   0.90 TB/s
+wo_b    5120x8192  tok 16  B load-all     S=32     40.7 us   1.03 TB/s
+wo_b    5120x8192  tok 16  C partials     S=32     33.9 us   1.24 TB/s
+q_b    32768x1280  tok  1  A U=2          S=1      17.8 us   2.36 TB/s
+q_b    32768x1280  tok  1  A U=4          S=1      14.0 us   2.99 TB/s
+q_b    32768x1280  tok  1  D R=2 U=2      S=1      16.3 us   2.58 TB/s
+q_b    32768x1280  tok  1  D R=4 U=2      S=1      18.9 us   2.22 TB/s
+q_b    32768x1280  tok  1  D R=4 U=1      S=1      18.4 us   2.28 TB/s
+q_b    32768x1280  tok  1  D R=8 U=1      S=1      23.8 us   1.77 TB/s
+q_b    32768x1280  tok  1  B load-all32   S=1      14.8 us   2.84 TB/s
+q_b    32768x1280  tok  1  A U=2          S=2      12.4 us   3.39 TB/s
+q_b    32768x1280  tok  1  A U=4          S=2      10.7 us   3.94 TB/s
+q_b    32768x1280  tok  1  D R=2 U=2      S=2      10.8 us   3.88 TB/s
+q_b    32768x1280  tok  1  D R=4 U=2      S=2      12.0 us   3.50 TB/s
+q_b    32768x1280  tok  1  D R=4 U=1      S=2      11.4 us   3.67 TB/s
+q_b    32768x1280  tok  1  D R=8 U=1      S=2      14.0 us   3.00 TB/s
+q_b    32768x1280  tok  1  B load-all     S=2      12.3 us   3.40 TB/s
+q_b    32768x1280  tok  1  C partials     S=2      14.3 us   2.94 TB/s
+q_b    32768x1280  tok  1  A U=2          S=4      10.9 us   3.84 TB/s
+q_b    32768x1280  tok  1  A U=4          S=4      12.9 us   3.26 TB/s
+q_b    32768x1280  tok  1  D R=2 U=2      S=4      11.1 us   3.77 TB/s
+q_b    32768x1280  tok  1  D R=4 U=2      S=4      10.2 us   4.12 TB/s
+q_b    32768x1280  tok  1  D R=4 U=1      S=4       9.8 us   4.29 TB/s
+q_b    32768x1280  tok  1  D R=8 U=1      S=4      10.2 us   4.10 TB/s
+q_b    32768x1280  tok  1  B load-all     S=4      13.9 us   3.01 TB/s
+q_b    32768x1280  tok  1  C partials     S=4      15.3 us   2.74 TB/s
+q_b    32768x1280  tok  8  A U=2          S=1      21.4 us   1.96 TB/s
+q_b    32768x1280  tok  8  A U=4          S=1      16.0 us   2.63 TB/s
+q_b    32768x1280  tok  8  D R=2 U=2      S=1      17.3 us   2.43 TB/s
+q_b    32768x1280  tok  8  D R=4 U=2      S=1      20.7 us   2.03 TB/s
+q_b    32768x1280  tok  8  D R=4 U=1      S=1      20.6 us   2.04 TB/s
+q_b    32768x1280  tok  8  D R=8 U=1      S=1      26.4 us   1.59 TB/s
+q_b    32768x1280  tok  8  B load-all32   S=1      21.7 us   1.94 TB/s
+q_b    32768x1280  tok  8  A U=2          S=2      17.7 us   2.37 TB/s
+q_b    32768x1280  tok  8  A U=4          S=2      15.2 us   2.77 TB/s
+q_b    32768x1280  tok  8  D R=2 U=2      S=2      14.3 us   2.94 TB/s
+q_b    32768x1280  tok  8  D R=4 U=2      S=2      16.2 us   2.59 TB/s
+q_b    32768x1280  tok  8  D R=4 U=1      S=2      15.9 us   2.64 TB/s
+q_b    32768x1280  tok  8  D R=8 U=1      S=2      18.2 us   2.31 TB/s
+q_b    32768x1280  tok  8  B load-all     S=2      19.5 us   2.15 TB/s
+q_b    32768x1280  tok  8  C partials     S=2      18.9 us   2.22 TB/s
+q_b    32768x1280  tok  8  A U=2          S=4      20.4 us   2.06 TB/s
+q_b    32768x1280  tok  8  A U=4          S=4      20.7 us   2.03 TB/s
+q_b    32768x1280  tok  8  D R=2 U=2      S=4      18.7 us   2.25 TB/s
+q_b    32768x1280  tok  8  D R=4 U=2      S=4      19.7 us   2.13 TB/s
+q_b    32768x1280  tok  8  D R=4 U=1      S=4      19.1 us   2.20 TB/s
+q_b    32768x1280  tok  8  D R=8 U=1      S=4      18.9 us   2.22 TB/s
+q_b    32768x1280  tok  8  B load-all     S=4      22.9 us   1.83 TB/s
+q_b    32768x1280  tok  8  C partials     S=4      21.8 us   1.92 TB/s
+q_b    32768x1280  tok 16  A U=2          S=1      26.8 us   1.56 TB/s
+q_b    32768x1280  tok 16  A U=4          S=1      20.5 us   2.05 TB/s
+q_b    32768x1280  tok 16  D R=2 U=2      S=1      20.6 us   2.04 TB/s
+q_b    32768x1280  tok 16  D R=4 U=2      S=1      23.8 us   1.77 TB/s
+q_b    32768x1280  tok 16  D R=4 U=1      S=1      23.8 us   1.76 TB/s
+q_b    32768x1280  tok 16  D R=8 U=1      S=1      32.7 us   1.28 TB/s
+q_b    32768x1280  tok 16  B load-all32   S=1      28.1 us   1.49 TB/s
+q_b    32768x1280  tok 16  A U=2          S=2      25.7 us   1.63 TB/s
+q_b    32768x1280  tok 16  A U=4          S=2      23.9 us   1.75 TB/s
+q_b    32768x1280  tok 16  D R=2 U=2      S=2      20.1 us   2.09 TB/s
+q_b    32768x1280  tok 16  D R=4 U=2      S=2      20.4 us   2.05 TB/s
+q_b    32768x1280  tok 16  D R=4 U=1      S=2      20.5 us   2.05 TB/s
+q_b    32768x1280  tok 16  D R=8 U=1      S=2      24.5 us   1.71 TB/s
+q_b    32768x1280  tok 16  B load-all     S=2      28.2 us   1.49 TB/s
+q_b    32768x1280  tok 16  C partials     S=2      23.8 us   1.76 TB/s
+q_b    32768x1280  tok 16  A U=2          S=4      33.6 us   1.25 TB/s
+q_b    32768x1280  tok 16  A U=4          S=4      33.1 us   1.27 TB/s
+q_b    32768x1280  tok 16  D R=2 U=2      S=4      32.2 us   1.30 TB/s
+q_b    32768x1280  tok 16  D R=4 U=2      S=4      29.3 us   1.43 TB/s
+q_b    32768x1280  tok 16  D R=4 U=1      S=4      29.2 us   1.44 TB/s
+q_b    32768x1280  tok 16  D R=8 U=1      S=4      29.8 us   1.41 TB/s
+q_b    32768x1280  tok 16  B load-all     S=4      35.5 us   1.18 TB/s
+q_b    32768x1280  tok 16  C partials     S=4      28.4 us   1.48 TB/s
+sh_w1   2304x5120  tok  1  A U=2          S=1      32.5 us   0.36 TB/s
+sh_w1   2304x5120  tok  1  A U=4          S=1      24.2 us   0.49 TB/s
+sh_w1   2304x5120  tok  1  D R=2 U=2      S=1      34.5 us   0.34 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=2      S=1      58.1 us   0.20 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=1      S=1      58.0 us   0.20 TB/s
+sh_w1   2304x5120  tok  1  A U=2          S=2      26.6 us   0.44 TB/s
+sh_w1   2304x5120  tok  1  A U=4          S=2      22.0 us   0.54 TB/s
+sh_w1   2304x5120  tok  1  D R=2 U=2      S=2      25.3 us   0.47 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=2      S=2      31.7 us   0.37 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=1      S=2      31.0 us   0.38 TB/s
+sh_w1   2304x5120  tok  1  A U=2          S=4      14.8 us   0.80 TB/s
+sh_w1   2304x5120  tok  1  A U=4          S=4      12.4 us   0.96 TB/s
+sh_w1   2304x5120  tok  1  D R=2 U=2      S=4      14.1 us   0.84 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=2      S=4      17.5 us   0.68 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=1      S=4      17.1 us   0.69 TB/s
+sh_w1   2304x5120  tok  1  B load-all32   S=4       6.9 us   1.71 TB/s
+sh_w1   2304x5120  tok  1  A U=2          S=8       8.5 us   1.38 TB/s
+sh_w1   2304x5120  tok  1  A U=4          S=8       7.4 us   1.60 TB/s
+sh_w1   2304x5120  tok  1  D R=2 U=2      S=8       8.5 us   1.40 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=2      S=8      10.1 us   1.17 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=1      S=8       9.9 us   1.19 TB/s
+sh_w1   2304x5120  tok  1  B load-all     S=8       4.7 us   2.53 TB/s
+sh_w1   2304x5120  tok  1  C partials     S=8       7.7 us   1.53 TB/s
+sh_w1   2304x5120  tok  1  A U=2          S=16      6.1 us   1.92 TB/s
+sh_w1   2304x5120  tok  1  A U=4          S=16      5.4 us   2.17 TB/s
+sh_w1   2304x5120  tok  1  D R=2 U=2      S=16      5.9 us   2.00 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=2      S=16      7.0 us   1.70 TB/s
+sh_w1   2304x5120  tok  1  D R=4 U=1      S=16      6.7 us   1.77 TB/s
+sh_w1   2304x5120  tok  1  B load-all     S=16      4.7 us   2.50 TB/s
+sh_w1   2304x5120  tok  1  C partials     S=16      9.1 us   1.30 TB/s
+sh_w1   2304x5120  tok  8  A U=2          S=1      54.8 us   0.22 TB/s
+sh_w1   2304x5120  tok  8  A U=4          S=1      40.8 us   0.29 TB/s
+sh_w1   2304x5120  tok  8  D R=2 U=2      S=1      49.9 us   0.24 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=2      S=1      63.9 us   0.18 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=1      S=1      62.9 us   0.19 TB/s
+sh_w1   2304x5120  tok  8  A U=2          S=2      30.4 us   0.39 TB/s
+sh_w1   2304x5120  tok  8  A U=4          S=2      22.8 us   0.52 TB/s
+sh_w1   2304x5120  tok  8  D R=2 U=2      S=2      27.5 us   0.43 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=2      S=2      34.4 us   0.34 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=1      S=2      33.7 us   0.35 TB/s
+sh_w1   2304x5120  tok  8  A U=2          S=4      17.2 us   0.69 TB/s
+sh_w1   2304x5120  tok  8  A U=4          S=4      13.2 us   0.90 TB/s
+sh_w1   2304x5120  tok  8  D R=2 U=2      S=4      15.4 us   0.77 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=2      S=4      19.2 us   0.62 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=1      S=4      18.9 us   0.62 TB/s
+sh_w1   2304x5120  tok  8  B load-all32   S=4       9.7 us   1.22 TB/s
+sh_w1   2304x5120  tok  8  A U=2          S=8      10.5 us   1.12 TB/s
+sh_w1   2304x5120  tok  8  A U=4          S=8       8.5 us   1.39 TB/s
+sh_w1   2304x5120  tok  8  D R=2 U=2      S=8       9.8 us   1.21 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=2      S=8      12.1 us   0.98 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=1      S=8      11.9 us   0.99 TB/s
+sh_w1   2304x5120  tok  8  B load-all     S=8       7.0 us   1.69 TB/s
+sh_w1   2304x5120  tok  8  C partials     S=8       8.9 us   1.32 TB/s
+sh_w1   2304x5120  tok  8  A U=2          S=16      9.1 us   1.30 TB/s
+sh_w1   2304x5120  tok  8  A U=4          S=16      8.5 us   1.39 TB/s
+sh_w1   2304x5120  tok  8  D R=2 U=2      S=16      8.8 us   1.34 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=2      S=16     10.5 us   1.12 TB/s
+sh_w1   2304x5120  tok  8  D R=4 U=1      S=16     10.1 us   1.16 TB/s
+sh_w1   2304x5120  tok  8  B load-all     S=16      8.2 us   1.44 TB/s
+sh_w1   2304x5120  tok  8  C partials     S=16     10.7 us   1.11 TB/s
+sh_w1   2304x5120  tok 16  A U=2          S=1      65.5 us   0.18 TB/s
+sh_w1   2304x5120  tok 16  A U=4          S=1      46.0 us   0.26 TB/s
+sh_w1   2304x5120  tok 16  D R=2 U=2      S=1      55.5 us   0.21 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=2      S=1      69.9 us   0.17 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=1      S=1      68.9 us   0.17 TB/s
+sh_w1   2304x5120  tok 16  A U=2          S=2      35.3 us   0.33 TB/s
+sh_w1   2304x5120  tok 16  A U=4          S=2      25.2 us   0.47 TB/s
+sh_w1   2304x5120  tok 16  D R=2 U=2      S=2      30.3 us   0.39 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=2      S=2      38.1 us   0.31 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=1      S=2      37.6 us   0.31 TB/s
+sh_w1   2304x5120  tok 16  A U=2          S=4      20.3 us   0.58 TB/s
+sh_w1   2304x5120  tok 16  A U=4          S=4      14.9 us   0.79 TB/s
+sh_w1   2304x5120  tok 16  D R=2 U=2      S=4      17.5 us   0.68 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=2      S=4      22.2 us   0.53 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=1      S=4      21.9 us   0.54 TB/s
+sh_w1   2304x5120  tok 16  B load-all32   S=4      12.4 us   0.95 TB/s
+sh_w1   2304x5120  tok 16  A U=2          S=8      12.7 us   0.93 TB/s
+sh_w1   2304x5120  tok 16  A U=4          S=8      10.2 us   1.16 TB/s
+sh_w1   2304x5120  tok 16  D R=2 U=2      S=8      12.0 us   0.99 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=2      S=8      14.5 us   0.82 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=1      S=8      14.5 us   0.82 TB/s
+sh_w1   2304x5120  tok 16  B load-all     S=8       9.2 us   1.28 TB/s
+sh_w1   2304x5120  tok 16  C partials     S=8      10.6 us   1.11 TB/s
+sh_w1   2304x5120  tok 16  A U=2          S=16     12.5 us   0.94 TB/s
+sh_w1   2304x5120  tok 16  A U=4          S=16     11.9 us   0.99 TB/s
+sh_w1   2304x5120  tok 16  D R=2 U=2      S=16     11.7 us   1.01 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=2      S=16     13.5 us   0.87 TB/s
+sh_w1   2304x5120  tok 16  D R=4 U=1      S=16     13.3 us   0.88 TB/s
+sh_w1   2304x5120  tok 16  B load-all     S=16     12.0 us   0.99 TB/s
+sh_w1   2304x5120  tok 16  C partials     S=16     13.4 us   0.88 TB/s
+wq_a    1280x5120  tok  1  A U=2          S=1      28.1 us   0.23 TB/s
+wq_a    1280x5120  tok  1  A U=4          S=1      21.1 us   0.31 TB/s
+wq_a    1280x5120  tok  1  D R=2 U=2      S=1      39.2 us   0.17 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=2      S=1      56.8 us   0.12 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=1      S=1      55.5 us   0.12 TB/s
+wq_a    1280x5120  tok  1  A U=2          S=2      25.0 us   0.26 TB/s
+wq_a    1280x5120  tok  1  A U=4          S=2      20.7 us   0.32 TB/s
+wq_a    1280x5120  tok  1  D R=2 U=2      S=2      24.4 us   0.27 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=2      S=2      30.3 us   0.22 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=1      S=2      29.6 us   0.22 TB/s
+wq_a    1280x5120  tok  1  A U=2          S=4      13.8 us   0.48 TB/s
+wq_a    1280x5120  tok  1  A U=4          S=4      11.5 us   0.57 TB/s
+wq_a    1280x5120  tok  1  D R=2 U=2      S=4      13.4 us   0.49 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=2      S=4      16.9 us   0.39 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=1      S=4      16.5 us   0.40 TB/s
+wq_a    1280x5120  tok  1  B load-all32   S=4       6.7 us   0.98 TB/s
+wq_a    1280x5120  tok  1  A U=2          S=8       7.9 us   0.83 TB/s
+wq_a    1280x5120  tok  1  A U=4          S=8       6.9 us   0.95 TB/s
+wq_a    1280x5120  tok  1  D R=2 U=2      S=8       8.1 us   0.81 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=2      S=8       9.9 us   0.66 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=1      S=8       9.7 us   0.68 TB/s
+wq_a    1280x5120  tok  1  B load-all     S=8       4.5 us   1.46 TB/s
+wq_a    1280x5120  tok  1  C partials     S=8       7.5 us   0.88 TB/s
+wq_a    1280x5120  tok  1  A U=2          S=16      5.4 us   1.21 TB/s
+wq_a    1280x5120  tok  1  A U=4          S=16      4.8 us   1.35 TB/s
+wq_a    1280x5120  tok  1  D R=2 U=2      S=16      5.6 us   1.16 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=2      S=16      6.8 us   0.97 TB/s
+wq_a    1280x5120  tok  1  D R=4 U=1      S=16      6.5 us   1.01 TB/s
+wq_a    1280x5120  tok  1  B load-all     S=16      4.4 us   1.49 TB/s
+wq_a    1280x5120  tok  1  C partials     S=16      8.8 us   0.74 TB/s
+wq_a    1280x5120  tok  8  A U=2          S=1      54.4 us   0.12 TB/s
+wq_a    1280x5120  tok  8  A U=4          S=1      40.0 us   0.16 TB/s
+wq_a    1280x5120  tok  8  D R=2 U=2      S=1      49.1 us   0.13 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=2      S=1      62.7 us   0.10 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=1      S=1      61.8 us   0.11 TB/s
+wq_a    1280x5120  tok  8  A U=2          S=2      29.5 us   0.22 TB/s
+wq_a    1280x5120  tok  8  A U=4          S=2      22.1 us   0.30 TB/s
+wq_a    1280x5120  tok  8  D R=2 U=2      S=2      26.9 us   0.24 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=2      S=2      33.6 us   0.20 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=1      S=2      33.0 us   0.20 TB/s
+wq_a    1280x5120  tok  8  A U=2          S=4      16.5 us   0.40 TB/s
+wq_a    1280x5120  tok  8  A U=4          S=4      12.5 us   0.52 TB/s
+wq_a    1280x5120  tok  8  D R=2 U=2      S=4      14.9 us   0.44 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=2      S=4      18.9 us   0.35 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=1      S=4      18.6 us   0.35 TB/s
+wq_a    1280x5120  tok  8  B load-all32   S=4       9.3 us   0.71 TB/s
+wq_a    1280x5120  tok  8  A U=2          S=8       9.9 us   0.66 TB/s
+wq_a    1280x5120  tok  8  A U=4          S=8       7.8 us   0.84 TB/s
+wq_a    1280x5120  tok  8  D R=2 U=2      S=8       9.3 us   0.71 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=2      S=8      11.7 us   0.56 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=1      S=8      11.6 us   0.57 TB/s
+wq_a    1280x5120  tok  8  B load-all     S=8       6.3 us   1.05 TB/s
+wq_a    1280x5120  tok  8  C partials     S=8       8.7 us   0.75 TB/s
+wq_a    1280x5120  tok  8  A U=2          S=16      7.4 us   0.88 TB/s
+wq_a    1280x5120  tok  8  A U=4          S=16      7.1 us   0.93 TB/s
+wq_a    1280x5120  tok  8  D R=2 U=2      S=16      7.2 us   0.91 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=2      S=16      9.3 us   0.70 TB/s
+wq_a    1280x5120  tok  8  D R=4 U=1      S=16      9.1 us   0.72 TB/s
+wq_a    1280x5120  tok  8  B load-all     S=16      6.6 us   1.00 TB/s
+wq_a    1280x5120  tok  8  C partials     S=16     10.2 us   0.64 TB/s
+wq_a    1280x5120  tok 16  A U=2          S=1      63.8 us   0.10 TB/s
+wq_a    1280x5120  tok 16  A U=4          S=1      45.2 us   0.15 TB/s
+wq_a    1280x5120  tok 16  D R=2 U=2      S=1      54.7 us   0.12 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=2      S=1      69.6 us   0.09 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=1      S=1      68.6 us   0.10 TB/s
+wq_a    1280x5120  tok 16  A U=2          S=2      34.6 us   0.19 TB/s
+wq_a    1280x5120  tok 16  A U=4          S=2      24.6 us   0.27 TB/s
+wq_a    1280x5120  tok 16  D R=2 U=2      S=2      29.9 us   0.22 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=2      S=2      37.9 us   0.17 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=1      S=2      37.4 us   0.18 TB/s
+wq_a    1280x5120  tok 16  A U=2          S=4      19.2 us   0.34 TB/s
+wq_a    1280x5120  tok 16  A U=4          S=4      14.2 us   0.46 TB/s
+wq_a    1280x5120  tok 16  D R=2 U=2      S=4      17.1 us   0.38 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=2      S=4      22.1 us   0.30 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=1      S=4      22.0 us   0.30 TB/s
+wq_a    1280x5120  tok 16  B load-all32   S=4      12.1 us   0.54 TB/s
+wq_a    1280x5120  tok 16  A U=2          S=8      11.5 us   0.57 TB/s
+wq_a    1280x5120  tok 16  A U=4          S=8       9.1 us   0.72 TB/s
+wq_a    1280x5120  tok 16  D R=2 U=2      S=8      11.1 us   0.59 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=2      S=8      14.4 us   0.46 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=1      S=8      14.3 us   0.46 TB/s
+wq_a    1280x5120  tok 16  B load-all     S=8       8.0 us   0.82 TB/s
+wq_a    1280x5120  tok 16  C partials     S=8      10.2 us   0.64 TB/s
+wq_a    1280x5120  tok 16  A U=2          S=16      9.9 us   0.66 TB/s
+wq_a    1280x5120  tok 16  A U=4          S=16      9.4 us   0.70 TB/s
+wq_a    1280x5120  tok 16  D R=2 U=2      S=16      9.4 us   0.70 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=2      S=16     11.6 us   0.57 TB/s
+wq_a    1280x5120  tok 16  D R=4 U=1      S=16     11.3 us   0.58 TB/s
+wq_a    1280x5120  tok 16  B load-all     S=16      9.6 us   0.68 TB/s
+wq_a    1280x5120  tok 16  C partials     S=16     12.5 us   0.52 TB/s

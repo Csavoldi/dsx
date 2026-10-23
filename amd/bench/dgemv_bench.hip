@@ -68,6 +68,60 @@ __global__ void __launch_bounds__(256) dg_a(Args a) {
     for (int j = 0; j < 4; j++) atomicAdd(yp + j, 2.f * acc[j]);
 }
 
+// D: R adjacent 16-row tiles per wave share one set of activation loads (activation traffic / R), prefetch U ahead
+template <int R, int U>
+__global__ void __launch_bounds__(256) dg_d(Args a) {
+    const int lane = threadIdx.x & 63, wv = threadIdx.x >> 6;
+    const int RT = a.n / 16, KP = a.k / 64, KB = a.k / 32;
+    const int RBN = RT / (4 * R);
+    const int b = blockIdx.x, rb = b % RBN, sl = b / RBN;
+    const int rt0 = (rb * 4 + wv) * R;
+    const int u0 = KP * sl / a.S, u1 = KP * (sl + 1) / a.S;
+    const int col = lane & 15, g8 = 8 * (lane >> 4);
+    const bool live = col < a.ntok;
+    const uint8_t* xq = a.xq + (size_t)(live ? col : 0) * a.k;
+    const float* xs = a.xs + (size_t)(live ? col : 0) * KB;
+    const float lm = live ? 1.f : 0.f;
+    struct Unit { u4v w[R]; uint32_t sb[R]; uint64_t x[2]; float xs[2]; };
+    auto ld = [&](int kp, Unit& o) {
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            o.w[r] = __builtin_nontemporal_load(a.w + ((size_t)(rt0 + r) * KP + kp) * 64 + lane);
+            o.sb[r] = *reinterpret_cast<const uint16_t*>(a.sc + (size_t)((rt0 + r) >> 1) * KB + 2 * kp);
+        }
+        o.x[0] = *reinterpret_cast<const uint64_t*>(xq + kp * 64 + g8);
+        o.x[1] = *reinterpret_cast<const uint64_t*>(xq + kp * 64 + 32 + g8);
+        o.xs[0] = xs[2 * kp] * lm;
+        o.xs[1] = xs[2 * kp + 1] * lm;
+    };
+    f4 acc[R];
+#pragma unroll
+    for (int r = 0; r < R; r++) acc[r] = f4{0, 0, 0, 0};
+    Unit cu[U], nu[U];
+    for (int u = 0; u < U; u++)
+        if (u0 + u < u1) ld(u0 + u, cu[u]);
+    for (int kk = u0; kk < u1; kk += U) {
+        for (int u = 0; u < U; u++)
+            if (kk + U + u < u1) ld(kk + U + u, nu[u]);
+#pragma unroll
+        for (int u = 0; u < U; u++)
+            if (kk + u < u1)
+#pragma unroll
+                for (int r = 0; r < R; r++) {
+                    const float s0 = cu[u].xs[0] * __uint_as_float((cu[u].sb[r] & 0xFFu) << 23), s1 = cu[u].xs[1] * __uint_as_float((cu[u].sb[r] >> 8) << 23);
+                    kp_step(acc[r], cu[u].w[r], cu[u].x[0], cu[u].x[1], s0, s1);
+                }
+#pragma unroll
+        for (int u = 0; u < U; u++) cu[u] = nu[u];
+    }
+    if (!live) return;
+#pragma unroll
+    for (int r = 0; r < R; r++) {
+        float* yp = a.y + (size_t)col * a.n + (rt0 + r) * 16 + 4 * (lane >> 4);
+        for (int j = 0; j < 4; j++) atomicAdd(yp + j, 2.f * acc[r][j]);
+    }
+}
+
 // B / C: the whole k-slice (L k-pairs, L = KP / S <= LMAX) loaded before any use
 template <int LMAX, bool PART>
 __global__ void __launch_bounds__(256) dg_b(Args a) {
@@ -171,6 +225,10 @@ int main() {
                 const int grid = (RT / 4) * S;
                 run("A U=2", S, [&] { hipLaunchKernelGGL(dg_a<2>, dim3(grid), dim3(256), 0, 0, a); });
                 run("A U=4", S, [&] { hipLaunchKernelGGL(dg_a<4>, dim3(grid), dim3(256), 0, 0, a); });
+                if (RT % 8 == 0) run("D R=2 U=2", S, [&] { hipLaunchKernelGGL((dg_d<2, 2>), dim3((RT / 8) * S), dim3(256), 0, 0, a); });
+                if (RT % 16 == 0) run("D R=4 U=2", S, [&] { hipLaunchKernelGGL((dg_d<4, 2>), dim3((RT / 16) * S), dim3(256), 0, 0, a); });
+                if (RT % 16 == 0) run("D R=4 U=1", S, [&] { hipLaunchKernelGGL((dg_d<4, 1>), dim3((RT / 16) * S), dim3(256), 0, 0, a); });
+                if (RT % 32 == 0) run("D R=8 U=1", S, [&] { hipLaunchKernelGGL((dg_d<8, 1>), dim3((RT / 32) * S), dim3(256), 0, 0, a); });
                 if (KP / S <= 16) {
                     run("B load-all", S, [&] { hipLaunchKernelGGL((dg_b<16, false>), dim3(grid), dim3(256), 0, 0, a); });
                     run("C partials", S, [&] {
