@@ -45,6 +45,11 @@ impl SpecState {
         }
     }
 
+    /// the newest `n` tokens
+    pub fn tail(&self, n: usize) -> Vec<u32> {
+        self.toks[self.toks.len().saturating_sub(n)..].to_vec()
+    }
+
     /// up to `max` tokens that followed the newest earlier occurrence of the last 3 tokens
     fn lookup(&self, max: usize) -> Vec<u32> {
         let n = self.toks.len();

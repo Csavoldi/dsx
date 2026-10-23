@@ -873,6 +873,88 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                             Ok(())
                         })?;
                     }
+                    "lspec" => {
+                        // lspec B KTOK N: a ~KTOK-thousand-token prefix of source files (prefilled once, kept in slot 0), then B
+                        // sessions that each extend it with a request to rewrite a different file (prefix reuse via the lane);
+                        // N tokens per session, plain batched decoding vs spec_step
+                        let bsz: usize = w[1].parse()?;
+                        let ktok: usize = w[2].parse()?;
+                        let n: usize = w[3].parse()?;
+                        let tok = tokenizers::Tokenizer::from_file(model.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let enc = |s: &str| -> Result<Vec<u32>> { Ok(tok.encode(s, false).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().to_vec()) };
+                        let mut files: Vec<std::path::PathBuf> = vec![];
+                        for d in ["/root/dsx/amd/src", "/root/dsx/amd/kernels", "/root/dsx/core/src", "/root/dsx/nvidia/src"] {
+                            if let Ok(rd) = std::fs::read_dir(d) { for e in rd.flatten() { let p = e.path(); if p.extension().map(|x| x == "rs" || x == "h" || x == "cuh" || x == "hip").unwrap_or(false) { files.push(p); } } }
+                        }
+                        files.sort();
+                        let mut prefix = String::from("<｜begin▁of▁sentence｜><｜User｜>Here is a code base.\n\n");
+                        let mut fi = 0;
+                        let mut ptoks = 0;
+                        while ptoks < ktok * 1000 {
+                            let f = &files[fi % files.len()];
+                            let src = std::fs::read_to_string(f).unwrap_or_default();
+                            let chunk = format!("=== {} ===\n{}\n", f.display(), src);
+                            ptoks += enc(&chunk)?.len();
+                            prefix.push_str(&chunk);
+                            fi += 1;
+                        }
+                        let pre = enc(&prefix)?;
+                        // files to rewrite: small ones that are in the prefix
+                        let incl: Vec<&std::path::PathBuf> = files.iter().take(fi.min(files.len())).collect();
+                        let mut small: Vec<&std::path::PathBuf> = incl.iter().copied().filter(|f| std::fs::metadata(f).map(|m| m.len() < 9000).unwrap_or(false)).collect();
+                        if small.is_empty() { small = incl.clone(); }
+                        let ctx = pre.len() + 8192 + n;
+                        let mut a = dec.new_batch(bsz + 1, ctx)?;
+                        let mut sb = dec.new_batch(bsz + 1, ctx)?;
+                        dec.reset()?;
+                        let t0 = Instant::now();
+                        dec.prefill(&pre)?;
+                        let tp = t0.elapsed().as_secs_f64();
+                        dec.load_slot(&mut a, 0)?;
+                        let mut first = vec![];
+                        let mut hist = vec![];
+                        let mut sufl = 0;
+                        for s in 1..=bsz {
+                            dec.unload_slot(&a, 0)?;
+                            let f = small[(s * 7) % small.len()];
+                            let suf = enc(&format!("\nNow rewrite the file {} in full, with every comment line changed to start with `// NOTE:`. Output only the file.<｜Assistant｜></think>", f.display()))?;
+                            sufl += suf.len();
+                            first.push(dec.prefill(&suf)?);
+                            dec.load_slot(&mut a, s)?;
+                            dec.load_slot(&mut sb, s)?;
+                            let mut h = pre.clone();
+                            h.extend_from_slice(&suf);
+                            h.push(*first.last().unwrap());
+                            hist.push(h);
+                        }
+                        let slots: Vec<usize> = (1..=bsz).collect();
+                        let t1 = Instant::now();
+                        let mut cur = first.clone();
+                        for _ in 1..n { cur = dec.batch_step(&mut a, &slots, &cur)?; }
+                        let tpl = t1.elapsed().as_secs_f64();
+                        let mut st: Vec<spec::SpecState> = hist.iter().map(|h| spec::SpecState::new(h)).collect();
+                        let mut got = vec![1usize; bsz];
+                        let mut next = first.clone();
+                        let t2 = Instant::now();
+                        loop {
+                            let live: Vec<usize> = (0..bsz).filter(|&i| got[i] < n).collect();
+                            if live.is_empty() { break; }
+                            let ls: Vec<usize> = live.iter().map(|&i| i + 1).collect();
+                            let nx: Vec<u32> = live.iter().map(|&i| next[i]).collect();
+                            let mut refs: Vec<&mut spec::SpecState> = st.iter_mut().enumerate().filter(|(i, _)| got[*i] < n).map(|(_, x)| x).collect();
+                            let em = dec.spec_step(&mut sb, &ls, &nx, &mut refs)?;
+                            for (k, &i) in live.iter().enumerate() { got[i] += em[k].len(); next[i] = *em[k].last().unwrap(); }
+                        }
+                        let tsp = t2.elapsed().as_secs_f64();
+                        let ng: usize = got.iter().sum::<usize>() - bsz;
+                        let h0 = &hist[0];
+                        let out0: Vec<u32> = st[0].tail(n);
+                        let _ = h0;
+                        println!("session 1 output: {:?}", tok.decode(&out0, false).unwrap_or_default().chars().take(400).collect::<String>());
+                        println!("session 1 lookup hits {}, passes {}", st[0].ngram_hits, st[0].passes);
+                        println!("lspec B={bsz} prefix {} tokens (prefill {:.0} s, {:.0} tok/s; per-session suffix ~{} tokens): plain {:.1} tok/s per session ({:.0} total); spec {:.1} tok/s per session ({:.0} total)",
+                            pre.len(), tp, pre.len() as f64 / tp, sufl / bsz, (n - 1) as f64 / tpl, (bsz * (n - 1)) as f64 / tpl, ng as f64 / bsz as f64 / tsp, ng as f64 / tsp);
+                    }
                     "rbench" => {
                         // rbench SLOTS CTX N PROMPT GEN [TURNS]: N requests of PROMPT synthetic tokens (distinct per request),
                         // GEN greedy tokens each, through the batched runner; TURNS > 1 sends each conversation's
