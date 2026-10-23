@@ -1,0 +1,67 @@
+prompt60 dev_nt=0: prefill 60 tokens in 1.03 s (58 tok/s); [(45955, 17.359715), (295, 16.64956), (1, 15.981922), (3679, 15.647981), (128822, 15.570649)]
+prompt60 dev_nt=6: prefill 60 tokens in 1.01 s (59 tok/s); [(45955, 17.21308), (295, 17.100157), (128822, 16.856432), (312, 16.048359), (660, 15.790158)]
+prompt60 dev_nt=6: prefill 60 tokens in 1.02 s (59 tok/s); [(45955, 17.21308), (295, 17.100157), (128822, 16.856432), (312, 16.048359), (660, 15.790158)]
+prompt60 dev_nt=0: prefill 60 tokens in 1.02 s (59 tok/s); [(45955, 17.359715), (295, 16.64956), (1, 15.981922), (3679, 15.647981), (128822, 15.570649)]
+prompt300 dev_nt=0: prefill 300 tokens in 2.10 s (143 tok/s); [(16, 28.305614), (339, 25.621506), (305, 25.619308), (14, 25.248846), (603, 21.428495)]
+prompt300 dev_nt=6: prefill 300 tokens in 2.12 s (141 tok/s); [(16, 28.015903), (339, 25.368755), (305, 24.96609), (14, 24.521503), (3946, 21.11531)]
+prompt300 dev_nt=6: prefill 300 tokens in 2.11 s (142 tok/s); [(16, 28.015903), (339, 25.368755), (305, 24.96609), (14, 24.521503), (3946, 21.11531)]
+prompt300 dev_nt=0: prefill 300 tokens in 2.11 s (142 tok/s); [(16, 28.305614), (339, 25.621506), (305, 25.619308), (14, 25.248846), (603, 21.428495)]
+prompt3k_1024 dev_nt=0: prefill 1024 tokens in 4.11 s (249 tok/s); [(3418, 37.603474), (1990, 23.623867), (4463, 22.794973), (75598, 21.696589), (100461, 20.317131)
+prompt3k_1024 dev_nt=6: prefill 1024 tokens in 4.16 s (246 tok/s); [(3418, 36.572292), (1990, 24.475948), (4463, 22.947006), (75598, 20.17907), (100461, 20.133797)]
+prompt3k_1024 dev_nt=6: prefill 1024 tokens in 4.11 s (249 tok/s); [(3418, 36.572292), (1990, 24.475948), (4463, 22.947006), (75598, 20.17907), (100461, 20.133797)]
+prompt3k_1024 dev_nt=0: prefill 1024 tokens in 4.12 s (249 tok/s); [(3418, 37.603474), (1990, 23.623867), (4463, 22.794973), (75598, 21.696589), (100461, 20.317131)
+== DSX_PROF 60 dev_nt=6
+prefill 60 tokens in 1.01 s (59 tok/s); next top5 [(45955, 17.21308), (295, 17.100157), (128822, 16.856432), (312, 16.04
+  prefill . indexer            0.01 s
+  prefill . sparse_attn kernel 0.00 s
+  prefill attention+indexer    0.37 s
+  prefill engram               0.02 s
+  prefill moe                  0.59 s
+  prefill moe . expert loops   0.50 s
+  prefill moe . resident few-token experts (decode kernels) 0.01 s
+  prefill moe . router+shared+aux ship 0.07 s
+  prefill moe . wait CPU experts 0.01 s
+  prefill moe . wait aux GPUs + add 0.02 s
+eval dev_nt=6 (CPU share on): {"tokens": 8184, "nll": 2.260190, "ppl": 9.5849, "kl_top256": 0.201039, "top1_agree": 0.810484}
+== Dev4 mt102 (serve stopped)
+T16K15:  nt=1 48 us (45.6 clk/tile/tok)  nt=2 52 us (25.0 clk/tile/tok)  nt=4 122 us (29.1 clk/tile/tok)  nt=8 113 us (13.5 clk/tile/tok)  nt=16 226 us (13.5 clk/tile/tok)
+T16K2:  nt=1 51 us (48.5 clk/tile/tok)  nt=2 54 us (25.9 clk/tile/tok)  nt=4 80 us (19.2 clk/tile/tok)  nt=8 115 us (13.7 clk/tile/tok)  nt=16 230 us (13.8 clk/tile/tok)
+T16K25:  nt=1 58 us (55.3 clk/tile/tok)  nt=2 63 us (30.0 clk/tile/tok)  nt=4 85 us (20.3 clk/tile/tok)  nt=8 122 us (14.5 clk/tile/tok)  nt=16 243 us (14.6 clk/tile/tok)
+DSX_T16_MULTI=0
+T16K15:  nt=1 48 us (45.5 clk/tile/tok)  nt=2 95 us (45.6 clk/tile/tok)  nt=4 191 us (45.6 clk/tile/tok)  nt=8 381 us (45.5 clk/tile/tok)  nt=16 761 us (45.5 clk/tile/tok)
+T16K2:  nt=1 51 us (48.6 clk/tile/tok)  nt=2 101 us (48.5 clk/tile/tok)  nt=4 203 us (48.5 clk/tile/tok)  nt=8 406 us (48.5 clk/tile/tok)  nt=16 813 us (48.6 clk/tile/tok)
+T16K25:  nt=1 58 us (55.5 clk/tile/tok)  nt=2 116 us (55.4 clk/tile/tok)  nt=4 231 us (55.3 clk/tile/tok)  nt=8 462 us (55.3 clk/tile/tok)  nt=16 924 us (55.3 clk/tile/tok)
+== round 1 DSX_T16_MULTI=1
+ 1 threads:  UD IQ mix 11.961 ms (4.5 GB/s)  T16 1.5/2 8.637 ms (5.2 GB/s)  T16 2/2.5 9.275 ms (6.2 GB/s)  K1.5 8.584 ms (4.7 GB/s)  K2 8.864 ms (6.0 GB/s)  K2.5 9.999 ms (6.7 GB/s)
+14 threads:  UD IQ mix 1.840 ms (28.9 GB/s)  T16 1.5/2 1.225 ms (36.3 GB/s)  T16 2/2.5 1.478 ms (39.1 GB/s)  K1.5 1.152 ms (34.8 GB/s)  K2 1.381 ms (38.6 GB/s)  K2.5 1.693 ms (39.4 GB/s)
+nt sweep (gemv_multi): ms per 6-expert call / per token, weight-token products per clock per thread at 4.9 GHz
+ 1 threads T16 1.5/2:  nt=1 8.64 (8.643/tok, 5.0 w/clk)  nt=2 9.55 (4.775/tok, 9.1 w/clk)  nt=4 14.17 (3.543/tok, 12.2 w/clk)  nt=8 21.14 (2.643/tok, 16.4 w/clk)  nt=16 42.03 (2.627/tok, 16.5 w/clk)
+ 1 threads T16 2/2.5:  nt=1 9.26 (9.258/tok, 4.7 w/clk)  nt=2 10.23 (5.115/tok, 8.5 w/clk)  nt=4 15.29 (3.823/tok, 11.3 w/clk)  nt=8 22.04 (2.755/tok, 15.7 w/clk)  nt=16 43.26 (2.704/tok, 16.0 w/clk)
+14 threads T16 1.5/2:  nt=1 1.24 (1.242/tok, 2.5 w/clk)  nt=2 1.39 (0.693/tok, 4.5 w/clk)  nt=4 1.92 (0.479/tok, 6.5 w/clk)  nt=8 3.03 (0.379/tok, 8.2 w/clk)  nt=16 6.02 (0.376/tok, 8.2 w/clk)
+14 threads T16 2/2.5:  nt=1 1.51 (1.508/tok, 2.1 w/clk)  nt=2 1.57 (0.784/tok, 3.9 w/clk)  nt=4 2.04 (0.509/tok, 6.1 w/clk)  nt=8 3.15 (0.393/tok, 7.9 w/clk)  nt=16 6.22 (0.389/tok, 8.0 w/clk)
+== round 1 DSX_T16_MULTI=0
+ 1 threads:  UD IQ mix 11.954 ms (4.5 GB/s)  T16 1.5/2 8.647 ms (5.1 GB/s)  T16 2/2.5 9.233 ms (6.3 GB/s)  K1.5 8.557 ms (4.7 GB/s)  K2 8.868 ms (6.0 GB/s)  K2.5 9.947 ms (6.7 GB/s)
+14 threads:  UD IQ mix 1.840 ms (28.9 GB/s)  T16 1.5/2 1.221 ms (36.5 GB/s)  T16 2/2.5 1.477 ms (39.1 GB/s)  K1.5 1.145 ms (35.0 GB/s)  K2 1.372 ms (38.9 GB/s)  K2.5 1.687 ms (39.5 GB/s)
+nt sweep (per-token gemv, DSX_T16_MULTI=0): ms per 6-expert call / per token, weight-token products per clock per thread at 4.9 GHz
+ 1 threads T16 1.5/2:  nt=1 8.66 (8.658/tok, 5.0 w/clk)  nt=2 16.80 (8.399/tok, 5.2 w/clk)  nt=4 33.16 (8.289/tok, 5.2 w/clk)  nt=8 65.93 (8.242/tok, 5.3 w/clk)  nt=16 131.37 (8.211/tok, 5.3 w/clk)
+ 1 threads T16 2/2.5:  nt=1 9.23 (9.235/tok, 4.7 w/clk)  nt=2 18.14 (9.070/tok, 4.8 w/clk)  nt=4 35.97 (8.991/tok, 4.8 w/clk)  nt=8 71.49 (8.936/tok, 4.8 w/clk)  nt=16 142.79 (8.924/tok, 4.9 w/clk)
+14 threads T16 1.5/2:  nt=1 1.22 (1.216/tok, 2.5 w/clk)  nt=2 2.31 (1.154/tok, 2.7 w/clk)  nt=4 4.54 (1.134/tok, 2.7 w/clk)  nt=8 8.98 (1.123/tok, 2.8 w/clk)  nt=16 17.89 (1.118/tok, 2.8 w/clk)
+14 threads T16 2/2.5:  nt=1 1.48 (1.475/tok, 2.1 w/clk)  nt=2 2.55 (1.276/tok, 2.4 w/clk)  nt=4 4.96 (1.240/tok, 2.5 w/clk)  nt=8 9.79 (1.224/tok, 2.5 w/clk)  nt=16 19.43 (1.215/tok, 2.5 w/clk)
+== round 2 DSX_T16_MULTI=1
+ 1 threads:  UD IQ mix 12.053 ms (4.4 GB/s)  T16 1.5/2 8.638 ms (5.2 GB/s)  T16 2/2.5 9.253 ms (6.2 GB/s)  K1.5 8.593 ms (4.7 GB/s)  K2 8.860 ms (6.0 GB/s)  K2.5 10.086 ms (6.6 GB/s)
+14 threads:  UD IQ mix 1.852 ms (28.8 GB/s)  T16 1.5/2 1.221 ms (36.5 GB/s)  T16 2/2.5 1.478 ms (39.1 GB/s)  K1.5 1.148 ms (34.9 GB/s)  K2 1.376 ms (38.8 GB/s)  K2.5 1.687 ms (39.5 GB/s)
+nt sweep (gemv_multi): ms per 6-expert call / per token, weight-token products per clock per thread at 4.9 GHz
+ 1 threads T16 1.5/2:  nt=1 8.64 (8.641/tok, 5.0 w/clk)  nt=2 9.54 (4.769/tok, 9.1 w/clk)  nt=4 14.16 (3.540/tok, 12.2 w/clk)  nt=8 21.16 (2.644/tok, 16.4 w/clk)  nt=16 41.77 (2.610/tok, 16.6 w/clk)
+ 1 threads T16 2/2.5:  nt=1 9.27 (9.267/tok, 4.7 w/clk)  nt=2 10.25 (5.127/tok, 8.5 w/clk)  nt=4 15.28 (3.820/tok, 11.3 w/clk)  nt=8 21.92 (2.740/tok, 15.8 w/clk)  nt=16 43.27 (2.704/tok, 16.0 w/clk)
+14 threads T16 1.5/2:  nt=1 1.22 (1.216/tok, 2.5 w/clk)  nt=2 1.38 (0.690/tok, 4.5 w/clk)  nt=4 1.92 (0.479/tok, 6.5 w/clk)  nt=8 3.04 (0.380/tok, 8.1 w/clk)  nt=16 6.01 (0.376/tok, 8.2 w/clk)
+14 threads T16 2/2.5:  nt=1 1.48 (1.476/tok, 2.1 w/clk)  nt=2 1.57 (0.783/tok, 4.0 w/clk)  nt=4 2.04 (0.509/tok, 6.1 w/clk)  nt=8 3.13 (0.392/tok, 7.9 w/clk)  nt=16 6.21 (0.388/tok, 8.0 w/clk)
+== round 2 DSX_T16_MULTI=0
+ 1 threads:  UD IQ mix 11.942 ms (4.5 GB/s)  T16 1.5/2 8.645 ms (5.1 GB/s)  T16 2/2.5 9.244 ms (6.3 GB/s)  K1.5 8.564 ms (4.7 GB/s)  K2 8.854 ms (6.0 GB/s)  K2.5 9.999 ms (6.7 GB/s)
+14 threads:  UD IQ mix 1.840 ms (28.9 GB/s)  T16 1.5/2 1.219 ms (36.5 GB/s)  T16 2/2.5 1.481 ms (39.0 GB/s)  K1.5 1.152 ms (34.8 GB/s)  K2 1.380 ms (38.7 GB/s)  K2.5 1.689 ms (39.5 GB/s)
+nt sweep (per-token gemv, DSX_T16_MULTI=0): ms per 6-expert call / per token, weight-token products per clock per thread at 4.9 GHz
+ 1 threads T16 1.5/2:  nt=1 8.65 (8.655/tok, 5.0 w/clk)  nt=2 16.81 (8.404/tok, 5.2 w/clk)  nt=4 33.15 (8.289/tok, 5.2 w/clk)  nt=8 65.85 (8.231/tok, 5.3 w/clk)  nt=16 131.69 (8.231/tok, 5.3 w/clk)
+ 1 threads T16 2/2.5:  nt=1 9.25 (9.245/tok, 4.7 w/clk)  nt=2 18.16 (9.078/tok, 4.8 w/clk)  nt=4 35.97 (8.994/tok, 4.8 w/clk)  nt=8 71.55 (8.944/tok, 4.8 w/clk)  nt=16 143.42 (8.964/tok, 4.8 w/clk)
+14 threads T16 1.5/2:  nt=1 1.22 (1.218/tok, 2.5 w/clk)  nt=2 2.31 (1.153/tok, 2.7 w/clk)  nt=4 4.53 (1.133/tok, 2.7 w/clk)  nt=8 8.99 (1.124/tok, 2.8 w/clk)  nt=16 17.89 (1.118/tok, 2.8 w/clk)
+14 threads T16 2/2.5:  nt=1 1.48 (1.479/tok, 2.1 w/clk)  nt=2 2.55 (1.277/tok, 2.4 w/clk)  nt=4 4.97 (1.242/tok, 2.5 w/clk)  nt=8 9.79 (1.224/tok, 2.5 w/clk)  nt=16 19.44 (1.215/tok, 2.5 w/clk)
+done Thu Oct 22 10:42:30 PM PDT 2026
+WIN6-DONE Thu Oct 22 10:42:30 PM PDT 2026

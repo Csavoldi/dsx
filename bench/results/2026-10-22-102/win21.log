@@ -1,0 +1,41 @@
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1334 (11.3 GB), GPU1 2757 (23.3 GB, static, 3.3 GB/s link)
+decode 400 tokens in 12.12 s (33.00 tok/s); CPU experts busy 12.6 ms/token, 21.9% of picks on the CPU; GPU0 expert swaps 3200 (0.26 ms/token host)
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 55 
+== DSX_PROF=1, DSX_ENGRAM_FP8=0
+engram L1: 72000 rows, 28087 distinct
+engram L1: hash 1 ms, gather 111 ms, upload 8 ms
+engram L14: 72000 rows, 28088 distinct
+engram L14: hash 1 ms, gather 112 ms, upload 8 ms
+  prefill engram               0.27 s
+decode 400 tokens in 12.87 s (31.09 tok/s); CPU experts busy 13.6 ms/token, 23.7% of picks on the CPU; GPU0 expert swaps 3200 (0.27 ms/token host)
+  engram                       1.51 ms/token
+  host: engram join wait       0.70 ms/token
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 54 
+== DSX_PROF=1, DSX_ENGRAM_FP8=1
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+engram L1: 72000 rows, 28087 distinct
+engram L1: hash 1 ms, gather 110 ms, upload 8 ms
+engram L14: 72000 rows, 28088 distinct
+engram L14: hash 1 ms, gather 111 ms, upload 8 ms
+  prefill engram               0.27 s
+decode 400 tokens in 12.37 s (32.34 tok/s); CPU experts busy 12.5 ms/token, 21.9% of picks on the CPU; GPU0 expert swaps 3200 (0.25 ms/token host)
+  engram                       1.03 ms/token
+  host: engram join wait       0.45 ms/token
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU 53 54 
+== eval --decode --seqs 2, DSX_ENGRAM_FP8=0
+seq 0: running ppl 9.935 kl 0.1395 top1 0.8407 (38 s)
+seq 1: running ppl 8.600 kl 0.2082 top1 0.8255 (74 s)
+{"tokens": 2046, "nll": 2.151793, "ppl": 8.6003, "kl_top256": 0.208203, "top1_agree": 0.825513}
+  Package id 0:  +63.0°C  (high = +80.0°C, crit = +100.0°C) GPU 57 52 
+== eval --decode --seqs 2, DSX_ENGRAM_FP8=1
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+seq 0: running ppl 9.987 kl 0.1412 top1 0.8358 (35 s)
+seq 1: running ppl 8.640 kl 0.2113 top1 0.8240 (69 s)
+{"tokens": 2046, "nll": 2.156404, "ppl": 8.6400, "kl_top256": 0.211334, "top1_agree": 0.824047}
+  Package id 0:  +44.0°C  (high = +80.0°C, crit = +100.0°C) GPU 57 45 
+done Fri Oct 23 02:16:20 AM PDT 2026
+WIN21-DONE Fri Oct 23 02:16:20 AM PDT 2026

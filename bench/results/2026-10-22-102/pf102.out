@@ -1,0 +1,37 @@
+serve running: 1;  00:47:33 up 13:50,  3 users,  load average: 8.91, 7.30, 6.36
+    Finished `release` profile [optimized + debuginfo] target(s) in 42.49s
+build 42 s
+== round 1, DSX_PREFETCH=0, DSX_DEFER=none
+decode 400 tokens in 12.08 s (33.12 tok/s); CPU experts busy 12.2 ms/token, 21.1% of picks on the CPU; GPU0 expert swaps 3200 (0.26 ms/token host)
+  Package id 0:  +42.0°C  (high = +80.0°C, crit = +100.0°C) 52 54 
+== round 1, DSX_PREFETCH=1, DSX_DEFER=none
+prefetch: 1 experts per layer into GPU0 (40 layers, 19 MB of slots)
+decode 400 tokens in 15.81 s (25.30 tok/s); CPU experts busy 10.4 ms/token, 15.0% of picks on the CPU, 8.0% prefetched to GPU0 (34.8% of the CPU's); GPU0 expert swaps 3200 (0.25 ms/token host)
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) 52 55 
+== round 1, DSX_PREFETCH=2, DSX_DEFER=none
+prefetch: 2 experts per layer into GPU0 (40 layers, 39 MB of slots)
+decode 400 tokens in 18.03 s (22.19 tok/s); CPU experts busy 6.3 ms/token, 8.5% of picks on the CPU, 8.3% prefetched to GPU0 (49.4% of the CPU's); GPU0 expert swaps 3198 (0.23 ms/token host)
+  Package id 0:  +38.0°C  (high = +80.0°C, crit = +100.0°C) 53 53 
+== round 1, DSX_PREFETCH=0, DSX_DEFER=3
+decode 400 tokens in 10.71 s (37.35 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU; GPU0 expert swaps 3200 (0.26 ms/token host)
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) 52 55 
+== round 1, DSX_PREFETCH=1, DSX_DEFER=3
+prefetch: 1 experts per layer into GPU0 (40 layers, 19 MB of slots)
+decode 400 tokens in 14.13 s (28.30 tok/s); CPU experts busy 4.7 ms/token, 6.1% of picks on the CPU, 2.6% prefetched to GPU0 (29.6% of the CPU's); GPU0 expert swaps 2600 (0.20 ms/token host)
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) 53 54 
+== round 1, DSX_PREFETCH=2, DSX_DEFER=3
+prefetch: 2 experts per layer into GPU0 (40 layers, 39 MB of slots)
+decode 400 tokens in 19.36 s (20.66 tok/s); CPU experts busy 8.5 ms/token, 11.3% of picks on the CPU, 13.3% prefetched to GPU0 (54.1% of the CPU's); GPU0 expert swaps 3200 (0.25 ms/token host)
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) 54 53 
+== eval --decode --seqs 2, DSX_PREFETCH=0
+seq 0: running ppl 9.935 kl 0.1395 top1 0.8407 (35 s)
+seq 1: running ppl 8.600 kl 0.2082 top1 0.8255 (69 s)
+{"tokens": 2046, "nll": 2.151793, "ppl": 8.6003, "kl_top256": 0.208203, "top1_agree": 0.825513}
+  Package id 0:  +40.0°C  (high = +80.0°C, crit = +100.0°C) 57 52 
+== eval --decode --seqs 2, DSX_PREFETCH=2
+prefetch: 2 experts per layer into GPU0 (40 layers, 39 MB of slots)
+seq 0: running ppl 9.930 kl 0.1396 top1 0.8377 (53 s)
+seq 1: running ppl 8.597 kl 0.2048 top1 0.8245 (106 s)
+{"tokens": 2046, "nll": 2.151405, "ppl": 8.5969, "kl_top256": 0.204799, "top1_agree": 0.824536}
+  Package id 0:  +48.0°C  (high = +80.0°C, crit = +100.0°C) 58 52 
+done Fri Oct 23 01:08:24 AM PDT 2026

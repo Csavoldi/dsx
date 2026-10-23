@@ -1,0 +1,10 @@
+== verify T=2
+decode 64 tokens in 2.11 s (30.32 tok/s); CPU experts busy 15.6 ms/token, 27.5% of picks on the CPU; GPU0 expert swaps 512 (0.27 ms/token host)
+verify T=2: median 51.3 ms per pass (25.6 ms per token if all accepted) vs decode 33.0 ms per token
+== verify T=3
+decode 64 tokens in 2.11 s (30.31 tok/s); CPU experts busy 15.5 ms/token, 27.5% of picks on the CPU; GPU0 expert swaps 512 (0.27 ms/token host)
+verify T=3: median 68.5 ms per pass (22.8 ms per token if all accepted) vs decode 33.0 ms per token
+== verify T=4
+decode 64 tokens in 2.11 s (30.33 tok/s); CPU experts busy 15.6 ms/token, 27.5% of picks on the CPU; GPU0 expert swaps 512 (0.27 ms/token host)
+verify T=4: median 77.1 ms per pass (19.3 ms per token if all accepted) vs decode 33.0 ms per token
+WIN15-DONE Fri Oct 23 12:30:09 AM PDT 2026

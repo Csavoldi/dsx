@@ -1,0 +1,33 @@
+== CPU share 0
+base: prompt 2401, cached 0, prefill 5895 ms
+turn 0: +2452 new tokens on 0 cached: prefill 5095 ms
+turn 1: +2691 new tokens on 0 cached: prefill 5293 ms
+turn 2: +2736 new tokens on 0 cached: prefill 5303 ms
+turn 3: +2944 new tokens on 0 cached: prefill 5419 ms
+turn 4: +2994 new tokens on 0 cached: prefill 5460 ms
+turn 5: +3210 new tokens on 0 cached: prefill 5585 ms
+== CPU share 1
+base: prompt 2401, cached 0, prefill 5969 ms
+turn 0: +2452 new tokens on 0 cached: prefill 5205 ms
+turn 1: +2691 new tokens on 0 cached: prefill 5384 ms
+turn 2: +2736 new tokens on 0 cached: prefill 5382 ms
+turn 3: +2944 new tokens on 0 cached: prefill 5498 ms
+turn 4: +2994 new tokens on 0 cached: prefill 5537 ms
+turn 5: +3210 new tokens on 0 cached: prefill 5643 ms
+== CPU share 0
+base: prompt 2401, cached 0, prefill 6004 ms
+turn 0: +2452 new tokens on 0 cached: prefill 5209 ms
+turn 1: +2691 new tokens on 0 cached: prefill 5413 ms
+turn 2: +2736 new tokens on 0 cached: prefill 5415 ms
+turn 3: +2944 new tokens on 0 cached: prefill 5534 ms
+turn 4: +2994 new tokens on 0 cached: prefill 5572 ms
+turn 5: +3210 new tokens on 0 cached: prefill 5690 ms
+== CPU share 1
+base: prompt 2401, cached 0, prefill 5967 ms
+turn 0: +2452 new tokens on 0 cached: prefill 5203 ms
+turn 1: +2691 new tokens on 0 cached: prefill 5386 ms
+turn 2: +2736 new tokens on 0 cached: prefill 5382 ms
+turn 3: +2944 new tokens on 0 cached: prefill 5493 ms
+turn 4: +2994 new tokens on 0 cached: prefill 5531 ms
+turn 5: +3210 new tokens on 0 cached: prefill 5646 ms
+WIN10-DONE Thu Oct 22 11:58:07 PM PDT 2026

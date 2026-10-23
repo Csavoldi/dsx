@@ -1,0 +1,5 @@
+./hp_test2.sh: line 12: 1415377 Killed                  ./guard.sh hp 118 $X gen $M --ids @prompt3000.ids -n 300 --ctx 32768 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 --arena-gb 110 --rank calib/rank.json > hp_$v.out 2>&1
+18:31:14 HP: GPU0 NVIDIA GeForce RTX 3090: 25.4 GB, host link 24.6 GB/s (main) GPU1 NVIDIA GeForce RTX 3090: 25.4 GB, host link 3.3 GB/s  |  | AnonHugePages peak 0 GB | max PSI some avg10 44.53 | 0 oom lines
+./hp_test2.sh: line 12: 1417695 Killed                  ./guard.sh hp 118 $X gen $M --ids @prompt3000.ids -n 300 --ctx 32768 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 --arena-gb 110 --rank calib/rank.json > hp_$v.out 2>&1
+18:32:32 HP: GPU0 NVIDIA GeForce RTX 3090: 25.4 GB, host link 24.6 GB/s (main) GPU1 NVIDIA GeForce RTX 3090: 25.4 GB, host link 3.3 GB/s  |  | AnonHugePages peak 0 GB | max PSI some avg10 46.53 | 0 oom lines
+HP-TEST-DONE Thu Oct 22 06:32:32 PM PDT 2026

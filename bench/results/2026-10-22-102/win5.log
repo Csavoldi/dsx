@@ -1,0 +1,159 @@
+== A
+prompt60 cpu=0: prefill 60 tokens in 1.48 s (41 tok/s) decode 4 tokens in 1.41 s (2.84 tok/s); CPU experts busy 333.4 ms/token, 42.2% of picks on the CPU;  
+prompt60 cpu=1: prefill 60 tokens in 1.06 s (57 tok/s) decode 4 tokens in 0.16 s (24.79 tok/s); CPU experts busy 24.1 ms/token, 42.0% of picks on the CPU;  
+prompt60 cpu=1: prefill 60 tokens in 1.03 s (58 tok/s) decode 4 tokens in 0.16 s (24.86 tok/s); CPU experts busy 24.0 ms/token, 42.0% of picks on the CPU;  
+prompt60 cpu=0: prefill 60 tokens in 1.39 s (43 tok/s) decode 4 tokens in 0.16 s (24.45 tok/s); CPU experts busy 24.7 ms/token, 42.2% of picks on the CPU;  
+prompt300 cpu=0: prefill 300 tokens in 2.66 s (113 tok/s) decode 4 tokens in 0.14 s (29.22 tok/s); CPU experts busy 17.4 ms/token, 29.2% of picks on the CPU;  
+prompt300 cpu=1: prefill 300 tokens in 2.12 s (142 tok/s) decode 4 tokens in 0.14 s (29.09 tok/s); CPU experts busy 17.3 ms/token, 29.4% of picks on the CPU;  
+prompt300 cpu=1: prefill 300 tokens in 2.11 s (142 tok/s) decode 4 tokens in 0.14 s (29.31 tok/s); CPU experts busy 17.1 ms/token, 29.4% of picks on the CPU;  
+prompt300 cpu=0: prefill 300 tokens in 2.65 s (113 tok/s) decode 4 tokens in 0.14 s (29.10 tok/s); CPU experts busy 17.5 ms/token, 29.2% of picks on the CPU;  
+prompt3k_1024 cpu=0: prefill 1024 tokens in 4.05 s (253 tok/s) decode 4 tokens in 0.11 s (35.63 tok/s); CPU experts busy 9.7 ms/token, 15.3% of picks on the CPU;  
+prompt3k_1024 cpu=1: prefill 1024 tokens in 4.12 s (249 tok/s) decode 4 tokens in 0.11 s (36.25 tok/s); CPU experts busy 8.8 ms/token, 14.5% of picks on the CPU;  
+prompt3k_1024 cpu=1: prefill 1024 tokens in 4.14 s (247 tok/s) decode 4 tokens in 0.11 s (36.16 tok/s); CPU experts busy 8.9 ms/token, 14.5% of picks on the CPU;  
+prompt3k_1024 cpu=0: prefill 1024 tokens in 4.04 s (254 tok/s) decode 4 tokens in 0.11 s (35.61 tok/s); CPU experts busy 9.7 ms/token, 15.3% of picks on the CPU;  
+prompt3k_2048 cpu=0: prefill 2048 tokens in 5.13 s (399 tok/s) decode 4 tokens in 0.12 s (34.47 tok/s); CPU experts busy 11.0 ms/token, 17.4% of picks on the CPU;  
+prompt3k_2048 cpu=1: prefill 2048 tokens in 6.26 s (327 tok/s) decode 4 tokens in 0.12 s (33.56 tok/s); CPU experts busy 12.3 ms/token, 20.5% of picks on the CPU;  
+prompt3k_2048 cpu=1: prefill 2048 tokens in 6.27 s (327 tok/s) decode 4 tokens in 0.12 s (33.63 tok/s); CPU experts busy 12.3 ms/token, 20.5% of picks on the CPU;  
+prompt3k_2048 cpu=0: prefill 2048 tokens in 5.12 s (400 tok/s) decode 4 tokens in 0.12 s (34.52 tok/s); CPU experts busy 10.9 ms/token, 17.4% of picks on the CPU;  
+decode cpu=0: prefill 3000 tokens in 5.66 s (530 tok/s) decode 300 tokens in 9.43 s (31.81 tok/s); CPU experts busy 13.7 ms/token, 23.1% of picks on the CPU;  
+decode cpu=1: prefill 3000 tokens in 5.56 s (540 tok/s) decode 300 tokens in 9.19 s (32.64 tok/s); CPU experts busy 12.6 ms/token, 21.0% of picks on the CPU;  
+decode cpu=1: prefill 3000 tokens in 5.60 s (536 tok/s) decode 300 tokens in 9.19 s (32.65 tok/s); CPU experts busy 12.8 ms/token, 21.4% of picks on the CPU;  
+decode cpu=0: prefill 3000 tokens in 5.68 s (529 tok/s) decode 300 tokens in 9.46 s (31.70 tok/s); CPU experts busy 13.8 ms/token, 23.1% of picks on the CPU;  
+== B
+== EVPROF defer=off
+  CPU worker idle / prep / forward: 37.59 / 0.11 / 12.47 ms/token
+     dec compress+indexer                  0.38 ms/token
+     dec o proj                            2.35 ms/token
+     dec sparse_attn                       0.53 ms/token
+     enc compress+indexer                  0.30 ms/token
+     enc o proj                            2.37 ms/token
+     enc sparse_attn                       0.54 ms/token
+  0 layer start -> moe (attn, engram, hc)  12.97 ms/token
+  0a engram                                1.09 ms/token
+  0b hc+norm                               0.79 ms/token
+  0c q                                     3.21 ms/token
+  0d kv                                    0.53 ms/token
+  0e compress+indexer                      0.68 ms/token
+  0f sparse_attn                           1.07 ms/token
+  0g o proj                                4.72 ms/token
+  0h hc post/pre+norm                      0.88 ms/token
+  1 router                                 0.76 ms/token
+  3 shared expert                          2.52 ms/token
+  4 wait CPU experts                       9.16 ms/token
+  5 wait aux GPUs                          0.54 ms/token
+  6 combine                                0.29 ms/token
+  7 combine -> next layer                  0.15 ms/token
+  aux: dtoh                                0.56 ms/token
+  aux: dtoh -> next route                  22.93 ms/token
+  aux: experts                             4.23 ms/token
+  aux: htod                                1.09 ms/token
+  w00                                      0.38 ms/token
+  w01                                      0.37 ms/token
+  w02                                      0.26 ms/token
+  w03                                      0.23 ms/token
+  w04                                      0.25 ms/token
+  w05                                      0.25 ms/token
+  w06                                      0.19 ms/token
+  w07                                      0.20 ms/token
+  w08                                      0.23 ms/token
+  w09                                      0.18 ms/token
+  w10                                      0.19 ms/token
+  w11                                      0.19 ms/token
+  w12                                      0.20 ms/token
+  w13                                      0.26 ms/token
+  w14                                      0.22 ms/token
+  w15                                      0.27 ms/token
+  w16                                      0.19 ms/token
+  w17                                      0.20 ms/token
+  w18                                      0.21 ms/token
+  w19                                      0.29 ms/token
+  w20                                      0.23 ms/token
+  w21                                      0.24 ms/token
+  w22                                      0.25 ms/token
+  w23                                      0.35 ms/token
+  w24                                      0.20 ms/token
+  w25                                      0.15 ms/token
+  w26                                      0.17 ms/token
+  w27                                      0.19 ms/token
+  w28                                      0.17 ms/token
+  w29                                      0.19 ms/token
+  w30                                      0.16 ms/token
+  w31                                      0.23 ms/token
+  w32                                      0.22 ms/token
+  w33                                      0.25 ms/token
+  w34                                      0.19 ms/token
+  w35                                      0.23 ms/token
+  w36                                      0.24 ms/token
+  w37                                      0.24 ms/token
+  w38                                      0.25 ms/token
+  w39                                      0.24 ms/token
+== EVPROF defer=3
+  CPU worker idle / prep / forward: 32.92 / 0.11 / 5.62 ms/token
+     dec compress+indexer                  0.39 ms/token
+     dec o proj                            2.37 ms/token
+     dec sparse_attn                       0.55 ms/token
+     enc compress+indexer                  0.31 ms/token
+     enc o proj                            2.39 ms/token
+     enc sparse_attn                       0.56 ms/token
+  0 layer start -> moe (attn, engram, hc)  13.31 ms/token
+  0a engram                                1.20 ms/token
+  0b hc+norm                               0.82 ms/token
+  0c q                                     3.27 ms/token
+  0d kv                                    0.55 ms/token
+  0e compress+indexer                      0.70 ms/token
+  0f sparse_attn                           1.11 ms/token
+  0g o proj                                4.76 ms/token
+  0h hc post/pre+norm                      0.91 ms/token
+  1 router                                 0.80 ms/token
+  3 shared expert                          2.57 ms/token
+  4 wait CPU experts                       4.77 ms/token
+  5 wait aux GPUs                          0.67 ms/token
+  6 combine                                0.34 ms/token
+  7 combine -> next layer                  0.16 ms/token
+  aux: dtoh                                0.56 ms/token
+  aux: dtoh -> next route                  19.22 ms/token
+  aux: experts                             4.26 ms/token
+  aux: htod                                1.10 ms/token
+  w00                                      0.14 ms/token
+  w01                                      0.15 ms/token
+  w02                                      0.13 ms/token
+  w03                                      0.12 ms/token
+  w04                                      0.15 ms/token
+  w05                                      0.13 ms/token
+  w06                                      0.10 ms/token
+  w07                                      0.10 ms/token
+  w08                                      0.10 ms/token
+  w09                                      0.10 ms/token
+  w10                                      0.09 ms/token
+  w11                                      0.08 ms/token
+  w12                                      0.09 ms/token
+  w13                                      0.14 ms/token
+  w14                                      0.10 ms/token
+  w15                                      0.15 ms/token
+  w16                                      0.09 ms/token
+  w17                                      0.09 ms/token
+  w18                                      0.10 ms/token
+  w19                                      0.16 ms/token
+  w20                                      0.13 ms/token
+  w21                                      0.14 ms/token
+  w22                                      0.12 ms/token
+  w23                                      0.23 ms/token
+  w24                                      0.12 ms/token
+  w25                                      0.08 ms/token
+  w26                                      0.07 ms/token
+  w27                                      0.09 ms/token
+  w28                                      0.08 ms/token
+  w29                                      0.09 ms/token
+  w30                                      0.09 ms/token
+  w31                                      0.11 ms/token
+  w32                                      0.12 ms/token
+  w33                                      0.12 ms/token
+  w34                                      0.11 ms/token
+  w35                                      0.12 ms/token
+  w36                                      0.12 ms/token
+  w37                                      0.12 ms/token
+  w38                                      0.12 ms/token
+  w39                                      0.29 ms/token
+decode 64 tokens in 2.27 s (28.17 tok/s); CPU experts busy 13.7 ms/token, 22.5% of picks on the CPU; GPU0 expert swaps 512 (0.38 ms/token host)
+-rw-r--r-- 1 lxe lxe 66310144 Oct 22 22:17 /tmp/dec64.sqlite
+WIN5-DONE Thu Oct 22 10:17:41 PM PDT 2026

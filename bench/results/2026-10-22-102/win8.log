@@ -1,0 +1,9 @@
+chunk 60 cpu=0: 2383 chunks, first 0.84 s, chunks at 2400+: mean 0.040 s (n=541), min 0.030
+chunk 60 cpu=1: 2383 chunks, first 0.72 s, chunks at 2400+: mean 0.033 s (n=541), min 0.030
+chunk 60 cpu=1: 2383 chunks, first 0.77 s, chunks at 2400+: mean 0.033 s (n=541), min 0.030
+chunk 60 cpu=0: 2383 chunks, first 0.86 s, chunks at 2400+: mean 0.040 s (n=541), min 0.030
+chunk 300 cpu=0: 2135 chunks, first 1.53 s, chunks at 2400+: mean 0.046 s (n=301), min 0.030
+chunk 300 cpu=1: 2135 chunks, first 1.28 s, chunks at 2400+: mean 0.037 s (n=301), min 0.030
+chunk 300 cpu=1: 2135 chunks, first 1.29 s, chunks at 2400+: mean 0.037 s (n=301), min 0.030
+chunk 300 cpu=0: 2135 chunks, first 1.54 s, chunks at 2400+: mean 0.046 s (n=301), min 0.030
+WIN8-DONE Thu Oct 22 11:24:46 PM PDT 2026

@@ -1,0 +1,19 @@
+17:19:25 prefill V2: {"tokens": 8184, "nll": 2.259822, "ppl": 9.5814, "kl_top256": 0.201498, "top1_agree": 0.812561}
+17:21:53 prefill V1: {"tokens": 8184, "nll": 2.255685, "ppl": 9.5418, "kl_top256": 0.195973, "top1_agree": 0.809384}
+17:24:26 prefill V2: {"tokens": 8184, "nll": 2.259822, "ppl": 9.5814, "kl_top256": 0.201498, "top1_agree": 0.812561}
+17:26:58 prefill V1: {"tokens": 8184, "nll": 2.255685, "ppl": 9.5418, "kl_top256": 0.195973, "top1_agree": 0.809384}
+17:29:27 gen 3000 OLD: prefill 3000 tokens in 7.74 s (388 tok/s) decode 16 tokens in 0.51 s (31.24 tok/s) 
+17:31:12 gen 3000 NEW: prefill 3000 tokens in 7.22 s (415 tok/s) decode 16 tokens in 0.51 s (31.11 tok/s) 
+17:33:00 gen 3000 OLD: prefill 3000 tokens in 7.73 s (388 tok/s) decode 16 tokens in 0.51 s (31.27 tok/s) 
+17:34:50 gen 3000 NEW: prefill 3000 tokens in 7.01 s (428 tok/s) decode 16 tokens in 0.51 s (31.23 tok/s) 
+17:36:38 gen 60 NEW, DSX_PROF:
+prefill 60 tokens in 1.62 s (37 tok/s); next top5 [(45955, 16.950733), (128822, 16.830872), (295, 16.562277), (660, 15.879093), (312, 15.7859335)]
+  prefill . indexer            0.01 s
+  prefill . sparse_attn kernel 0.00 s
+  prefill attention+indexer    0.37 s
+  prefill engram               0.02 s
+  prefill moe                  1.19 s
+  prefill moe . expert loops   1.14 s
+  prefill moe . router+shared+aux ship 0.07 s
+  prefill moe . wait aux GPUs + add 0.00 s
+T16V2-EVAL-DONE Thu Oct 22 05:38:17 PM PDT 2026

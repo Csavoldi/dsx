@@ -1,0 +1,77 @@
+serve running: 1;  01:50:43 up 14:53,  3 users,  load average: 8.59, 7.41, 6.94
+    Finished `release` profile [optimized + debuginfo] target(s) in 42.61s
+build 43 s
+== kernel (GPU0)
+test fp8_gemv_matches_f16 ... engram wkv GEMV: max |fp8 - f16| 7.153e-7, max |y| 4.097e0
+test fp8_gemv_speed ... gemv_f16: 361.2 us median (360.2..396.3), 871 GB/s
+gemv_fp8b32: 240.5 us median (238.6..252.9), 655 GB/s
+test fp8_gemv_tail_and_tokens ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.17s
+  Package id 0:  +38.0°C  (high = +80.0°C, crit = +100.0°C) GPU 50 51 
+== round 1, f16 (DSX_ENGRAM_FP8=0 --main-gb -1.5)
+experts resident: GPU0 1296 (11.0 GB), GPU1 2757 (23.3 GB, static, 3.3 GB/s link)
+decode 400 tokens in 12.52 s (31.94 tok/s); CPU experts busy 13.6 ms/token, 23.7% of picks on the CPU; GPU0 expert swaps 3200 (0.27 ms/token host)
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 54 
+== round 1, fp8-same (DSX_ENGRAM_FP8=1 --main-gb -2.13)
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1258 (10.6 GB), GPU1 2757 (23.3 GB, static, 3.3 GB/s link)
+decode 400 tokens in 10.67 s (37.50 tok/s); CPU experts busy 6.9 ms/token, 11.7% of picks on the CPU; GPU0 expert swaps 2479 (0.21 ms/token host)
+  Package id 0:  +36.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 55 
+== round 1, fp8 (DSX_ENGRAM_FP8=1 --main-gb -1.5)
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1334 (11.3 GB), GPU1 2757 (23.3 GB, static, 3.3 GB/s link)
+decode 400 tokens in 12.16 s (32.90 tok/s); CPU experts busy 12.6 ms/token, 21.9% of picks on the CPU; GPU0 expert swaps 3200 (0.26 ms/token host)
+  Package id 0:  +36.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 53 
+== round 2, f16 (DSX_ENGRAM_FP8=0 --main-gb -1.5)
+experts resident: GPU0 1296 (11.0 GB), GPU1 2757 (23.3 GB, static, 3.3 GB/s link)
+decode 400 tokens in 12.06 s (33.16 tok/s); CPU experts busy 12.1 ms/token, 21.0% of picks on the CPU; GPU0 expert swaps 3200 (0.26 ms/token host)
+  Package id 0:  +38.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 55 
+== round 2, fp8-same (DSX_ENGRAM_FP8=1 --main-gb -2.13)
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1258 (10.6 GB), GPU1 2757 (23.3 GB, static, 3.3 GB/s link)
+decode 400 tokens in 10.65 s (37.55 tok/s); CPU experts busy 6.9 ms/token, 11.7% of picks on the CPU; GPU0 expert swaps 2479 (0.21 ms/token host)
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 54 
+== round 2, fp8 (DSX_ENGRAM_FP8=1 --main-gb -1.5)
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1334 (11.3 GB), GPU1 2757 (23.3 GB, static, 3.3 GB/s link)
+decode 400 tokens in 12.12 s (33.00 tok/s); CPU experts busy 12.6 ms/token, 21.9% of picks on the CPU; GPU0 expert swaps 3200 (0.26 ms/token host)
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 55 
+== DSX_PROF=1, DSX_ENGRAM_FP8=0
+engram L1: 72000 rows, 28087 distinct
+engram L1: hash 1 ms, gather 111 ms, upload 8 ms
+engram L14: 72000 rows, 28088 distinct
+engram L14: hash 1 ms, gather 112 ms, upload 8 ms
+  prefill engram               0.27 s
+decode 400 tokens in 12.87 s (31.09 tok/s); CPU experts busy 13.6 ms/token, 23.7% of picks on the CPU; GPU0 expert swaps 3200 (0.27 ms/token host)
+  engram                       1.51 ms/token
+  host: engram join wait       0.70 ms/token
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU 52 54 
+== DSX_PROF=1, DSX_ENGRAM_FP8=1
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+engram L1: 72000 rows, 28087 distinct
+engram L1: hash 1 ms, gather 110 ms, upload 8 ms
+engram L14: 72000 rows, 28088 distinct
+engram L14: hash 1 ms, gather 111 ms, upload 8 ms
+  prefill engram               0.27 s
+decode 400 tokens in 12.37 s (32.34 tok/s); CPU experts busy 12.5 ms/token, 21.9% of picks on the CPU; GPU0 expert swaps 3200 (0.25 ms/token host)
+  engram                       1.03 ms/token
+  host: engram join wait       0.45 ms/token
+  Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU 53 54 
+== eval --decode --seqs 2, DSX_ENGRAM_FP8=0
+seq 0: running ppl 9.935 kl 0.1395 top1 0.8407 (38 s)
+seq 1: running ppl 8.600 kl 0.2082 top1 0.8255 (74 s)
+{"tokens": 2046, "nll": 2.151793, "ppl": 8.6003, "kl_top256": 0.208203, "top1_agree": 0.825513}
+  Package id 0:  +63.0°C  (high = +80.0°C, crit = +100.0°C) GPU 57 52 
+== eval --decode --seqs 2, DSX_ENGRAM_FP8=1
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+seq 0: running ppl 9.987 kl 0.1412 top1 0.8358 (35 s)
+seq 1: running ppl 8.640 kl 0.2113 top1 0.8240 (69 s)
+{"tokens": 2046, "nll": 2.156404, "ppl": 8.6400, "kl_top256": 0.211334, "top1_agree": 0.824047}
+  Package id 0:  +44.0°C  (high = +80.0°C, crit = +100.0°C) GPU 57 45 
+done Fri Oct 23 02:16:20 AM PDT 2026

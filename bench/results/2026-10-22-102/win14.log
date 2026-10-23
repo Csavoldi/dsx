@@ -1,0 +1,6 @@
+prefill 3000 tokens in 5.68 s (528 tok/s); next top5 [(102601, 32.175827), (7285
+-rw-r--r-- 1 lxe lxe 60207104 Oct 23 00:22 /tmp/lp3000.sqlite
+prefill chunk 0..4096: 4.37 s
+prefill chunk 4096..8000: 5.80 s
+prefill 8000 tokens in 10.17 s (787 tok/s); next top5 [(528, 21.327572), (361, 1
+WIN14-DONE Fri Oct 23 12:23:55 AM PDT 2026

@@ -1,0 +1,60 @@
+== power limits: 0, 250.00 W 1, 280.00 W 
+== CPU codebook T16 18:57:48
+ 1 threads:  UD IQ mix 11.970 ms (4.5 GB/s)  T16 1.5/2 8.713 ms (5.1 GB/s)  T16 2/2.5 9.355 ms (6.2 GB/s)  K1.5 8.576 ms (4.7 GB/s)  K2 9.019 ms (5.9 GB/s)  K2.5 10.015 ms (6.7 GB/s)
+14 threads:  UD IQ mix 1.842 ms (28.9 GB/s)  T16 1.5/2 1.256 ms (35.4 GB/s)  T16 2/2.5 1.521 ms (38.0 GB/s)  K1.5 1.161 ms (34.5 GB/s)  K2 1.373 ms (38.8 GB/s)  K2.5 1.683 ms (39.6 GB/s)
+   CPU0 MHz median 4900.000
+== CPU codebook mul1 18:58:09
+ 1 threads:  UD IQ mix 12.049 ms (4.4 GB/s)  T16 1.5/2 15.062 ms (3.0 GB/s)  T16 2/2.5 16.116 ms (3.6 GB/s)  K1.5 14.931 ms (2.7 GB/s)  K2 15.222 ms (3.5 GB/s)  K2.5 17.847 ms (3.7 GB/s)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+   CPU0 MHz median 4900.000
+== CPU codebook mul1 18:58:33
+ 1 threads:  UD IQ mix 11.950 ms (4.5 GB/s)  T16 1.5/2 15.034 ms (3.0 GB/s)  T16 2/2.5 16.084 ms (3.6 GB/s)  K1.5 14.928 ms (2.7 GB/s)  K2 15.218 ms (3.5 GB/s)  K2.5 17.844 ms (3.7 GB/s)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+Fatal glibc error: malloc.c:2599 (sysmalloc): assertion failed: (old_top == initial_top (av) && old_size == 0) || ((unsigned long) (old_size) >= MINSIZE && prev_inuse (old_top) && ((unsigned long) old_end & (pagesize - 1)) == 0)
+   CPU0 MHz median 4900.000
+== CPU codebook T16 18:58:57
+ 1 threads:  UD IQ mix 11.962 ms (4.5 GB/s)  T16 1.5/2 8.667 ms (5.1 GB/s)  T16 2/2.5 9.245 ms (6.2 GB/s)  K1.5 8.576 ms (4.7 GB/s)  K2 8.898 ms (6.0 GB/s)  K2.5 9.984 ms (6.7 GB/s)
+14 threads:  UD IQ mix 1.837 ms (29.0 GB/s)  T16 1.5/2 1.225 ms (36.3 GB/s)  T16 2/2.5 1.476 ms (39.2 GB/s)  K1.5 1.146 ms (35.0 GB/s)  K2 1.366 ms (39.1 GB/s)  K2.5 1.682 ms (39.6 GB/s)
+   CPU0 MHz median 4900.000
+== exllamav3 CPU MoE (mul1, its own kernel) 18:59:18
+tier avx2; hidden 5120, intermediate 2304; 64 experts per rate; calls of 6 experts, 1 token
+K=1.5    6.6 MB/expert (1.50 bpw):   1 thr   1.2 GB/s (32.89 ms)  14 thr  10.9 GB/s (3.65 ms)
+K=2.0    8.8 MB/expert (2.00 bpw):   1 thr   3.0 GB/s (17.52 ms)  14 thr  25.4 GB/s (2.09 ms)
+K=2.5   11.1 MB/expert (2.50 bpw):   1 thr   2.8 GB/s (23.31 ms)  14 thr  22.6 GB/s (2.94 ms)
+== GPU 19:00:00
+NVIDIA GeForce RTX 3090, 82 SMs
+K 1.5 T16: 0 of 2304 accumulators differ from the host decode
+K 1.5 M1A: 0 of 2304 accumulators differ from the host decode
+K 1.5 M1B: 0 of 2304 accumulators differ from the host decode
+K 1.5 T16:   386.2 us per layer call (6 experts, 18 GEMVs), 103 GB/s, 549.84 G weights/s
+K 1.5 M1A:   604.5 us per layer call (6 experts, 18 GEMVs), 66 GB/s, 351.26 G weights/s
+K 1.5 M1B:   397.5 us per layer call (6 experts, 18 GEMVs), 100 GB/s, 534.17 G weights/s
+K 2.0 T16: 0 of 2304 accumulators differ from the host decode
+K 2.0 M1A: 0 of 2304 accumulators differ from the host decode
+K 2.0 M1B: 0 of 2304 accumulators differ from the host decode
+K 2.0 T16:   395.1 us per layer call (6 experts, 18 GEMVs), 134 GB/s, 537.43 G weights/s
+K 2.0 M1A:   624.6 us per layer call (6 experts, 18 GEMVs), 85 GB/s, 339.96 G weights/s
+K 2.0 M1B:   402.9 us per layer call (6 experts, 18 GEMVs), 132 GB/s, 527.01 G weights/s
+K 2.5 T16: 0 of 2304 accumulators differ from the host decode
+K 2.5 M1A: 0 of 2304 accumulators differ from the host decode
+K 2.5 M1B: 0 of 2304 accumulators differ from the host decode
+K 2.5 T16:   392.3 us per layer call (6 experts, 18 GEMVs), 169 GB/s, 541.23 G weights/s
+K 2.5 M1A:   613.1 us per layer call (6 experts, 18 GEMVs), 108 GB/s, 346.33 G weights/s
+K 2.5 M1B:   412.0 us per layer call (6 experts, 18 GEMVs), 161 GB/s, 515.40 G weights/s
+MUL1-TEST-DONE Thu Oct 22 07:00:42 PM PDT 2026

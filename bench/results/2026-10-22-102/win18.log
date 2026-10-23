@@ -1,0 +1,45 @@
+== idle
+intervals 9 (1.0-5.0 s): DRAM read 0.0 GB/s, write 0.0 GB/s
+== decode defer=off
+prefill 3000 tokens in 5.52 s (544 tok/s); next top5 [(102601, 29.14073), (72850, 27.440098), (44136, 27.01347), (52002, 26.392298), (9543, 26.103241)]
+decode 600 tokens in 18.48 s (32.48 tok/s); CPU experts busy 11.4 ms/token, 19.9% of picks on the CPU; GPU0 expert swaps 4800 (0.25 ms/token host)
+  CPU worker idle / prep / forward: 28.54 / 0.11 / 11.15 ms/token
+  0 layer start -> moe (attn, engram, hc)  13.09 ms/token
+  0a engram                                1.12 ms/token
+  0b hc+norm                               0.80 ms/token
+  0c q                                     3.23 ms/token
+  0d kv                                    0.54 ms/token
+  0e compress+indexer                      0.69 ms/token
+  0f sparse_attn                           1.08 ms/token
+  0g o proj                                4.74 ms/token
+  0h hc post/pre+norm                      0.89 ms/token
+  1 router                                 0.77 ms/token
+  2 publish + GPU0 experts                 3.08 ms/token
+  3 shared expert                          2.54 ms/token
+  4 wait CPU experts                       8.01 ms/token
+  5 wait aux GPUs                          0.56 ms/token
+  6 combine                                0.30 ms/token
+  7 combine -> next layer                  0.16 ms/token
+intervals 24 (84.8-96.8 s): DRAM read 13.4 GB/s, write 0.3 GB/s
+== decode defer=3
+prefill 3000 tokens in 5.60 s (535 tok/s); next top5 [(102601, 29.14073), (72850, 27.440098), (44136, 27.01347), (52002, 26.392298), (9543, 26.103241)]
+decode 600 tokens in 16.73 s (35.86 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU; GPU0 expert swaps 4800 (0.26 ms/token host)
+  CPU worker idle / prep / forward: 24.11 / 0.12 / 5.29 ms/token
+  0 layer start -> moe (attn, engram, hc)  13.41 ms/token
+  0a engram                                1.25 ms/token
+  0b hc+norm                               0.82 ms/token
+  0c q                                     3.28 ms/token
+  0d kv                                    0.56 ms/token
+  0e compress+indexer                      0.71 ms/token
+  0f sparse_attn                           1.11 ms/token
+  0g o proj                                4.77 ms/token
+  0h hc post/pre+norm                      0.91 ms/token
+  1 router                                 0.80 ms/token
+  2 publish + GPU0 experts                 3.33 ms/token
+  3 shared expert                          2.59 ms/token
+  4 wait CPU experts                       4.34 ms/token
+  5 wait aux GPUs                          0.57 ms/token
+  6 combine                                0.35 ms/token
+  7 combine -> next layer                  0.16 ms/token
+intervals 24 (104.2-116.2 s): DRAM read 17.8 GB/s, write 0.3 GB/s
+WIN18-DONE Fri Oct 23 01:13:01 AM PDT 2026

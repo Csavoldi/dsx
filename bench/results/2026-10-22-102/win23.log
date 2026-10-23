@@ -1,0 +1,9 @@
+limits: 0, 230.00 W 1, 230.00 W 
+r1 defer=3: prefill 3000 tokens in 5.71 s (525 tok/s) decode 400 tokens in 10.89 s (36.75 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU;   | GPU0 busy sm 1605 MHz pw 229 W; GPU1 busy sm 1800 MHz pw 156 W;  cpu +42.0°C
+r1 defer=1: prefill 3000 tokens in 5.74 s (522 tok/s) decode 400 tokens in 10.47 s (38.19 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;   | GPU0 busy sm 1605 MHz pw 229 W; GPU1 busy sm 1800 MHz pw 156 W;  cpu +42.0°C
+r1 defer=2: prefill 3000 tokens in 5.71 s (525 tok/s) decode 400 tokens in 10.66 s (37.53 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;   | GPU0 busy sm 1635 MHz pw 229 W; GPU1 busy sm 1800 MHz pw 157 W;  cpu +44.0°C
+r2 defer=3: prefill 3000 tokens in 5.70 s (527 tok/s) decode 400 tokens in 10.87 s (36.81 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU;   | GPU0 busy sm 1590 MHz pw 229 W; GPU1 busy sm 1800 MHz pw 155 W;  cpu +42.0°C
+r2 defer=1: prefill 3000 tokens in 5.70 s (527 tok/s) decode 400 tokens in 10.45 s (38.29 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;   | GPU0 busy sm 1605 MHz pw 229 W; GPU1 busy sm 1800 MHz pw 155 W;  cpu +41.0°C
+r2 defer=2: prefill 3000 tokens in 5.70 s (526 tok/s) decode 400 tokens in 10.64 s (37.60 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;   | GPU0 busy sm 1635 MHz pw 229 W; GPU1 busy sm 1800 MHz pw 157 W;  cpu +41.0°C
+eval --decode defer=3: seq 1: running ppl 8.626 kl 0.2205 top1 0.8270 (60 s) {"tokens": 2046, "nll": 2.154817, "ppl": 8.6263, "kl_top256": 0.220488, "top1_agree": 0.826979} cpu +46.0°C
+eval --decode defer=1: seq 1: running ppl 8.559 kl 0.2502 top1 0.8040 (58 s) {"tokens": 2046, "nll": 2.146973, "ppl": 8.5589, "kl_top256": 0.250246, "top1_agree": 0.804008} cpu +44.0°C

@@ -1,0 +1,26 @@
+defer=1: decode 400 tokens in 10.23 s (39.08 tok/s); CPU experts busy 13.4 ms/token, 22.6% of picks on the CPU;  +46.0°C
+defer=3: decode 400 tokens in 10.66 s (37.53 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU;  +49.0°C
+defer=1: decode 400 tokens in 10.22 s (39.14 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;  +51.0°C
+defer=3: decode 400 tokens in 10.71 s (37.36 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU;  +47.0°C
+== eval --decode defer=3
+Terminated
+GPU1 NVIDIA GeForce RTX 3090: 25.4 GB, host link 3.3 GB/s
+experts resident: GPU0 1568 (13.3 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+arena: 94.2 GB allocated and pinned in 41.0 s
+arena: 10998 experts, 94.2 GB in 57 s; 0 left in the file
+seq 0: running ppl 10.095 kl 0.1609 top1 0.8328 (44 s)
+== eval --decode defer=2
+Terminated
+GPU0 NVIDIA GeForce RTX 3090: 25.4 GB, host link 24.6 GB/s (main)
+GPU1 NVIDIA GeForce RTX 3090: 25.4 GB, host link 3.3 GB/s
+experts resident: GPU0 1568 (13.3 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+arena: 94.2 GB allocated and pinned in 35.3 s
+arena: 10998 experts, 94.2 GB in 51 s; 0 left in the file
+== eval --decode defer=1
+Terminated
+GPU0 NVIDIA GeForce RTX 3090: 25.4 GB, host link 24.6 GB/s (main)
+GPU1 NVIDIA GeForce RTX 3090: 25.4 GB, host link 3.3 GB/s
+experts resident: GPU0 1568 (13.3 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+arena: 94.2 GB allocated and pinned in 39.2 s
+arena: 10998 experts, 94.2 GB in 55 s; 0 left in the file
+WIN20-DONE Fri Oct 23 01:50:33 AM PDT 2026

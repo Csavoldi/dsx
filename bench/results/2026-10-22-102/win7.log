@@ -1,0 +1,35 @@
+== GEMV bench GPU0
+q_a 5120->1280           q8r   14.4 us  483 GB/s | q8r4   25.7 us  271 GB/s | 0.56x, 723 of 1280 outputs differ
+q_b 1280->32768          q8r   58.1 us  766 GB/s | q8r4  106.3 us  419 GB/s | 0.55x, 13783 of 32768 outputs differ
+kv 5120->512             q8r   11.1 us  251 GB/s | q8r4   23.2 us  120 GB/s | 0.48x, 254 of 512 outputs differ
+o_b 8192->5120           q8r   56.2 us  792 GB/s | q8r4   66.4 us  672 GB/s | 0.85x, 3045 of 5120 outputs differ
+sh gate/up 5120->2304    q8r   19.0 us  659 GB/s | q8r4   27.7 us  453 GB/s | 0.69x, 1321 of 2304 outputs differ
+sh down 2304->5120       q8r   19.5 us  644 GB/s | q8r4   26.7 us  470 GB/s | 0.73x, 2592 of 5120 outputs differ
+== GEMV bench GPU1
+q_a 5120->1280           q8r   14.0 us  498 GB/s | q8r4   25.1 us  277 GB/s | 0.56x, 723 of 1280 outputs differ
+q_b 1280->32768          q8r   56.5 us  788 GB/s | q8r4  107.5 us  415 GB/s | 0.53x, 13783 of 32768 outputs differ
+kv 5120->512             q8r   10.0 us  279 GB/s | q8r4   21.9 us  127 GB/s | 0.45x, 254 of 512 outputs differ
+o_b 8192->5120           q8r   56.0 us  796 GB/s | q8r4   67.4 us  661 GB/s | 0.83x, 3045 of 5120 outputs differ
+sh gate/up 5120->2304    q8r   18.9 us  663 GB/s | q8r4   27.4 us  458 GB/s | 0.69x, 1321 of 2304 outputs differ
+sh down 2304->5120       q8r   19.4 us  646 GB/s | q8r4   26.6 us  471 GB/s | 0.73x, 2592 of 5120 outputs differ
+turn60 cpu=0: prefill chunk 0..628: 2.05 s prefill chunk 628..3060: 4.91 s 
+turn60 cpu=1: prefill chunk 0..628: 1.86 s prefill chunk 628..3060: 4.77 s 
+turn60 cpu=1: prefill chunk 0..628: 1.90 s prefill chunk 628..3060: 4.75 s 
+turn60 cpu=0: prefill chunk 0..628: 2.00 s prefill chunk 628..3060: 4.83 s 
+turn300 cpu=0: prefill chunk 0..868: 2.18 s prefill chunk 868..3300: 4.88 s 
+turn300 cpu=1: prefill chunk 0..868: 2.18 s prefill chunk 868..3300: 4.80 s 
+turn300 cpu=1: prefill chunk 0..868: 2.17 s prefill chunk 868..3300: 4.78 s 
+turn300 cpu=0: prefill chunk 0..868: 2.18 s prefill chunk 868..3300: 4.88 s 
+== DSX_PROF turn60
+prefill chunk 0..628: 1.88 s
+prefill chunk 628..3060: 4.78 s
+  prefill . indexer            0.22 s
+  prefill . sparse_attn kernel 0.25 s
+  prefill attention+indexer    1.36 s
+  prefill engram               0.28 s
+  prefill moe                  4.83 s
+  prefill moe . expert loops   4.05 s
+  prefill moe . router+shared+aux ship 0.47 s
+  prefill moe . wait CPU experts 0.33 s
+  prefill moe . wait aux GPUs + add 0.09 s
+WIN7-DONE Thu Oct 22 11:00:09 PM PDT 2026

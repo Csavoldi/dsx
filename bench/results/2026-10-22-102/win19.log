@@ -1,0 +1,7 @@
+defer=3: decode 400 tokens in 10.69 s (37.41 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU;  +52.0°C
+defer=2: decode 400 tokens in 10.46 s (38.26 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;  +47.0°C
+defer=2: decode 400 tokens in 10.44 s (38.32 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;  +48.0°C
+defer=3: decode 400 tokens in 10.65 s (37.57 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU;  +49.0°C
+defer=3: decode 400 tokens in 10.68 s (37.45 tok/s); CPU experts busy 13.1 ms/token, 22.4% of picks on the CPU;  +49.0°C
+defer=2: decode 400 tokens in 10.46 s (38.23 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;  +55.0°C
+eval --decode defer=3: eval --decode defer=2: WIN19-DONE Fri Oct 23 01:34:23 AM PDT 2026

@@ -1,0 +1,28 @@
+== clocks during decode
+prefill 3000 tokens in 5.59 s (536 tok/s); next top5 [(102601, 29.14073), (72850, 27.440098), (44136, 27.01347), (52002, 26.392298), (9543, 26.103241)
+decode 300 tokens in 8.01 s (37.45 tok/s); CPU experts busy 13.2 ms/token, 22.5% of picks on the CPU; GPU0 expert swaps 2400 (0.26 ms/token host)
+GPU0 busy samples 290 of 1068: sm MHz p10 210 median 1740 p90 1785; power median 128 W; pstates {'P2': 260, 'P8': 30}; pcie gen {'4': 260, '1': 30}
+GPU1 busy samples 338 of 1068: sm MHz p10 1800 median 1950 p90 1950; power median 158 W; pstates {'P2': 303, 'P5': 10, 'P8': 20, 'P0': 5}; pcie gen {'3': 308, '2': 10, '1': 20}
+== CPU share 0
+base: prompt 2401, cached 0, prefill 6011 ms
+turn 0: +57 new tokens on 2408 cached: prefill 1172 ms
+turn 1: +245 new tokens on 2472 cached: prefill 2475 ms
+turn 2: +52 new tokens on 2724 cached: prefill 1140 ms
+turn 3: +215 new tokens on 2783 cached: prefill 2155 ms
+turn 4: +56 new tokens on 3005 cached: prefill 1180 ms
+turn 5: +222 new tokens on 3068 cached: prefill 2079 ms
+turn 6: +47 new tokens on 3297 cached: prefill 1056 ms
+turn 7: +229 new tokens on 3351 cached: prefill 2200 ms
+means: ~60 tokens 1137 ms, ~300 tokens 2227 ms
+== CPU share 1
+base: prompt 2401, cached 0, prefill 5970 ms
+turn 0: +57 new tokens on 2408 cached: prefill 768 ms
+turn 1: +245 new tokens on 2472 cached: prefill 1936 ms
+turn 2: +52 new tokens on 2724 cached: prefill 734 ms
+turn 3: +215 new tokens on 2783 cached: prefill 1623 ms
+turn 4: +56 new tokens on 3005 cached: prefill 773 ms
+turn 5: +222 new tokens on 3068 cached: prefill 1568 ms
+turn 6: +47 new tokens on 3297 cached: prefill 675 ms
+turn 7: +229 new tokens on 3351 cached: prefill 1663 ms
+means: ~60 tokens 738 ms, ~300 tokens 1698 ms
+WIN11-DONE Fri Oct 23 12:05:19 AM PDT 2026

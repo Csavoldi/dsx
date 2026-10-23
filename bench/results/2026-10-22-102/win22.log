@@ -1,0 +1,10 @@
+== eval --decode defer=3 (start +37.0°C)
+{"tokens": 2046, "nll": 2.173383, "ppl": 8.7880, "kl_top256": 0.237010, "top1_agree": 0.821603}
+   end +45.0°C; 2026-10-23 01:50:31 STOP: CPU 97C
+== eval --decode defer=2 (start +36.0°C)
+{"tokens": 2046, "nll": 2.172382, "ppl": 8.7792, "kl_top256": 0.260025, "top1_agree": 0.804985}
+   end +43.0°C; 2026-10-23 01:50:31 STOP: CPU 97C
+== eval --decode defer=1 (start +37.0°C)
+{"tokens": 2046, "nll": 2.222846, "ppl": 9.2336, "kl_top256": 0.306181, "top1_agree": 0.791300}
+   end +46.0°C; 2026-10-23 01:50:31 STOP: CPU 97C
+WIN22-DONE Fri Oct 23 02:29:58 AM PDT 2026
