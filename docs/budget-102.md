@@ -36,7 +36,13 @@ Dense GEMVs: q_b / o_b at 766-796 GB/s (84% of the 3090's 936 GB/s). Busy clocks
 cap), GPU1 1,950: clocks are not limiting (FINDINGS 8d). GPU0 runs ~1,700 kernels per token; the host enqueues them
 ahead at ~5 us each (~8.5 ms of the main thread's time per token) and waits in cuStreamSynchronize the rest.
 
-## 2. Budget per resource (production, `DSX_DEFER=3`, 27.9 ms/token)
+**Which token.** The stage table comes from a DSX_EVPROF run (a3cf51b + prefill cap 512, 600 tokens, with EVPROF's
+timed events on): 27.9 ms/token with DEFER=3. Production-equivalent decode without instrumentation (pf102, 9be924f,
+400 tokens, DEFER=3, prefetch off) measures 26.8 ms (37.35 tok/s). The ~1.1 ms difference is most likely EVPROF's own
+cost (8 timed events per layer, read back every token), plus different builds and text; it has not been measured
+separately. Gains below are in ms, which apply to the 26.8 ms production token; percentages are of 26.8 ms.
+
+## 2. Budget per resource (production, `DSX_DEFER=3`, 27.9 ms/token under EVPROF)
 
 | Resource | Capacity | Used per token | Idle | When it is idle |
 |---|---|---|---|---|
@@ -99,6 +105,8 @@ and is reused across tokens, which GPU0's adaptive cache already does.
 | 5 | GPU0's decode-expert chain (stage 2: ~120 GEMV launches at ~45% of bandwidth, 2.1 ms of kernels in 3.3) | 3.3 -> ~2 ms in the stage, **~0.6 ms on the token** (overlap) | EVPROF stage 2 and stage 4 | stage 4's wait grows by the same amount (no net) |
 | 6 | Shared expert at 650 -> ~790 GB/s | 0.45 ms in the stage, **~0.2 ms on the token** | EVPROF stage 3 | < 0.15 ms on the token |
 | 7 | The ~2.4 ms outside the layers (head, logits download, adapt step) | unknown | EVPROF / nsys split of the token's ends | |
+| 8 | Engram (stage 0a, 1.12-1.25 ms): engram.wkv is 25,600 x 6,144 FP8 E4M3 with 32x32 E8M0 scales in the checkpoint; dsx stores F16 (315 MB/layer) and its GEMV already runs at ~875 GB/s (360 us x 2 layers). E1: keep it FP8 (gemv_fp8b32, scales expanded to 1x32 rows; E8M0 scales are powers of two, so the products are the same). E2: the host's join on the row-gathering thread idles GPU0 ~0.4 ms before layer 1 only; gather layer 1's 24 rows first on persistent threads (now 16 thread spawns a token, layer 14's rows gathered before the thread returns) | E1 ~0.36 ms (1.3%) + 315 MB of GPU0 VRAM; E2 up to ~0.4 ms (1.5%) | E1: nsys engram_kv <= 200 us per call, decode eval KL within 0.001; E2: DSX_PROF's "host: engram join wait" per token | E1: gemv_fp8b32 < 650 GB/s on this shape; E2: join wait < 0.15 ms/token |
+| 9 | Split q_b / o_b between GPU0 and GPU1 (tensor-parallel halves; whole layers on GPU1 cannot help batch-1 decode, since the GPUs would run in turn). Each split matrix puts a GPU0 -> GPU1 -> GPU0 round trip R over the x4 link (host-staged, stream memory ops) on the critical path, twice per layer. Per layer, q (~81 us) gains only if R < ~40 us (half its work) and o (~118 us) only if R < ~59 us. The aux-expert handoff, the same kind of round trip, returns GPU1's results ~14 us after GPU0's own 148 us of experts; with GPU1's expert compute that bounds R at roughly 80-110 us. Half of q / o is ~3.1 GB of Q8_0 weights, which evicts ~370 of GPU1's ~2,181 resident experts: ~3 more points of picks on the CPU, ~+0.9 ms of wait | at R ~ 90 us: **-2 to -4 ms (loses)**; break-even needs R ~ 30 us; the best case (R ~ 15 us) is ~+2 ms after the CPU cost | R from the existing EVPROF aux events (GPU1's per-layer wait / htod / run / dtoh next to GPU0's publish) or a ping-pong bench on .102 | R >= 40 us |
 
 Not proposed, measured negative: copying predicted CPU experts into GPU0 (section 4); DSpark speculative decoding
 (verify passes of 2 / 3 / 4 tokens cost 1.55 / 2.08 / 2.34 decode steps, because the CPU's work grows with the union of
