@@ -25,7 +25,7 @@ SAME_GB=$(python3 -c "print(round($MAIN_GB - 0.63, 2))")
 echo "serve running: $(pgrep -fa 'dsx.*serve' | grep -v pgrep | wc -l); $(uptime)"
 s=$(date +%s); (cd nvidia && ~/.cargo/bin/cargo build --release --features cuda --bin dsx 2>&1 | tail -1); echo "build $(( $(date +%s) - s )) s"
 B=target/release/dsx
-cool() { sleep 25; echo "  $(sensors 2> /dev/null | grep -m1 Package) GPU $(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader | tr '\n' ' ')"; }
+cool() { sleep 25; echo "  $(date +%T) $(sensors 2> /dev/null | grep -m1 Package) GPU C,W,cap $(nvidia-smi --query-gpu=temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits | tr -d " " | tr "\n" " ")"; }
 echo "== kernel (GPU0)"
 (cd nvidia && ~/.cargo/bin/cargo test --release --features cuda --test gpu_engram_fp8 -- --include-ignored --nocapture --test-threads 1 2>&1 | grep -E "engram wkv|gemv_|test result|panicked")
 cool
