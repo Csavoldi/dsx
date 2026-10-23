@@ -150,3 +150,71 @@ busy time stays a floor). GPU1's share is left out, since its results are not kn
 
 HW Tuning's earlier 0-5% assumed prefill was bound by the expert stream. The traces cut against that for long prompts:
 in lp3000 GPU0 computes with its link idle for 1.47 s of 4.94 s, and 39% of GPU0's kernel time is FP32-accumulate HMMA.
+
+## 7. Free math per weight byte in decode, and the bits each tier can drop to
+
+Batch-1 decode does ~2 FLOPs per weight while a 3090 needs ~76 FLOPs per byte to be compute-bound, so the tensor
+cores only help with many tokens per weight read (prefill, batching). What decode can use is the ALU and issue slots
+its kernels leave idle while waiting on memory: spent on decoding fewer bits per weight, they replace bytes. This
+section measures that budget per tier.
+
+**Method.** GPU: ncu (sudo on the workstation, 2026-10-23) on the 5090 for the real decode kernels from the existing
+benches (gpu_q8 q8_variants 32768 x 1280; gpu_t16 t16_decode_speed, 6 experts of 64 per call, K 1.5 / 2; gpu_engram_fp8):
+warp instructions executed per DRAM byte read, issue-slot use, stall reasons. Instructions per byte carry over to the
+3090: the T16 kernels' sm_86 and sm_120 SASS differ by <= 5% (gemv_q8r's sm_86 SASS is 1.56x larger, so its 3090
+figure is uncertain). The 3090 issues 82 SMs x 4 schedulers x 1.74 GHz (8d's busy clock) = 571 G warp-instructions/s;
+at a practical 880 GB/s (gemv_f16 reaches 871) that is **0.65 warp-instructions (20.8 thread-instructions) per byte**,
+the most a kernel may execute and still run at full bandwidth. CPU: cpubench t16 on the i7-13700 (Raptor Lake P-cores,
+the same AVX2 / AVX-VNNI units as the 12700K's Golden Cove), 1 thread and 2 threads on one P-core, scaled by the clock
+(~4.7 vs ~5.0 GHz all-core; 0.94) against .102's RAM share per P-core: 42.4 GB/s / 7 pool cores = **6.06 GB/s**.
+
+| Kernel (tier) | 5090: GB/s (% of DRAM peak) | issue use | top stall | warp-inst per byte | 3090 issue use at 880 GB/s |
+|---|---|---|---|---|---|
+| gemv_q8r (dense q / o, Q8_0, 8.5 bpw) | 1280 (73%) | 27% | long scoreboard 21 | 0.297 (10.1 thread-inst per weight) | 46% (up to ~70% if sm_86 runs 1.56x the instructions) |
+| gemv_f16 (engram, 16 bpw) | 1510 (88%) | 10% | long scoreboard 82 | 0.109 | 17% |
+| gemv_fp8b32 (engram E1, 8 bpw) | 1405 (81%) | 17% | long scoreboard 14 | 0.175 | 27% |
+| t16d_gemv_3 (GPU experts, gate / up K 1.5) | 391 (22%) | 18% | long scoreboard 12; occupancy 21% | 0.66 (4.0 thread-inst per weight) | **102%** |
+| t16d_gemv_4 (GPU experts, down K 2) | 763 (43%) | 31% | long scoreboard 10; occupancy 34% | 0.55 (4.4 thread-inst per weight) | **84%** |
+
+| CPU T16 kernel, per P-core (2 threads) | 13700 | at .102's clock | .102 RAM share per core | binds |
+|---|---|---|---|---|
+| K 1.5 | 5.8 GB/s = 30.9 G weights/s | 29.0 G weights/s | 32.3 G weights/s | **compute** |
+| K 2 | 7.2 GB/s = 28.8 G weights/s | 27.1 | 24.2 | RAM (12% compute spare) |
+| K 2.5 | 7.7 GB/s = 24.6 G weights/s | 23.1 | 19.4 | RAM (19% spare) |
+| UD IQ1/IQ2 codebook mix (~1.6-2.1 bpw) | 4.8 GB/s | | | compute (slower than T16) |
+
+**Lowest bits per weight with no slowdown** (below it the decode, not the bytes, sets the time; b_min = thread-inst
+per weight x 8 / thread-inst per byte available):
+
+- **GPU-resident experts:** T16's trellis costs 4.0-4.4 thread-instructions per weight, so b_min = **1.5-1.7 bpw** on
+  the 3090: K 1.5 is already at the issue limit. Bits are not today's limit, though: the T16 GEMVs run at 22-43% of
+  bandwidth on the 5090 (8d: ~45% on .102) with low occupancy and long-scoreboard stalls, i.e. too few loads in flight
+  (432-720 blocks of 4 warps per call). Fewer bits gain ~nothing until that is fixed (lever 5).
+- **CPU-resident experts:** compute equals .102's RAM share at **~1.7 bpw** (48.5 / b G weights/s of RAM vs ~28 G
+  weights/s of T16 decode per core). K 1.5 is compute-bound already, so fewer bits gain nothing on the CPU; the
+  ~12-19% spare at K 2 / 2.5 is the only free math there. No known decode is cheaper per weight on AVX2 than T16
+  (the IQ codebooks measured 4.8 GB/s per core).
+- **Dense q_b / o_b (now Q8_0, 8.0 ms of the critical path):** the one tier with real headroom (46% issue at full
+  bandwidth). A trellis at 4.4 thread-inst per weight stays bandwidth-bound down to ~1.7 bpw; a scalar LUT format
+  (IQ4_NL / NF4-like) at ~6-8 thread-inst per weight down to ~2.3-3 bpw; gemv_q8r's own density (10.1) to ~3.9 bpw.
+
+**Decode tok/s from the dense tier** (production 26.8 ms/token, 37.3 tok/s before tonight's power caps; bytes of q / o
+scale the 8.0 ms, the kernel staying at today's ~84% of bandwidth): 6.5 bpw (Q6 planes) -1.8 ms (+7%); 4.5 bpw
+(IQ4_NL-like) -3.8 ms, **23.0 ms = 43.5 tok/s (+16%)**; 3 bpw trellis -5.1 ms, **21.7 ms = 46 tok/s (+23%)**.
+Expert tiers: ~0 from fewer bits (GPU: parallelism-bound; CPU: compute-bound).
+
+**Schemes inside the budget** (each gated on the Lucebox decode eval's KL and top-1 against the run-to-run spread):
+dense q / o: trellis (QTIP / EXL3 family, i.e. T16 at 3-4 bpw), non-uniform 4-bit LUT scalars (IQ4_NL, NF4), HQQ /
+Q4_K-style group scalars, E8-lattice codebooks (QuIP# E8P, ~2 bpw, bit-op decode plus a 256-entry table); GPU experts
+below 1.5 bpw: vector codebooks with small shared-memory tables (AQLM 2x8, VPTQ) at ~1-2 thread-inst per weight, only
+after the T16 kernel reaches bandwidth; CPU experts: none cheaper than T16 known on AVX2 (vpshufb tables need <= 16
+entries per lookup; IQ1/IQ2 grids measured slower).
+
+| # | Lever | Predicted gain | Confirming measurement | Kill criterion |
+|---|---|---|---|---|
+| 11 | Dense q_b / o_b from Q8_0 to a 4.5 bpw LUT scalar or a 3-4 bpw trellis (row 1 extended: the issue budget allows it) | 4.5 bpw **-3.8 ms (+16%)**; 3 bpw trellis **-5.1 ms (+23%)** | ncu on .102 (sm_86): the new GEMV's warp-inst per byte <= 0.5 at >= 750 GB/s on 32768 x 1280 / 5120 x 8192; EVPROF q + o; teacher-forced decode tok/s | decode eval KL up > 0.005 (or beyond 2x the measured run-to-run spread), or the GEMV < 700 GB/s on .102 |
+| 12 | Experts below ~1.7 bpw (either tier) | ~0 on decode speed (see above) | | not proposed for speed |
+
+Still to measure on .102 (no new code; one window): the same three ncu runs (sm_86 instruction counts and issue use,
+especially gemv_q8r's), and `CPUB_THREADS=2,14 cpubench t16` (~20 s, inside the thermal limits) for the per-core
+compute rate at the 12700K's clock under the 125 W cap.
