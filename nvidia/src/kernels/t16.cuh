@@ -258,13 +258,21 @@ __device__ __forceinline__ void t16d_gemv_k(const uint4 *__restrict__ xp, const 
   uint32_t(*const buf)[16 * TW] = sm[(threadIdx.x >> 5) & 3];
   uint4(*const xbuf)[32] = smx[(threadIdx.x >> 5) & 3];
   const uint32_t *tw = (const uint32_t *)t16_mat(sl, base, role) + ((size_t)16 * g0 * nbs + (nb & ~1)) * WT;
+  // each lane's NQ 16-byte chunks of a group: offsets fixed for the whole kernel, computed once
+  constexpr int NQ = 16 * CH / 32;
+  static_assert(16 * CH % 32 == 0, "chunks per group must split evenly over the warp");
+  uint32_t goff[NQ], soff[NQ];
+#pragma unroll
+  for (int q = 0; q < NQ; q++) {
+    const int c16 = lane + 32 * q, row = c16 / CH, ch = c16 % CH;
+    goff[q] = row * step + 4 * ch, soff[q] = 4 * (row * TW + 4 * ch);
+  }
+  const uint32_t sb0 = (uint32_t)__cvta_generic_to_shared(&buf[0][0]), sbs = 4 * 16 * TW;
   auto issue = [&](int gr, int bi) {
     const uint32_t *src = tw + (size_t)(gr - g0) * 16 * step;
-    for (int q = lane; q < 16 * CH; q += 32) {
-      const int row = q / CH, ch = q % CH;
-      const uint32_t d = (uint32_t)__cvta_generic_to_shared(&buf[bi][row * TW + 4 * ch]);
-      asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(d), "l"(src + (size_t)row * step + 4 * ch));
-    }
+    const uint32_t db = sb0 + bi * sbs;
+#pragma unroll
+    for (int q = 0; q < NQ; q++) asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(db + soff[q]), "l"(src + goff[q]));
     const uint32_t dx = (uint32_t)__cvta_generic_to_shared(&xbuf[bi][lane]);
     asm volatile("cp.async.ca.shared.global [%0], [%1], 16;" ::"r"(dx), "l"(xe + 2 * 16 * (gr - g0) + lane));
     asm volatile("cp.async.commit_group;");
