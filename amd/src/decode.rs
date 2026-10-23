@@ -355,6 +355,9 @@ pub struct Decoder {
     pub(crate) xg: std::cell::Cell<Option<(usize, usize)>>,
     /// the outputs of the next dense product were cleared by the prep before it (no vzero); reset by gm
     pub(crate) pz: std::cell::Cell<bool>,
+    /// batched-step graphs by (tokens, draft, verify, 16K-position bucket, batch) and the shapes seen once
+    pub(crate) bgraphs: std::cell::RefCell<std::collections::HashMap<(usize, bool, bool, usize, u64), Graph>>,
+    pub(crate) bseen: std::cell::RefCell<std::collections::HashSet<(usize, bool, bool, usize, u64)>>,
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
@@ -763,6 +766,8 @@ impl Decoder {
             blas: None,
             xg: std::cell::Cell::new(None),
             pz: std::cell::Cell::new(false),
+            bgraphs: Default::default(),
+            bseen: Default::default(),
             pos: 0,
             dump: None,
             etab: vec![],

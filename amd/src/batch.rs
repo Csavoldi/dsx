@@ -46,6 +46,10 @@ pub struct Batch {
     pub(crate) logits: Buf,
     pub(crate) next: Buf,
     pub(crate) bad: Buf,
+    /// graph-captured steps: pinned inputs, and the 16K-position bucket the indexer grid is sized for (0: exact)
+    pub(crate) pin_rows: *mut u8,
+    pub(crate) pin_toks: *mut u8,
+    pub(crate) gbucket: std::cell::Cell<usize>,
     /// split attention partials [token <= 128][10 splits][64 * 512 + 128] f32
     pub(crate) apart: Buf,
     /// multi-token steps: batch row of each token's previous position (-1: none), and the compressor state each
@@ -85,6 +89,9 @@ impl Batch {
 
 impl Decoder {
     pub fn new_batch(&mut self, slots: usize, ctx: usize) -> Result<Batch> {
+        // captured batch-step graphs hold the old batch's buffer pointers (freed buffers get reused): drop them
+        self.bgraphs.borrow_mut().clear();
+        self.bseen.borrow_mut().clear();
         if std::env::var("DSXA_BBLAS").map(|v| v != "0").unwrap_or(true) {
             self.build_bdense()?;
         }
@@ -126,6 +133,9 @@ impl Decoder {
             logits: g.alloc_zeroed(BMAX * VOCAB * 4)?,
             next: g.alloc_zeroed(BMAX * 4)?,
             bad: g.alloc_zeroed(4)?,
+            pin_rows: g.host_alloc(BMAX * 2 * ENG_ROW_BYTES)?,
+            pin_toks: g.host_alloc(BMAX * 4)?,
+            gbucket: std::cell::Cell::new(0),
             apart: g.alloc(128 * 10 * (NH * HD + 128) * 4)?,
             bprev: g.alloc_zeroed(BMAX * 4)?,
             stage: self.layers.iter().map(|l| if l.kv_src && l.ratio == 2 { g.alloc_zeroed(BMAX * 2 * HD * 4).ok() } else { None }).collect(),
