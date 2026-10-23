@@ -180,6 +180,10 @@ pub struct GpuModel<'m> {
     pregate: Option<Buf>,
     /// [picks, predicted in top-6, predicted in top-8, CPU picks, CPU picks predicted in top-8]
     pub pregate_stats: [u64; 5],
+    /// DSX_PREGATE_DUMP=path (with DSX_PREGATE=1): per decode token and layer, "pos layer | predicted top-8 in score order
+    /// | actual 6 in rank order | where each of those 14 is" (c = CPU worker, 0 = GPU0, 1 = an aux GPU, ? = none of
+    /// them, e.g. a swap in flight), for prefetch studies
+    pregate_dump: Option<std::io::BufWriter<std::fs::File>>,
     /// DSX_DEFER: each layer's ffn output mix (post, 4 f32) by layer parity, so its deferred experts can enter the
     /// residual with their own layer's weights one layer later
     dpost: Buf,
@@ -444,6 +448,10 @@ impl<'m> GpuModel<'m> {
             vpass: None,
             pregate: if std::env::var_os("DSX_PREGATE").is_some() { Some(g.alloc_zeroed(c.n_layers * 16 * 4 + 4096)?) } else { None },
             pregate_stats: [0; 5],
+            pregate_dump: match (std::env::var("DSX_PREGATE").is_ok_and(|v| v == "1"), std::env::var_os("DSX_PREGATE_DUMP")) {
+                (true, Some(p)) => Some(std::io::BufWriter::new(anyhow::Context::with_context(std::fs::File::create(&p), || format!("DSX_PREGATE_DUMP {}", p.to_string_lossy()))?)),
+                _ => None,
+            },
             dpost: g.alloc_zeroed(64)?,
             images: Vec::new(),
             img_rows: Vec::new(),
@@ -1504,6 +1512,34 @@ impl<'m> GpuModel<'m> {
             if let Some(pg) = self.pregate.as_ref() {
                 let (nl, ne, k) = (self.m.cfg.n_layers, self.m.cfg.n_experts, self.m.cfg.top_k);
                 let v: Vec<i32> = self.g.download(pg.ptr, nl * 16)?;
+                if self.pregate_dump.is_some() {
+                    use std::fmt::Write;
+                    let on_cpu = |l: usize, e: usize| self.worker.as_ref().is_some_and(|w| w.on_cpu[l * ne + e].load(std::sync::atomic::Ordering::Relaxed));
+                    let mut text = String::new();
+                    for l in 1..nl {
+                        let ids: Vec<usize> = v[l * 16..l * 16 + 8].iter().chain(&v[l * 16 + 8..l * 16 + 8 + k]).map(|&e| e as usize).collect();
+                        let fmt = |r: &[usize]| r.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(" ");
+                        let at: String = ids
+                            .iter()
+                            .map(|&e| {
+                                if on_cpu(l, e) {
+                                    'c'
+                                } else if self.exp0.as_ref().is_some_and(|s| s.types(l, e).is_some()) {
+                                    '0'
+                                } else if self.aux.iter().any(|a| a.exp.types(l, e).is_some()) {
+                                    '1'
+                                } else {
+                                    '?'
+                                }
+                            })
+                            .collect();
+                        let _ = writeln!(text, "{} {l} | {} | {} | {at}", self.pos, fmt(&ids[..8]), fmt(&ids[8..]));
+                    }
+                    use std::io::Write as _;
+                    let f = self.pregate_dump.as_mut().unwrap();
+                    f.write_all(text.as_bytes())?;
+                    f.flush()?;
+                }
                 for l in 1..nl {
                     let (pred, act) = (&v[l * 16..l * 16 + 8], &v[l * 16 + 8..l * 16 + 8 + k]);
                     for &e in act {
