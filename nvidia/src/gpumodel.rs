@@ -267,7 +267,7 @@ pub struct Placement {
 pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
-    "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
+    "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_fp8b32_o", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
     "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
@@ -1096,6 +1096,9 @@ impl<'m> GpuModel<'m> {
             GType::F16 => "gemv_f16",
             GType::BF16 => "gemv_bf16",
             GType::F32 => "gemv_f32",
+            // converted from an F16 copy (DSX_ENGRAM_FP8; checkpoint FP8 weights quantize activations): gemv_f16's exact
+            // arithmetic, bit-identical to the F16 path
+            GType::Fp8B32 if !w.act_fp8 => "gemv_fp8b32_o",
             GType::Fp8B32 => "gemv_fp8b32",
             GType::Q2_0 => "gemv_q2_0",
             GType::Ptq1_0 => "gemv_ptq1_0",
