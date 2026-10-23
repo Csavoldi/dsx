@@ -58,6 +58,8 @@ pub struct Gpu {
     pub stream: cu::CUstream,
     /// second stream for copies that overlap the main stream (prefill expert streaming)
     pub side: cu::CUstream,
+    /// third stream for small decode work that runs beside the main stream (the hc mixes), joined by events
+    pub par: cu::CUstream,
     module: cu::CUmodule,
     blas: Cell<cb::cublasHandle_t>,
 }
@@ -95,6 +97,8 @@ impl Gpu {
             check(cu::cuStreamCreate(&mut stream, cu::CUstream_flags::CU_STREAM_NON_BLOCKING as u32), "cuStreamCreate")?;
             let mut side = std::ptr::null_mut();
             check(cu::cuStreamCreate(&mut side, cu::CUstream_flags::CU_STREAM_NON_BLOCKING as u32), "cuStreamCreate")?;
+            let mut par = std::ptr::null_mut();
+            check(cu::cuStreamCreate(&mut par, cu::CUstream_flags::CU_STREAM_NON_BLOCKING as u32), "cuStreamCreate")?;
             let image = {
                 let mut v = vec![0u64; KERNEL_IMAGE.len().div_ceil(8)];
                 std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, KERNEL_IMAGE.len()).copy_from_slice(KERNEL_IMAGE);
@@ -102,7 +106,7 @@ impl Gpu {
             };
             let mut module = std::ptr::null_mut();
             check(cu::cuModuleLoadData(&mut module, image.as_ptr() as *const c_void), "cuModuleLoadData")?;
-            Ok(Gpu { ordinal, name, sms, arch: (major * 10 + minor) as u32, ctx, stream, side, module, blas: Cell::new(std::ptr::null_mut()) })
+            Ok(Gpu { ordinal, name, sms, arch: (major * 10 + minor) as u32, ctx, stream, side, par, module, blas: Cell::new(std::ptr::null_mut()) })
         }
     }
 
@@ -453,6 +457,24 @@ impl Gpu {
 
     pub fn launch(&self, k: Kernel, grid: (u32, u32, u32), block: u32, smem: u32, args: &[Arg]) -> Result<()> {
         self.launch_on(self.stream, k, grid, block, smem, args)
+    }
+
+    /// launch on the par stream (see `par`)
+    pub fn launch_par(&self, k: Kernel, grid: (u32, u32, u32), block: u32, smem: u32, args: &[Arg]) -> Result<()> {
+        self.launch_on(self.par, k, grid, block, smem, args)
+    }
+
+    /// fork: the par stream waits for everything enqueued on the main stream so far (`e` is recorded there)
+    pub fn par_after_main(&self, e: Event) -> Result<()> {
+        unsafe {
+            check(cu::cuEventRecord(e.0, self.stream), "cuEventRecord")?;
+            check(cu::cuStreamWaitEvent(self.par, e.0, 0), "cuStreamWaitEvent")
+        }
+    }
+
+    /// join: record `e` on the par stream (the main stream waits for it with `wait(e, false)`)
+    pub fn record_par(&self, e: Event) -> Result<()> {
+        unsafe { check(cu::cuEventRecord(e.0, self.par), "cuEventRecord") }
     }
 
     /// launch on the side stream (background work that must not wait behind the main stream)

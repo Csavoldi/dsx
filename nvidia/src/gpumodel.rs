@@ -118,6 +118,10 @@ pub struct GpuModel<'m> {
     r: Buf,
     mix_a: Buf,
     mix_f: Buf,
+    /// decode hc mixes on GPU0's par stream: partial sums, and the fork / join events
+    hc_part: Buf,
+    hc_fork: crate::gpu::Event,
+    hc_join: crate::gpu::Event,
     tmp: Buf,
     tmp2: Buf,
     iq: Buf,
@@ -410,6 +414,9 @@ impl<'m> GpuModel<'m> {
             r: fz(c.o_groups * c.o_lora)?,
             mix_a: fz(24)?,
             mix_f: fz(24)?,
+            hc_part: fz(25 * 8)?,
+            hc_fork: g.event()?,
+            hc_join: g.event()?,
             tmp: fz(1 << 18)?,
             tmp2: fz(32768)?,
             iq: fz(c.idx_heads * c.idx_dim)?,
@@ -763,13 +770,15 @@ impl<'m> GpuModel<'m> {
             // expert output instead mixes them with the wrong weights: KL 0.395 vs 0.383 at DSX_DEFER=3)
             let inject = true;
             if inject {
-                // this layer's output weights, for its own deferred experts next layer
+                // this layer's output weights (mix_f, from the par stream), for its own deferred experts next layer
+                self.hc_join_main()?;
                 self.g.dtod(self.dpost.ptr + ((li % 2) * 16) as u64, self.mix_f.ptr + 16, 16)?;
             }
             if li > 0 {
                 self.flag_wait(d0 + crate::handoff::CPUD as u64, seq - 1)?;
                 if inject {
                     let off = if (li - 1) % 2 == 0 { crate::handoff::y_cpu2(d) } else { crate::handoff::y_cpu3(d) };
+                    self.hc_join_main()?;
                     self.g.launch(self.k["hc_add_post"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(d0 + off as u64), Arg::P(self.dpost.ptr + (((li - 1) % 2) * 16) as u64), Arg::I(d as i32)])?;
                 } else {
                     cpu_mask |= slot(li - 1);
@@ -1214,12 +1223,22 @@ impl<'m> GpuModel<'m> {
         )
     }
 
+    /// The sublayer's hc mixes into `out` on the par stream, beside the main stream's attention or MoE: they read h as
+    /// it is now and are first needed by the hc_post after that work. `hc_join_main` must run before the main stream
+    /// next writes h or reads `out`.
     fn hc_mixes(&self, fnw: &(DMat, Buf, Buf), out: &Buf) -> Result<()> {
         let c = &self.m.cfg;
         // dots split 8 ways for more blocks, then the per-token reduction
-        let part = self.actq.ptr;
-        self.g.launch(self.k["hc_part"], (25, 1, 8), 256, 0, &[Arg::P(fnw.0.buf.ptr), Arg::P(self.h.ptr), Arg::P(part), Arg::I((c.hc * c.dim) as i32), Arg::I(8)])?;
-        self.g.launch(self.k["hc_reduce_finish"], (1, 1, 1), 32, 0, &[Arg::P(part), Arg::P(out.ptr), Arg::I((c.hc * c.dim) as i32), Arg::I(8), Arg::F(c.eps), Arg::P(fnw.1.ptr), Arg::P(fnw.2.ptr), Arg::F(c.hc_eps), Arg::I(c.sinkhorn_iters as i32)])
+        let part = self.hc_part.ptr;
+        self.g.par_after_main(self.hc_fork)?;
+        self.g.launch_par(self.k["hc_part"], (25, 1, 8), 256, 0, &[Arg::P(fnw.0.buf.ptr), Arg::P(self.h.ptr), Arg::P(part), Arg::I((c.hc * c.dim) as i32), Arg::I(8)])?;
+        self.g.launch_par(self.k["hc_reduce_finish"], (1, 1, 1), 32, 0, &[Arg::P(part), Arg::P(out.ptr), Arg::I((c.hc * c.dim) as i32), Arg::I(8), Arg::F(c.eps), Arg::P(fnw.1.ptr), Arg::P(fnw.2.ptr), Arg::F(c.hc_eps), Arg::I(c.sinkhorn_iters as i32)])?;
+        self.g.record_par(self.hc_join)
+    }
+
+    /// the main stream waits for the last `hc_mixes`
+    fn hc_join_main(&self) -> Result<()> {
+        self.g.wait(self.hc_join, false)
     }
 
     fn attention(&mut self, li: usize) -> Result<()> {
@@ -1636,6 +1655,7 @@ impl<'m> GpuModel<'m> {
             self.ev(li, 10)?;
             self.hmark(th, if li < 20 { "host: attention enc" } else { "host: attention dec" });
             self.mark(&mut tm, "attention")?;
+            self.hc_join_main()?;
             self.g.launch(self.k["hc_post_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.a.ptr), Arg::P(self.mix_a.ptr), Arg::I(d as i32)])?;
             // ffn half
             self.hc_pre_norm(&self.mix_a, &self.layers[li].ffn_norm, true)?;
@@ -1645,6 +1665,7 @@ impl<'m> GpuModel<'m> {
             if self.worker.is_some() { self.moe_fast(li)?; } else { self.moe(li)?; }
             self.hmark(th, if li < 20 { "host: moe enc" } else { "host: moe dec" });
             self.mark(&mut tm, "moe")?;
+            self.hc_join_main()?;
             self.g.launch(self.k["hc_post_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.a.ptr), Arg::P(self.mix_f.ptr), Arg::I(d as i32)])?;
             if std::env::var_os("DSX_DUMP").is_some() && self.pos < 4 {
                 let h: Vec<f32> = self.g.download(self.h.ptr, c.hc * d)?;
