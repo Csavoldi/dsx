@@ -187,6 +187,8 @@ pub struct GpuModel<'m> {
     post_attn_done: bool,
     post_ffn_done: bool,
     warned_nan: bool,
+    /// DSX_ENGRAM_PERSIST=1: persistent threads gather the rows into eng_host (declared first: dropped before it)
+    eng_gather: Option<crate::engram_gather::EngramGather>,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
     /// DSX_ROUTE_BIAS=x: per-layer selection bonus x for GPU-resident experts ([layers][E] f32), off by default
@@ -289,7 +291,7 @@ pub struct Placement {
 pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
-    "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
+    "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_fp8b32_o", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
     "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "gemv_q8g_bf", "gemv_q8r_gu", "sparse_attn_merge_rf", "gemv_q8r1_rope", "gemv_q8r1_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
@@ -360,6 +362,21 @@ impl<'m> GpuModel<'m> {
             Ok(DMat { buf: g.upload(w.bytes())?, scale, ty: w.ty, rows: w.rows, cols: w.cols, act_fp8: w.act_fp8, q8r: false, q6: None })
         };
         let upo = |w: &Option<Mat>| -> Result<Option<DMat>> { w.as_ref().map(up).transpose() };
+        // DSX_ENGRAM_FP8=1: an F16 engram wkv goes up as FP8 + 32x32 E8M0 scales (the checkpoint's layout), half the
+        // bytes for its bandwidth-bound decode GEMV; only when the conversion is exact (the F16 came from that FP8)
+        let engram_fp8 = std::env::var("DSX_ENGRAM_FP8").is_ok_and(|v| v == "1");
+        let up_engram = |w: &Option<Mat>| -> Result<Option<DMat>> {
+            let Some(w) = w else { return Ok(None) };
+            if engram_fp8 && w.ty == GType::F16 {
+                let h: &[half::f16] = unsafe { std::slice::from_raw_parts(w.bytes().as_ptr().cast(), w.rows * w.cols) };
+                if let Some((q, sc)) = crate::numerics::f16_to_fp8b32(h, w.rows, w.cols) {
+                    eprintln!("engram: {} as FP8 (exact), {:.0} MB", w.name, (q.len() + sc.len()) as f64 / 1e6);
+                    return Ok(Some(DMat { buf: g.upload(&q)?, scale: Some(g.upload(&sc)?), ty: GType::Fp8B32, rows: w.rows, cols: w.cols, act_fp8: w.act_fp8, q8r: false, q6: None }));
+                }
+                eprintln!("engram: {} is not exact FP8, kept F16", w.name);
+            }
+            up(w).map(Some)
+        };
         let upv = |v: &Option<Vec<f32>>| -> Result<Option<Buf>> { v.as_ref().map(|v| f32buf(&g, v)).transpose() };
         let f32mat = |v: &[f32], rows: usize| -> Result<DMat> {
             Ok(DMat { buf: g.upload(v)?, scale: None, ty: GType::F32, rows, cols: v.len() / rows, act_fp8: false, q8r: false, q6: None })
@@ -402,7 +419,7 @@ impl<'m> GpuModel<'m> {
                 sh_gate: up(&l.sh_gate)?,
                 sh_up: up(&l.sh_up)?,
                 sh_down: up(&l.sh_down)?,
-                engram_kv: upo(&l.engram_kv)?,
+                engram_kv: up_engram(&l.engram_kv)?,
                 engram_qk: upv(&l.engram_qk)?,
                 window: bf16zeros(c.window * c.head_dim)?,
                 comp_cache: if is_src { Some(bf16zeros(max_ctx / ratio * c.head_dim)?) } else { None },
@@ -474,6 +491,7 @@ impl<'m> GpuModel<'m> {
             post_attn_done: false,
             post_ffn_done: false,
             warned_nan: false,
+            eng_gather: None,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
             pb: None,
@@ -521,6 +539,11 @@ impl<'m> GpuModel<'m> {
             prof: std::env::var_os("DSX_PROF").map(|_| Default::default()),
         };
         let mut gm = gm;
+        if m.engram.is_some() && std::env::var("DSX_ENGRAM_PERSIST").is_ok_and(|v| v == "1") {
+            let out = gm.eng_host.as_mut_slice::<f32>();
+            gm.eng_gather = Some(crate::engram_gather::EngramGather::new(m, out, gm.prof.is_some())?);
+            eprintln!("engram: rows gathered by persistent threads (layer 1's first)");
+        }
         // prefill buffers before the experts take the rest of VRAM
         gm.pb = Some(PrefillBufs::new(&gm.g, m, pl.prefill_chunk, max_ctx)?);
         let gpu0_bytes = if pl.gpu0_gb < 0.0 {
@@ -1166,6 +1189,9 @@ impl<'m> GpuModel<'m> {
             GType::F16 => "gemv_f16",
             GType::BF16 => "gemv_bf16",
             GType::F32 => "gemv_f32",
+            // converted from an F16 copy (DSX_ENGRAM_FP8; checkpoint FP8 weights quantize activations): gemv_f16's exact
+            // arithmetic, bit-identical to the F16 path
+            GType::Fp8B32 if !w.act_fp8 => "gemv_fp8b32_o",
             GType::Fp8B32 => "gemv_fp8b32",
             GType::Q2_0 => "gemv_q2_0",
             GType::Ptq1_0 => "gemv_ptq1_0",
@@ -1193,7 +1219,7 @@ impl<'m> GpuModel<'m> {
             "gemv_q8r_sk" if t == 1 && self.sk1 => "gemv_q8r_sk1",
             k => k,
         };
-        let per_block = if sk { 1 } else if kname == "gemv_q8r4" { 16 } else { 4 };
+        let per_block = if sk { 1 } else if matches!(kname, "gemv_q8r4" | "gemv_fp8b32") { 16 } else { 4 };
         self.g.launch(
             self.k[kname],
             ((n as u32).div_ceil(per_block), 1, 1),
@@ -1762,8 +1788,14 @@ impl<'m> GpuModel<'m> {
             self.enqueue_aux(1)?;
             self.g.bind();
         }
-        // Engram rows on a helper thread while layer 0 (no engram) is enqueued and runs
-        let mut prefetch = {
+        // Engram rows on persistent threads (DSX_ENGRAM_PERSIST=1) or a helper thread while layer 0 (no engram) is
+        // enqueued and runs
+        let mut prefetch = if let Some(eg) = &self.eng_gather {
+            let th = std::time::Instant::now();
+            eg.publish(&self.engram_hist);
+            self.hmark(th, "host: engram publish");
+            None
+        } else {
             let ms: &'static Model = unsafe { std::mem::transmute::<&Model, &'static Model>(m) };
             let hist = self.engram_hist.clone();
             let (ptr, len) = (self.eng_host.host_ptr() as usize, self.eng_host.bytes / 4);
@@ -1782,6 +1814,19 @@ impl<'m> GpuModel<'m> {
                     j.join().map_err(|_| anyhow::anyhow!("engram prefetch thread panicked"))??;
                     if let Some(p) = self.prof.as_mut() {
                         *p.entry("host: engram join wait").or_default() += tpe.elapsed().as_secs_f64();
+                    }
+                }
+                if let Some(eg) = &self.eng_gather {
+                    let tpe = std::time::Instant::now();
+                    eg.wait(eidx)?;
+                    if let Some(p) = self.prof.as_mut() {
+                        *p.entry("host: engram join wait").or_default() += tpe.elapsed().as_secs_f64();
+                        let (cold, t) = eg.stats(eidx);
+                        *p.entry(if eidx == 0 { "host: engram gather, 1st layer" } else { "host: engram gather, later" }).or_default() += t;
+                        if eidx + 1 == c.engram_layers.len() {
+                            // a count, printed in the ms/token column as rows per token
+                            *p.entry("engram rows not cached (n)").or_default() += cold as f64 * 1e-3;
+                        }
                     }
                 }
                 self.engram(li, eidx)?;

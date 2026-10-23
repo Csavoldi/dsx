@@ -211,6 +211,18 @@ __device__ __forceinline__ void t16_prod16(const uint32_t *ptr, int i0, int i1, 
   }
 }
 
+// t16_prod16 from the three words already loaded (a = ptr[i0], b = ptr[i1], c = ptr[i2])
+template <int K2>
+__device__ __forceinline__ void t16_prod16w(uint32_t a, uint32_t b, uint32_t c, int sh, uint32_t (&p)[16]) {
+  const uint32_t lo = t16_fsr(c, b, sh), hi = t16_fsr(b, a, sh);
+#pragma unroll
+  for (int j = 0; j < 16; j++) {
+    const int o = t16_hend(K2, 15) - t16_hend(K2, j);
+    const uint32_t wj = o < 32 ? __funnelshift_r(lo, hi, o) : hi >> (o - 32);
+    p[j] = wj * 0x3A2Fu;
+  }
+}
+
 __device__ __forceinline__ int t16_dp4a(uint32_t a, int b, int c) {
   int d;
   asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
@@ -220,6 +232,81 @@ __device__ __forceinline__ int t16_dp4a(uint32_t a, int b, int c) {
 // part [S][T K][n]: split s of k's 256-groups. One warp per (pick, pair of tile columns, split); block 128.
 template <int K2>
 __device__ __forceinline__ void t16d_gemv_k(const uint4 *__restrict__ xp, const float *__restrict__ xd, const int *__restrict__ xs,
+                                            const int *__restrict__ sel, const ExpSlot *__restrict__ tab, const unsigned char *__restrict__ base,
+                                            int layer, int E, int K, int T, int role, int k, int n, int S, float *__restrict__ part) {
+  const int lane = threadIdx.x & 31, warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  const int nbs = n / 16, groups = k / 256, pairs = nbs / 2, picks = T * K;
+  if (warp >= picks * pairs * S) return;
+  const int s = warp / (picks * pairs), r = warp % (picks * pairs), j = r / pairs, nb = 2 * (r % pairs) + lane / 16, c = lane % 16;
+  const ExpSlot sl = tab[layer * E + sel[j]];
+  if (sl.gate == ~0ull) return;
+  const int g0 = groups * s / S, g1 = groups * (s + 1) / S;
+  constexpr int WT = 4 * K2, NB = 32 * WT;
+  const int e15 = t16_hend(K2, 16 * c + 15) + NB, hw = (e15 - 1) / 32;
+  const int i2 = hw % WT, i1 = (hw - 1) % WT, i0 = (hw - 2) % WT, sh = (hw + 1) * 32 - e15;
+  const uint32_t *tp = (const uint32_t *)t16_mat(sl, base, role) + ((size_t)16 * g0 * nbs + nb) * WT;
+  const uint32_t step = (uint32_t)nbs * WT;
+  const uint4 *xe = xp + (size_t)j * (k / 8) + 2 * 16 * g0;
+  // the warp's two tile columns (nb0, nb0 + 1: TW words a tile row) for a whole 256-group go to shared memory with
+  // cp.async, double-buffered: the next group's 16 rows stream in while this group is computed. Bytes in flight per
+  // warp, not latency, bound this kernel; the arithmetic and its order are unchanged (bit-identical).
+  // The group's 16 x rows (32 B each, the dp4a operand) come along: ncu's stall sampling put 47% of warp stalls on dp4a
+  // waiting for its per-iteration x load from global.
+  constexpr int TW = 2 * WT, CH = TW / 4;
+  __shared__ __align__(16) uint32_t sm[4][2][16 * TW];
+  __shared__ __align__(16) uint4 smx[4][2][32];
+  uint32_t(*const buf)[16 * TW] = sm[(threadIdx.x >> 5) & 3];
+  uint4(*const xbuf)[32] = smx[(threadIdx.x >> 5) & 3];
+  const uint32_t *tw = (const uint32_t *)t16_mat(sl, base, role) + ((size_t)16 * g0 * nbs + (nb & ~1)) * WT;
+  // each lane's NQ 16-byte chunks of a group: offsets fixed for the whole kernel, computed once
+  constexpr int NQ = 16 * CH / 32;
+  static_assert(16 * CH % 32 == 0, "chunks per group must split evenly over the warp");
+  uint32_t goff[NQ], soff[NQ];
+#pragma unroll
+  for (int q = 0; q < NQ; q++) {
+    const int c16 = lane + 32 * q, row = c16 / CH, ch = c16 % CH;
+    goff[q] = row * step + 4 * ch, soff[q] = 4 * (row * TW + 4 * ch);
+  }
+  const uint32_t sb0 = (uint32_t)__cvta_generic_to_shared(&buf[0][0]), sbs = 4 * 16 * TW;
+  auto issue = [&](int gr, int bi) {
+    const uint32_t *src = tw + (size_t)(gr - g0) * 16 * step;
+    const uint32_t db = sb0 + bi * sbs;
+#pragma unroll
+    for (int q = 0; q < NQ; q++) asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(db + soff[q]), "l"(src + goff[q]));
+    const uint32_t dx = (uint32_t)__cvta_generic_to_shared(&xbuf[bi][lane]);
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 16;" ::"r"(dx), "l"(xe + 2 * 16 * (gr - g0) + lane));
+    asm volatile("cp.async.commit_group;");
+  };
+  issue(g0, 0);
+  const int lo = (lane / 16) * WT;
+  float f = 0.f;
+  for (int gr = g0, bi = 0; gr < g1; gr++, bi ^= 1) {
+    if (gr + 1 < g1) issue(gr + 1, bi ^ 1);
+    else asm volatile("cp.async.commit_group;");
+    asm volatile("cp.async.wait_group 1;" ::: "memory");
+    __syncwarp();
+    // four dp4a chains (an exact integer sum in any order), so one warp's dependent dp4a latency is not the limit
+    int ac[4] = {0, 0, 0, 0};
+#pragma unroll 4
+    for (int i = 0; i < 16; i++) {
+      uint32_t p[16];
+      const uint32_t *w = &buf[bi][i * TW + lo];
+      t16_prod16w<K2>(w[i0], w[i1], w[i2], sh, p);
+      const uint4 xa = xbuf[bi][2 * i], xb = xbuf[bi][2 * i + 1];
+      const uint32_t xw[8] = {xa.x, xa.y, xa.z, xa.w, xb.x, xb.y, xb.z, xb.w};
+#pragma unroll
+      for (int q = 0; q < 8; q++) ac[q & 3] = t16_dp4a(__byte_perm(p[2 * q], p[2 * q + 1], 0x5410), (int)xw[q], ac[q & 3]);
+    }
+    const int acc = (ac[0] + ac[1]) + (ac[2] + ac[3]);
+    f += __ldg(xd + (size_t)j * groups + gr) * (0.009567260742f * (float)acc - 2.4375f * (float)__ldg(xs + (size_t)j * groups + gr));
+    __syncwarp();
+  }
+  part[((size_t)s * picks + j) * n + 16 * nb + c] = f;
+}
+// DSX_T16_GEMV=0: the kernel before the cp.async staging (for A/Bs; same launch, same output bits).
+// part [S][T K][n]: split s of k's 256-groups. One warp per (pick, pair of tile columns, split); block 128.
+template <int K2>
+__device__ __forceinline__ void t16d_gemv0_k(const uint4 *__restrict__ xp, const float *__restrict__ xd, const int *__restrict__ xs,
                                             const int *__restrict__ sel, const ExpSlot *__restrict__ tab, const unsigned char *__restrict__ base,
                                             int layer, int E, int K, int T, int role, int k, int n, int S, float *__restrict__ part) {
   const int lane = threadIdx.x & 31, warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
@@ -251,6 +338,16 @@ __device__ __forceinline__ void t16d_gemv_k(const uint4 *__restrict__ xp, const 
   }
   part[((size_t)s * picks + j) * n + 16 * nb + c] = f;
 }
+#define T16D_GEMV0(K2)                                                                                                                  \
+  extern "C" __global__ void __launch_bounds__(128) t16d_gemv0_##K2(const uint4 *xp, const float *xd, const int *xs, const int *sel,  \
+                                                                    const ExpSlot *tab, const unsigned char *base, int layer, int E,    \
+                                                                    int K, int T, int role, int k, int n, int S, float *part) {         \
+    t16d_gemv0_k<K2>(xp, xd, xs, sel, tab, base, layer, E, K, T, role, k, n, S, part);                                                 \
+  }
+T16D_GEMV0(3)
+T16D_GEMV0(4)
+T16D_GEMV0(5)
+
 #define T16D_GEMV(K2)                                                                                                                   \
   extern "C" __global__ void __launch_bounds__(128) t16d_gemv_##K2(const uint4 *xp, const float *xd, const int *xs, const int *sel,   \
                                                                    const ExpSlot *tab, const unsigned char *base, int layer, int E,     \

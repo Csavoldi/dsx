@@ -159,6 +159,67 @@ impl Rope {
     }
 }
 
+/// The exact float8_e4m3fn byte for `x`, or None if `x` is not on the e4m3 grid (or beyond 448)
+fn e4m3_code(x: f32) -> Option<u8> {
+    let sign = if x.is_sign_negative() { 0x80u8 } else { 0 };
+    let a = x.abs();
+    if a == 0.0 {
+        return Some(sign);
+    }
+    if !(a <= 448.0) {
+        return None;
+    }
+    let b = a.to_bits();
+    let e = ((b >> 23) & 0xFF) as i32 - 127;
+    if e >= -6 {
+        // normal: 3 mantissa bits, the other 20 zero
+        (b & 0xF_FFFF == 0).then(|| sign | (((e + 7) as u8) << 3) | ((b >> 20) & 7) as u8)
+    } else {
+        // subnormal: a multiple of 2^-9 below 2^-6
+        let m = a * 512.0;
+        (m == m.trunc()).then(|| sign | m as u8)
+    }
+}
+
+/// F16 matrix [rows][cols] -> FP8 e4m3 bytes [rows][cols] + E8M0 scales [rows/32][cols/32] (the HF checkpoint's
+/// Fp8B32 layout), exactly: each 32x32 block takes the smallest power of two that keeps it within 448, and every value
+/// must land on the e4m3 grid. None if any value does not (or rows / cols are not multiples of 32). A matrix that was
+/// dequantized from such FP8 to F16 converts back losslessly.
+pub fn f16_to_fp8b32(h: &[half::f16], rows: usize, cols: usize) -> Option<(Vec<u8>, Vec<u8>)> {
+    use rayon::prelude::*;
+    if rows % 32 != 0 || cols % 32 != 0 || h.len() != rows * cols {
+        return None;
+    }
+    let nb = cols / 32;
+    let mut q = vec![0u8; rows * cols];
+    let mut sc = vec![0u8; rows / 32 * nb];
+    let ok = q.par_chunks_mut(32 * cols).zip(sc.par_chunks_mut(nb)).enumerate().all(|(rb, (q, sc))| {
+        let h = &h[rb * 32 * cols..(rb + 1) * 32 * cols];
+        (0..nb).all(|b| {
+            let amax = (0..32).flat_map(|r| &h[r * cols + b * 32..r * cols + b * 32 + 32]).fold(0f32, |m, v| m.max(v.to_f32().abs()));
+            if !amax.is_finite() {
+                return false;
+            }
+            let mut s = if amax == 0.0 { 0 } else { ((pow2_ceil(amax / 448.0).to_bits() >> 23) as i32) - 127 };
+            if amax * 2f32.powi(-s) > 448.0 {
+                s += 1;
+            }
+            if !(-127..=127).contains(&s) {
+                return false;
+            }
+            sc[b] = (s + 127) as u8;
+            let inv = 2f32.powi(-s);
+            (0..32).all(|r| {
+                (0..32).all(|c| {
+                    let i = r * cols + b * 32 + c;
+                    e4m3_code(h[i].to_f32() * inv).map(|v| q[i] = v).is_some()
+                })
+            })
+        })
+    });
+    ok.then_some((q, sc))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +249,36 @@ mod tests {
         assert_eq!(pow2_ceil(1.0), 1.0);
         assert_eq!(pow2_ceil(1.5), 2.0);
         assert_eq!(pow2_ceil(0.3), 0.5);
+    }
+
+    #[test]
+    fn f16_fp8b32_roundtrip() {
+        // every e4m3 code times block scales from 2^-20 to 2^0, through F16 and back
+        let (rows, cols) = (64, 96);
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let codes: Vec<u8> = (0..rows * cols).map(|i| if i < 254 { (i as u8).wrapping_add(if i >= 127 { 1 } else { 0 }) } else { (next() % 254) as u8 }).map(|b| if b & 0x7F == 0x7F { 0x7E } else { b }).collect();
+        let scales: Vec<u8> = (0..rows / 32 * cols / 32).map(|i| 107 + (i as u8 * 7) % 21).collect();
+        let w: Vec<f32> = (0..rows * cols).map(|i| crate::model::fp8_e4m3_to_f32(codes[i]) * crate::model::e8m0_to_f32(scales[(i / cols / 32) * (cols / 32) + (i % cols) / 32])).collect();
+        let h: Vec<half::f16> = w.iter().map(|&v| half::f16::from_f32(v)).collect();
+        let (q, sc) = f16_to_fp8b32(&h, rows, cols).expect("exact");
+        for i in 0..rows * cols {
+            let back = crate::model::fp8_e4m3_to_f32(q[i]) * crate::model::e8m0_to_f32(sc[(i / cols / 32) * (cols / 32) + (i % cols) / 32]);
+            assert_eq!(back.to_bits(), h[i].to_f32().to_bits(), "value {i}");
+        }
+        // off the grid: block (0, 0) holding only 1 and 1 + 2^-4 (scale 2^-8: 256 and 272, between e4m3's 256 and 288)
+        let mut h2 = h.clone();
+        (0..32).for_each(|r| h2[r * cols..r * cols + 32].fill(half::f16::ZERO));
+        h2[0] = half::f16::from_f32(1.0);
+        assert!(f16_to_fp8b32(&h2, rows, cols).is_some());
+        h2[1] = half::f16::from_f32(1.0625);
+        assert!(f16_to_fp8b32(&h2, rows, cols).is_none());
+        assert!(f16_to_fp8b32(&h[..rows * cols - cols], rows - 1, cols).is_none());
     }
 }
 

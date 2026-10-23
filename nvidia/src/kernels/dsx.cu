@@ -1050,36 +1050,105 @@ __device__ __forceinline__ float e4m3_to_f32(uint8_t b) {
   float v = e ? ldexpf(1.f + m * 0.125f, e - 7) : ldexpf((float)m, -9);
   return (b & 0x80) ? -v : v;
 }
-extern "C" __global__ void gemv_fp8b32(const uint8_t *__restrict__ w, const float *__restrict__ x, float *__restrict__ y,
-                                       int rows, int k, int T, int ldx, int ldy, const uint8_t *__restrict__ scale) {
+// gemv_f16's exact arithmetic on FP8 + 32x32 E8M0 weights: each e4m3 x 2^s is exactly the f16 value it came from
+// (numerics::f16_to_fp8b32), and lane / column order, the 8-product expression and the warp sum are gemv_f16's, so
+// the output is bit-identical to gemv_f16 on the F16 copy at half the bytes. Two iterations' codes are loaded ahead.
+extern "C" __global__ void gemv_fp8b32_o(const uint8_t *__restrict__ w, const float *__restrict__ x, float *__restrict__ y,
+                                         int rows, int k, int T, int ldx, int ldy, const uint8_t *__restrict__ scale) {
   int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
   if (r >= rows) return;
-  int nb = k / 32;
   const uint8_t *wr = w + (size_t)r * k;
-  const uint8_t *sr = scale + (size_t)(r / 32) * nb;
+  const uint8_t *sr = scale + (size_t)(r / 32) * (k / 32);
   float acc[MAXT] = {0};
-  for (int b = lane; b < nb; b += 32) {
-    float d = __uint_as_float((uint32_t)sr[b] << 23);
-    float wv[32];
-    uint4 a0 = *(const uint4 *)(wr + b * 32), a1 = *(const uint4 *)(wr + b * 32 + 16);
-    const uint8_t *p0 = (const uint8_t *)&a0, *p1 = (const uint8_t *)&a1;
+  for (int i = lane * 8; i < k; i += 256) {
+    uint2 raw = *(const uint2 *)(wr + i);
+    // e4m3 bits shifted into f16 are the value times 2^-8; times (2^s * 2^8) it is exact
+    const float d = __uint_as_float(((uint32_t)sr[i / 32] + 8) << 23);
+    const uint32_t u[2] = {raw.x, raw.y};
+    float wf[8];
 #pragma unroll
-    for (int j = 0; j < 16; j++) { wv[j] = e4m3_to_f32(p0[j]); wv[16 + j] = e4m3_to_f32(p1[j]); }
-    for (int t = 0; t < T; t++) {
-      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + b * 32);
-      float s = 0.f;
+    for (int j = 0; j < 2; j++) {
 #pragma unroll
-      for (int j = 0; j < 8; j++) {
-        float4 v = xp[j];
-        s += wv[4 * j] * v.x + wv[4 * j + 1] * v.y + wv[4 * j + 2] * v.z + wv[4 * j + 3] * v.w;
+      for (int h = 0; h < 2; h++) {
+        uint32_t xx = __byte_perm(u[j], 0, h ? 0x4342 : 0x4140);
+        uint32_t f = ((xx & 0x00800080u) << 8) | ((xx & 0x007F007Fu) << 7);
+        float2 v = __half22float2(*(const __half2 *)&f);
+        wf[4 * j + 2 * h] = v.x * d;
+        wf[4 * j + 2 * h + 1] = v.y * d;
       }
-      acc[t] += d * s;
+    }
+    for (int t = 0; t < T; t++) {
+      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+      float4 a = xp[0], b = xp[1];
+      acc[t] += wf[0] * a.x + wf[1] * a.y + wf[2] * a.z + wf[3] * a.w + wf[4] * b.x + wf[5] * b.y + wf[6] * b.z + wf[7] * b.w;
     }
   }
   for (int t = 0; t < T; t++) {
     float s = warp_sum(acc[t]);
     if (lane == 0) y[(size_t)t * ldy + r] = s;
   }
+}
+
+// 4 rows per warp (16 per block of 128) sharing each x load; lane l takes 16 columns at l*16 + 512*i (k % 32 == 0).
+// e4m3 bits shifted into f16 (sign to bit 15, exponent + mantissa to bits 7..14) are the value times 2^-8,
+// subnormals included; the 2^8 goes into the block scale, applied once per 16-column partial sum. The token loops run
+// to MAXT with a t < T guard so acc stays in registers (a runtime-indexed acc went to local memory on sm_86).
+#define FP8_ROWS 4
+extern "C" __global__ void gemv_fp8b32(const uint8_t *__restrict__ w, const float *__restrict__ x, float *__restrict__ y,
+                                       int rows, int k, int T, int ldx, int ldy, const uint8_t *__restrict__ scale) {
+  int r0 = (blockIdx.x * 4 + (threadIdx.x >> 5)) * FP8_ROWS, lane = threadIdx.x & 31;
+  if (r0 >= rows) return;
+  int nb = k / 32;
+  float acc[FP8_ROWS][MAXT];
+#pragma unroll
+  for (int q = 0; q < FP8_ROWS; q++)
+#pragma unroll
+    for (int t = 0; t < MAXT; t++) acc[q][t] = 0.f;
+  for (int i = lane * 16; i < k; i += 512) {
+    float wv[FP8_ROWS][16], d[FP8_ROWS];
+#pragma unroll
+    for (int q = 0; q < FP8_ROWS; q++) {
+      int r = min(r0 + q, rows - 1);
+      uint4 a = *(const uint4 *)(w + (size_t)r * k + i);
+      d[q] = __uint_as_float(((uint32_t)scale[(size_t)(r / 32) * nb + i / 32] + 8) << 23);
+      const uint32_t *u = (const uint32_t *)&a;
+#pragma unroll
+      for (int j = 0; j < 4; j++) {
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+          uint32_t xx = __byte_perm(u[j], 0, h ? 0x4342 : 0x4140);
+          uint32_t f = ((xx & 0x00800080u) << 8) | ((xx & 0x007F007Fu) << 7);
+          float2 v = __half22float2(*(const __half2 *)&f);
+          wv[q][4 * j + 2 * h] = v.x;
+          wv[q][4 * j + 2 * h + 1] = v.y;
+        }
+      }
+    }
+#pragma unroll
+    for (int t = 0; t < MAXT; t++) {
+      if (t < T) {
+        const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+        float4 xv[4] = {xp[0], xp[1], xp[2], xp[3]};
+        const float *xf = (const float *)xv;
+#pragma unroll
+        for (int q = 0; q < FP8_ROWS; q++) {
+          float s = 0.f;
+#pragma unroll
+          for (int j = 0; j < 16; j++) s += wv[q][j] * xf[j];
+          acc[q][t] += d[q] * s;
+        }
+      }
+    }
+  }
+#pragma unroll
+  for (int q = 0; q < FP8_ROWS; q++)
+#pragma unroll
+    for (int t = 0; t < MAXT; t++) {
+      if (t < T) {
+        float s = warp_sum(acc[q][t]);
+        if (lane == 0 && r0 + q < rows) y[(size_t)t * ldy + r0 + q] = s;
+      }
+    }
 }
 
 extern "C" __global__ void gemv_bf16(const __nv_bfloat16 *__restrict__ w, const float *__restrict__ x, float *__restrict__ y,
@@ -2487,4 +2556,11 @@ extern "C" __global__ void fwht_rows_f16(__half *w, int cols) {
     __syncthreads();
   }
   w[i] = __float2half(fb[t] * 0.08838834764831845f);
+}
+
+// pointer chase (one thread): steps dependent loads through `next`, for DRAM load latency (tests/gpu_latency.rs)
+extern "C" __global__ void chase(const uint32_t *__restrict__ next, int steps, uint32_t *out) {
+  uint32_t i = 0;
+  for (int s = 0; s < steps; s++) i = __ldcg(next + i);
+  *out = i;
 }

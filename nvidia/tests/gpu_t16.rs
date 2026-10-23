@@ -165,9 +165,11 @@ fn t16_decode_speed() {
     let st_t16 = GpuExperts::build(&g, c, &t16m.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.0, up: &m.1, down: &m.2, gu: tgu, dn: tdn })).collect::<Vec<_>>(), true).unwrap();
     let st_iq = GpuExperts::build(&g, c, &iqm.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.2, up: &m.3, down: &m.4, gu: m.0, dn: m.1 })).collect::<Vec<_>>(), true).unwrap();
     let calls = 400;
-    let sels: Vec<Vec<i32>> = (0..calls).map(|i| (0..6).map(|j| ((i * 7 + j * 11) % 64) as i32).collect()).collect();
-    let x: Vec<f32> = (0..c.dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
-    let wts = vec![1.0f32 / 6.0; 6];
+    // T16_SPEED_T tokens a call (6 picks each, all distinct experts while 6 T <= 64): more warps per launch
+    let tt: usize = std::env::var("T16_SPEED_T").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let sels: Vec<Vec<i32>> = (0..calls).map(|i| (0..6 * tt).map(|j| ((i * 7 + j * 11) % 64) as i32).collect()).collect();
+    let x: Vec<f32> = (0..tt * c.dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+    let wts = vec![1.0f32 / 6.0; 6 * tt];
     let mut res: Vec<(&str, f64)> = vec![];
     for name in ["T16", "IQ", "IQ", "T16", "T16", "IQ"] {
         std::thread::sleep(std::time::Duration::from_secs(3));
@@ -176,11 +178,11 @@ fn t16_decode_speed() {
         g.htod_sync(st.wts.ptr, &wts).unwrap();
         let dsel: Vec<Buf> = sels.iter().map(|s| g.upload(s).unwrap()).collect();
         let ev = (g.timed_event().unwrap(), g.timed_event().unwrap());
-        st.run_device_fast(&g, 0, dsel[0].ptr, st.wts.ptr, 6, 1, st.x.ptr, st.out.ptr).unwrap();
+        st.run_device_fast(&g, 0, dsel[0].ptr, st.wts.ptr, 6, tt, st.x.ptr, st.out.ptr).unwrap();
         g.sync().unwrap();
         g.record(ev.0, false).unwrap();
         for s in &dsel {
-            st.run_device_fast(&g, 0, s.ptr, st.wts.ptr, 6, 1, st.x.ptr, st.out.ptr).unwrap();
+            st.run_device_fast(&g, 0, s.ptr, st.wts.ptr, 6, tt, st.x.ptr, st.out.ptr).unwrap();
         }
         g.record(ev.1, false).unwrap();
         g.sync().unwrap();
@@ -192,4 +194,42 @@ fn t16_decode_speed() {
         let v: Vec<f64> = res.iter().filter(|r| r.0 == n).map(|r| r.1).collect();
         println!("{n}: mean {:.1} us", v.iter().sum::<f64>() / v.len() as f64);
     }
+}
+
+/// Bit pattern of the T16 decode output (run_device_fast) over the three layouts and T = 1 / 2 / 4, as one hash per
+/// case: kernel restructurings must leave it unchanged (compare the printed hashes before and after).
+/// cargo test --release --features cuda --test gpu_t16 -- --nocapture t16_decode_bits
+#[test]
+fn t16_decode_bits() {
+    use dsx::experts::{ExpCfg, GpuExperts, RawExpert};
+    let g = Gpu::new(0).unwrap();
+    let c = ExpCfg { n_layers: 1, n_experts: 8, inter: 2304, dim: 5120, lim: 10.0, rot: 0 };
+    let mut all = 0xcbf2_9ce4_8422_2325u64;
+    for (gu, dn) in [(GType::T16K15, GType::T16K2), (GType::T16K2, GType::T16K25), (GType::T16K2, GType::T16K2)] {
+        let mut seed = 0x5eed_b175_0000_0001u64;
+        let mats: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..8)
+            .map(|_| (random_matrix(gu, c.dim, c.inter, &mut seed), random_matrix(gu, c.dim, c.inter, &mut seed), random_matrix(dn, c.inter, c.dim, &mut seed)))
+            .collect();
+        let items: Vec<((usize, usize), RawExpert)> = mats.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.0, up: &m.1, down: &m.2, gu, dn })).collect();
+        let st = GpuExperts::build(&g, c, &items, true).unwrap();
+        let k = 6;
+        for t in [1usize, 2, 4] {
+            let sel: Vec<i32> = (0..t * k).map(|j| ((j * 5 + j / k) % 8) as i32).collect();
+            let wts: Vec<f32> = (0..t * k).map(|_| 0.05 + (rng(&mut seed) % 100) as f32 * 0.003).collect();
+            let x: Vec<f32> = (0..t * c.dim).map(|_| (rng(&mut seed) % 2001) as f32 / 1000.0 - 1.0).collect();
+            g.htod_sync(st.sel.ptr, &sel).unwrap();
+            g.htod_sync(st.wts.ptr, &wts).unwrap();
+            g.htod_sync(st.x.ptr, &x).unwrap();
+            st.run_device_fast(&g, 0, st.sel.ptr, st.wts.ptr, k, t, st.x.ptr, st.out.ptr).unwrap();
+            let got: Vec<f32> = g.download(st.out.ptr, t * c.dim).unwrap();
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            for v in &got {
+                h = (h ^ v.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
+            }
+            all = (all ^ h).wrapping_mul(0x100_0000_01b3);
+            assert!(got.iter().any(|&v| v != 0.0) && got.iter().all(|v| v.is_finite()));
+            println!("T16 decode bits {gu:?}/{dn:?} T={t}: {h:016x}");
+        }
+    }
+    println!("T16 decode bits, all cases: {all:016x}");
 }
