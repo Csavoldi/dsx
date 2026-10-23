@@ -62,3 +62,17 @@ Measure each step on the box (beval KL, bbench / long-context benches), commit b
    more than they save.
 3. Expert kernels (9.4 ms at B=8): 59% VALU busy, 38% occupancy. Gains need fewer VALU ops per weight (codebook
    decode ~1.75 ops per weight, scales ~0.5 after packed math). No item yet that passes the budget rule.
+
+## Batch plan after rental 5 (2026-10-23 04:20 PT)
+
+- Item 2 revised budget: hc_mix_t is 1.01 ms in 83 launches (~12 us each), mostly a serial 20-iteration Sinkhorn on
+  one wave; folding it into hc_step's last block per token moves that work, it does not remove it. The attention/FFN
+  prep_t (80 launches, ~7 us each) is the better fold. Revised prediction for the fold: ~0.6 ms of 22 ms at B=8.
+  Confirming measurement first (amd/bench/launch_bench.hip): the eager per-launch floor on this stream. Build the
+  fold only if an empty / one-load small kernel costs >= 4 us per launch; below that, removing ~160 launches saves
+  < 0.5 ms (kill).
+- prep_t mode 0: the 80 partial sums were summed by a serial loop in every thread; now one load per lane and a wave
+  sum. Predicted ~2 us per launch (0.15 ms per step). Measure by interleaved kernel-reload A/B (bsweep B=1/8/12).
+- Cheaper expert decode: the 3-bit codebook loop is 171 VALU per 64 weights per lane (~96 unpacking the 3-bit
+  indices from bit planes, ~48 scales); field unpacking cannot go much below ~1.5 instructions per weight with VALU
+  bit operations, and MXFP4 is no cheaper (162 per 64, 30% more bytes). No format change passes the budget rule now.
