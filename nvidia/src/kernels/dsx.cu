@@ -1002,36 +1002,58 @@ __device__ __forceinline__ float e4m3_to_f32(uint8_t b) {
   float v = e ? ldexpf(1.f + m * 0.125f, e - 7) : ldexpf((float)m, -9);
   return (b & 0x80) ? -v : v;
 }
+// 4 rows per warp (16 per block of 128) sharing each x load; lane l takes 16 columns at l*16 + 512*i (k % 32 == 0).
+// e4m3 bits shifted into f16 (sign to bit 15, exponent + mantissa to bits 7..14) are the value times 2^-8,
+// subnormals included; the 2^8 goes into the block scale.
+#define FP8_ROWS 4
 extern "C" __global__ void gemv_fp8b32(const uint8_t *__restrict__ w, const float *__restrict__ x, float *__restrict__ y,
                                        int rows, int k, int T, int ldx, int ldy, const uint8_t *__restrict__ scale) {
-  int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
-  if (r >= rows) return;
+  int r0 = (blockIdx.x * 4 + (threadIdx.x >> 5)) * FP8_ROWS, lane = threadIdx.x & 31;
+  if (r0 >= rows) return;
   int nb = k / 32;
-  const uint8_t *wr = w + (size_t)r * k;
-  const uint8_t *sr = scale + (size_t)(r / 32) * nb;
-  float acc[MAXT] = {0};
-  for (int b = lane; b < nb; b += 32) {
-    float d = __uint_as_float((uint32_t)sr[b] << 23);
-    float wv[32];
-    uint4 a0 = *(const uint4 *)(wr + b * 32), a1 = *(const uint4 *)(wr + b * 32 + 16);
-    const uint8_t *p0 = (const uint8_t *)&a0, *p1 = (const uint8_t *)&a1;
+  float acc[FP8_ROWS][MAXT];
 #pragma unroll
-    for (int j = 0; j < 16; j++) { wv[j] = e4m3_to_f32(p0[j]); wv[16 + j] = e4m3_to_f32(p1[j]); }
-    for (int t = 0; t < T; t++) {
-      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + b * 32);
-      float s = 0.f;
+  for (int q = 0; q < FP8_ROWS; q++)
+    for (int t = 0; t < MAXT; t++) acc[q][t] = 0.f;
+  for (int i = lane * 16; i < k; i += 512) {
+    float wv[FP8_ROWS][16];
 #pragma unroll
-      for (int j = 0; j < 8; j++) {
-        float4 v = xp[j];
-        s += wv[4 * j] * v.x + wv[4 * j + 1] * v.y + wv[4 * j + 2] * v.z + wv[4 * j + 3] * v.w;
+    for (int q = 0; q < FP8_ROWS; q++) {
+      int r = min(r0 + q, rows - 1);
+      uint4 a = *(const uint4 *)(w + (size_t)r * k + i);
+      float d = __uint_as_float(((uint32_t)scale[(size_t)(r / 32) * nb + i / 32] + 8) << 23);
+      const uint32_t *u = (const uint32_t *)&a;
+#pragma unroll
+      for (int j = 0; j < 4; j++) {
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+          uint32_t xx = __byte_perm(u[j], 0, h ? 0x4342 : 0x4140);
+          uint32_t f = ((xx & 0x00800080u) << 8) | ((xx & 0x007F007Fu) << 7);
+          float2 v = __half22float2(*(const __half2 *)&f);
+          wv[q][4 * j + 2 * h] = v.x * d;
+          wv[q][4 * j + 2 * h + 1] = v.y * d;
+        }
       }
-      acc[t] += d * s;
+    }
+    for (int t = 0; t < T; t++) {
+      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+      float4 xv[4] = {xp[0], xp[1], xp[2], xp[3]};
+      const float *xf = (const float *)xv;
+#pragma unroll
+      for (int q = 0; q < FP8_ROWS; q++) {
+        float s = 0.f;
+#pragma unroll
+        for (int j = 0; j < 16; j++) s += wv[q][j] * xf[j];
+        acc[q][t] += s;
+      }
     }
   }
-  for (int t = 0; t < T; t++) {
-    float s = warp_sum(acc[t]);
-    if (lane == 0) y[(size_t)t * ldy + r] = s;
-  }
+#pragma unroll
+  for (int q = 0; q < FP8_ROWS; q++)
+    for (int t = 0; t < T; t++) {
+      float s = warp_sum(acc[q][t]);
+      if (lane == 0 && r0 + q < rows) y[(size_t)t * ldy + r0 + q] = s;
+    }
 }
 
 extern "C" __global__ void gemv_bf16(const __nv_bfloat16 *__restrict__ w, const float *__restrict__ x, float *__restrict__ y,
