@@ -1,0 +1,9 @@
+  03:45:58 +32.0°C GPU 46, 26.37 W 41, 36.17 W 
+== round 1 base
+error: unrecognized subcommand 'eval'
+  03:46:58 +31.0°C GPU 46, 26.64 W 40, 35.53 W 
+== round 1 new
+error: unrecognized subcommand 'eval'
+  03:47:58 +30.0°C GPU 46, 26.50 W 40, 35.46 W 
+== round 2 base
+error: unrecognized subcommand 'eval'

@@ -397,6 +397,37 @@ copies per token, half or more wasted).
   It misses the bar (KL change ≤ 0.001), so neither flag ships. The persistent gather alone gains 0.4-0.6%, at its kill line.
   The loader reports the FP8 conversion as exact, so the KL change likely comes from the kernel's arithmetic, which is still to be checked.
 
+## 9b. Decode levers in progress (2026-10-23 night, paused by lxe at 04:30 PT)
+
+Branch `small-kernels` (github, worktree ~/deepseek-quant-dev1) holds five decode changes on top of f1f53e4. None is
+on main or in production. Logs and scripts are in bench/results/2026-10-22-102 (win25-win29).
+
+**Where the token goes.** nsys of production decode (window 25: `nsys profile -t cuda`, gen 120 tokens after 300,
+defer 3; tracing costs 2%, 36.95 → 36.08 tok/s; split with bench/nsys_token_split.py) gives 26.9 ms per token (median),
+GPU0 busy 19.5 ms and idle 7.6 ms. The idle time is mostly the wait for the CPU's experts (3.2 ms between the shared
+expert and hc_add_post, 0.7 ms more before combine), 1.4 ms in ~1,630 launch gaps under 3 µs, and 0.65 ms between
+tokens. The between-token gap comes from host work: the pageable logits copy ~50 µs, argmax ~35 µs, adapt_step
+~340 µs (8 commits, a 155 µs candidate scan and sort, 8 swap launches), and ~170 µs before GPU0's first kernel
+(embedding, two synchronous uploads, enqueue_aux for GPU1's whole token). The LM head GEMV takes 0.82 ms (Q8_0,
+703 MB at 853 GB/s, floor 0.75 ms). q_b runs at 766 GB/s, o_b at 810, the shared expert's gate/up at ~715 and down at ~830.
+
+| lever | change | 3090 measurement | state |
+|---|---|---|---|
+| 4 | hc_pre + rmsnorm in one launch (`hc_pre_norm`: 5 blocks, each recomputes the sum in rmsnorm's order) | 6.25 → 4.6 µs per call, 81 per token (bench/hc_fuse.cu) | bit-identical in production (eval --decode with DSX_ADAPT=0: KL 0.160876 for base and new) |
+| 4 | rope split across heads (grid y) | 3.95 → 1.97 µs per launch, 93 per token | bit-identical (same check) |
+| 4b | hc mixes (hc_part + hc_reduce_finish) on a third GPU0 stream beside attention / MoE, joined before the next h write or mix read | in the window 27 trace with 4 + 4b + 7a: GPU0 busy 19.49 → 18.29 ms/token, token median 26.90 → 25.87 ms (the CPU took 20.3% vs 20.6% of picks in the two traced runs) | bit-identical (same check); speed not yet measured teacher-forced |
+| 7a | adapt_step before the logits sync, its on_cpu flags applied after it | between-token gap 0.65 → 0.25 ms | **hurts residency**: untraced gen CPU share 22.9% → 26.2% (CPU busy 14.0 → 16.4 ms/token, tok/s equal at 36.7); teacher-forced KL 0.151 → 0.158-0.162 (base with DSX_ADAPT=0: 0.161). Commits now run ~1 ms earlier, before last token's copies finish, and the scores miss the current token's late layers. Rework: keep commit_ready after the sync and move only the scan and begin_swap before it, or make the scan cheaper and keep it where it was |
+| 7b | enqueue GPU1's token after GPU0's layer-0 attention (was before layer 0) | ~0.15 ms of the gap (trace) | built, not run on .102 |
+| 4c | router_topk + publish_route in one launch (`router_publish`: 384 threads score, the same warp selection) | 5090: 8.50 → 3.62 µs per layer, 300 random tokens bit-identical (bench/router_fuse.cu); 3090 not measured | built, not run on .102 |
+
+To resume: build each arm with `CUDA_ARCHS=86 cargo build --release -p dsx --features cuda` in its own target dir (the
+GPU code compiles only with `--features cuda`, and git-archive trees fool a shared target dir), check md5s and new
+symbols, then run bench/results/2026-10-22-102/win28.sh: a teacher-forced A/B of base / A (7a + 4) / B (+ 4b) /
+C (+ 7b + 4c), all with the eval timing print, then a DSX_ADAPT=0 exactness pair and nsys. Drop or rework 7a before
+anything ships. Kill criteria: 4 + 4b + 4c below 0.4 ms/token teacher-forced, or any KL change with DSX_ADAPT=0.
+Dev 4's lever 5 (T16 GEMV restructure, branches t16-inflight / window-dev4) and E1 with the bit-identical
+gemv_fp8b32_o (engram-fp8 29a4506) are recorded in docs/budget-102.md section 8 on Dev 4's budget-102 branch.
+
 ## 10. Open problems
 
 - Quality per byte: KL 0.373 at 148 GB against Unsloth's 0.361 at ~122 GB (codebook formats, more bits in late layers

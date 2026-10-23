@@ -1,0 +1,10 @@
+untraced: decode 120 tokens in 3.25 s (36.95 tok/s); CPU experts busy 13.6 ms/token, 22.9% of picks on the CPU; 
+traced: decode 120 tokens in 3.33 s (36.08 tok/s); CPU experts busy 12.4 ms/token, 20.3% of picks on the CPU; 
+[1/1] [0%                          ] dec7.nsys-rep[1/1] [0%                          ] dec7.nsys-rep[1/1] [1%                          ] dec7.nsys-rep[1/1] [2%                          ] dec7.nsys-rep[1/1] [5%                          ] dec7.nsys-rep[1/1] [6%                          ] dec7.nsys-rep[1/1] [7%                          ] dec7.nsys-rep[1/1] [8%                          ] dec7.nsys-rep[1/1] [9%                          ] dec7.nsys-rep[1/1] [10%                         ] dec7.nsys-rep[1/1] [11%                         ] dec7.nsys-rep[1/1] [12%                         ] dec7.nsys-rep[1/1] [13%                         ] dec7.nsys-rep[1/1] [14%                         ] dec7.nsys-rep[1/1] [=15%                        ] dec7.nsys-rep[1/1] [=16%                        ] dec7.nsys-rep[1/1] [=17%                        ] dec7.nsys-rep[1/1] [==18%                       ] dec7.nsys-rep[1/1] [==19%                       ] dec7.nsys-rep[1/1] [==20%                       ] dec7.nsys-rep[1/1] [=======================93%  ] dec7.nsys-rep[1/1] [=======================96%  ] dec7.nsys-rep[1/1] [========================98% ] dec7.nsys-rep[1/1] [========================100%] dec7.nsys-rep[1/1] [========================100%] dec7.nsys-rep
+Generated:
+	/tmp/dec7.nsys-rep
+-rw-rw-r-- 1 lxe lxe 30008890 Oct 23 03:33 /tmp/dec7.nsys-rep
+-rw-rw-r-- 1 lxe lxe     2845 Oct 23 03:33 /tmp/dec7.out
+-rw-r--r-- 1 lxe lxe 77221888 Oct 23 03:33 /tmp/dec7.sqlite
+2026-10-23 01:50:31 STOP: CPU 97C
+WIN25-DONE Fri Oct 23 03:33:27 AM PDT 2026
