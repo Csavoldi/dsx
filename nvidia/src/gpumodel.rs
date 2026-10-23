@@ -569,7 +569,9 @@ impl<'m> GpuModel<'m> {
                 .unwrap_or(0);
             if !sets[0].is_empty() {
                 let mut s0 = crate::experts::GpuExperts::new(&gm.g, m, &sets[0])?;
-                s0.enable_swaps(&gm.g, gm.adapt, max_raw)?;
+                // twice the per-token swaps in flight: replacements start before a token's sync and finish (commit) after
+                // the next token's, so a stage is busy for two tokens
+                s0.enable_swaps(&gm.g, 2 * gm.adapt, max_raw)?;
                 gm.exp0 = Some(s0);
             }
             let mut msg = format!("experts resident: GPU{ordinal} {} ({:.1} GB)", sets[0].len(), gm.exp0.as_ref().map_or(0, |x| x.bytes) as f64 / 1e9);
@@ -582,7 +584,7 @@ impl<'m> GpuModel<'m> {
                 if adaptive {
                     // DSX_ADAPT_AUX: in-flight replacements on aux GPUs (default DSX_ADAPT)
                     let n = std::env::var("DSX_ADAPT_AUX").ok().and_then(|v| v.parse().ok()).unwrap_or(gm.adapt);
-                    exp.enable_swaps(&ga, n, max_raw)?;
+                    exp.enable_swaps(&ga, 2 * n, max_raw)?;
                 }
                 let pre = if pl.prefill_chunk > 0 { Some(prefill::AuxPrefill::new(&ga, m, pl.prefill_chunk, stream, bw)?) } else { None };
                 msg += &format!(", GPU{} {} ({:.1} GB, {}{}, {bw:.1} GB/s link)", ga.ordinal, set.len(), exp.bytes as f64 / 1e9, if adaptive { "adaptive" } else { "static" }, if stream { ", streams prefill experts" } else { "" });
@@ -828,28 +830,21 @@ impl<'m> GpuModel<'m> {
     /// The GPUs and the CPU worker are idle here (step downloaded the logits). An expert is computed by exactly one
     /// side in every token: the CPU stops at commit, starts again at eviction.
     /// Runs after the token's last launch and before its sync, while GPU0 still computes the last layer and the head:
-    /// GPU work it queues follows the token, and its on_cpu changes go to `adapt_flags` for after the sync.
+    /// picks replacements and starts them (their copies wait for the token on the side stream); the victims' on_cpu flags
+    /// go to `adapt_flags` for after the sync. Finished replacements are committed after the sync (`adapt_commit`).
     fn adapt_step(&mut self) -> Result<()> {
         let ne = self.m.cfg.n_experts;
         let (Some(w), Some(arena)) = (self.worker.as_ref(), self.arena) else { return Ok(()) };
         let flags = &mut self.adapt_flags;
         let mut stores: Vec<(&Gpu, &mut crate::experts::GpuExperts)> =
             self.exp0.as_mut().map(|s| (&self.g, s)).into_iter().chain(self.aux.iter_mut().filter(|a| a.adaptive).map(|a| (&a.g, &mut a.exp))).collect();
-        // committed now, still flagged on the CPU until the flags apply: not candidates
-        let mut committed = std::collections::HashSet::new();
-        for (g, s) in stores.iter_mut() {
-            for (l, e) in s.commit_ready(g, false)? {
-                flags.push((l * ne + e, false));
-                committed.insert((l, e));
-            }
-        }
-        let room: usize = stores.iter().map(|(_, s)| s.swap_room()).sum();
+        // at most `adapt` new replacements per token (the stages hold two tokens' worth)
+        let room: usize = stores.iter().map(|(_, s)| s.swap_room()).sum::<usize>().min(self.adapt);
         if room == 0 {
             return Ok(());
         }
         let sc = |l: usize, e: usize| f32::from_bits(w.score[l * ne + e].load(std::sync::atomic::Ordering::Relaxed));
-        let mut pending: std::collections::HashSet<(usize, usize)> = stores.iter().flat_map(|(_, s)| s.pending()).collect();
-        pending.extend(committed);
+        let pending: std::collections::HashSet<(usize, usize)> = stores.iter().flat_map(|(_, s)| s.pending()).collect();
         let mut cand: Vec<(f32, usize, usize)> = (0..w.score.len())
             .filter_map(|i| {
                 let (l, e) = (i / ne, i % ne);
@@ -899,6 +894,20 @@ impl<'m> GpuModel<'m> {
             started += 1;
             self.adapt_swaps += 1;
         }
+        Ok(())
+    }
+
+    /// After a token's sync: make finished replacements resident (table writes precede the next token's kernels)
+    fn adapt_commit(&mut self) -> Result<()> {
+        let ne = self.m.cfg.n_experts;
+        let Some(w) = self.worker.as_ref() else { return Ok(()) };
+        let stores = self.exp0.as_mut().map(|s| (&self.g, s)).into_iter().chain(self.aux.iter_mut().filter(|a| a.adaptive).map(|a| (&a.g, &mut a.exp)));
+        for (g, s) in stores {
+            for (l, e) in s.commit_ready(g, false)? {
+                w.on_cpu[l * ne + e].store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        self.g.bind();
         Ok(())
     }
 
@@ -1540,19 +1549,29 @@ impl<'m> GpuModel<'m> {
 
     pub fn step(&mut self, token: u32) -> Result<Vec<f32>> {
         let t_step = std::time::Instant::now();
+        // DSX_ADAPT_EARLY=0: the whole adapt step after the sync, as before (A/B switch)
+        let early = std::env::var("DSX_ADAPT_EARLY").map_or(true, |v| v != "0");
         let r = self.step_inner(token).and_then(|()| {
-            if self.adapt > 0 {
-                let t = std::time::Instant::now();
+            let t = std::time::Instant::now();
+            if self.adapt > 0 && early {
                 self.adapt_step()?;
-                self.adapt_s += t.elapsed().as_secs_f64();
             }
-            let l = self.g.download::<f32>(self.logits.ptr, self.m.cfg.vocab);
+            self.adapt_s += t.elapsed().as_secs_f64();
+            let l = self.g.download::<f32>(self.logits.ptr, self.m.cfg.vocab)?;
+            let t = std::time::Instant::now();
+            if self.adapt > 0 {
+                self.adapt_commit()?;
+                if !early {
+                    self.adapt_step()?;
+                }
+            }
             if let Some(w) = self.worker.as_ref() {
                 for (i, v) in self.adapt_flags.drain(..) {
                     w.on_cpu[i].store(v, std::sync::atomic::Ordering::Relaxed);
                 }
             }
-            l
+            self.adapt_s += t.elapsed().as_secs_f64();
+            Ok(l)
         });
         if let Ok(l) = &r {
             if l.iter().any(|v| !v.is_finite()) && !self.warned_nan {
@@ -1619,6 +1638,12 @@ impl<'m> GpuModel<'m> {
         // GPU1's work for the token is enqueued after GPU0's layer-0 attention (below): it cannot start before layer 0's
         // router publishes, and enqueueing it first (~0.15 ms of host calls) kept GPU0 idle at the token's start
         let mut aux_pending = self.worker.is_some() && !self.skip_experts;
+        // DSX_AUX_LATE=0: enqueue GPU1's token first, as before (A/B switch)
+        if aux_pending && std::env::var("DSX_AUX_LATE").is_ok_and(|v| v == "0") {
+            aux_pending = false;
+            self.enqueue_aux(1)?;
+            self.g.bind();
+        }
         // Engram rows on a helper thread while layer 0 (no engram) is enqueued and runs
         let mut prefetch = {
             let ms: &'static Model = unsafe { std::mem::transmute::<&Model, &'static Model>(m) };
