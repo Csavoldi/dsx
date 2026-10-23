@@ -129,6 +129,8 @@ impl Telemetry {
         let t = self.now();
         let mut s = self.s.lock().unwrap();
         s.finished.push((id.to_string(), generated, tok_s, t));
+        // drop it from the live list now (the list is otherwise only refreshed by the next step)
+        s.sessions.retain(|x| x.id != id);
         let n = s.finished.len();
         if n > 50 {
             s.finished.drain(..n - 50);
