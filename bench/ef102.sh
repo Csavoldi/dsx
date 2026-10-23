@@ -7,7 +7,9 @@
 #        fp8-same  DSX_ENGRAM_FP8=1, --main-gb $MAIN_GB - 0.63: GPU0 keeps the f16 arm's expert count (kernel effect)
 #        fp8       DSX_ENGRAM_FP8=1, --main-gb $MAIN_GB: the freed ~630 MB goes to GPU0 experts (kernel + placement)
 #      then one DSX_PROF=1 run per engram setting for the "engram" section
-#   2. quality: `dsx eval --decode --seqs 2`, DSX_ENGRAM_FP8 0 vs 1 (same weights, only GEMV summation order differs)
+#   2. quality: `dsx eval --decode --seqs 2`, DSX_ENGRAM_FP8 0 vs 1 (same weights, only GEMV summation order differs),
+#      at DSX_CPU_THREADS=8 after a 60 s cool-down: a decode eval is a long all-core CPU-expert load that otherwise
+#      reaches 96-97 C (the CPU kernels are bit-exact at any thread count, so KL is unchanged)
 # 25 s pauses with the package and GPU temperatures between runs (.102's watchdog stops ds41 scopes at >= 95 C).
 # GEN_ARGS: your usual `dsx gen` arguments for the 3K agent prompt and ~400 decode tokens, WITHOUT --main-gb/--gpu0-gb
 # (MAIN_GB, default -1.5 = dsx's default headroom, sets it); EVAL_ARGS: `dsx eval` arguments for the Lucebox eval:
@@ -46,8 +48,9 @@ for f in 0 1; do
 done
 if [ -n "$EVAL_ARGS" ]; then
   for f in 0 1; do
-    echo "== eval --decode --seqs 2, DSX_ENGRAM_FP8=$f"
-    env DSX_ENGRAM_FP8=$f $B eval $EVAL_ARGS --decode --seqs 2 2>&1 | grep -E "^engram|KL|kl|top|ppl|perplex|rror|panic" | tail -8
+    sleep 35; cool
+    echo "== eval --decode --seqs 2, DSX_ENGRAM_FP8=$f, DSX_CPU_THREADS=8"
+    env DSX_CPU_THREADS=8 DSX_ENGRAM_FP8=$f $B eval $EVAL_ARGS --decode --seqs 2 2>&1 | grep -E "^engram|KL|kl|top|ppl|perplex|rror|panic" | tail -8
     cool
   done
 fi
