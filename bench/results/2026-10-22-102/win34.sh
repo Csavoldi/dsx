@@ -1,13 +1,14 @@
 #!/bin/bash
-# Attention epilogue / q_b RoPE fusion (DSX_FUSE3) and the kv / compressor / indexer branch on the par stream
-# (DSX_PAR_ATTN), cumulative arms from one binary. Binaries (CUDA_ARCHS=86 --features cuda, own target dirs, eval tok/s
-# print): base = f1f53e4 (/tmp/dsx-sk-base); h5 = 3388c62 (/tmp/dsx-sk-h5). Arms: base; X = h5 DSX_FUSE3=0
-# DSX_PAR_ATTN=0 (window 33's F2); Y = h5 DSX_PAR_ATTN=0; Z = h5. eval --decode 1 seq x 1023 steps, defer 3, adapt 8,
-# 2 interleaved rounds; DSX_ADAPT=0 base vs Z (KL must be equal); gen 120 after 300 base / Z x2; nsys of Z.
-# Predicted: Y over X -0.3 ms/token, Z over Y -0.4..-0.6 ms (kill each < 0.1 ms).
+# Attention epilogue / q_b RoPE fusion (DSX_FUSE3), the kv / compressor / indexer branch on the par stream
+# (DSX_PAR_ATTN) and the closing hc_post fusions (DSX_FUSE4), cumulative arms from one binary. Binaries (CUDA_ARCHS=86
+# --features cuda, own target dirs, eval tok/s print): base = f1f53e4 (/tmp/dsx-sk-base); h5 = 2c5cd67 (/tmp/dsx-sk-h5).
+# Arms: base; X = h5 DSX_FUSE3=0 DSX_PAR_ATTN=0 DSX_FUSE4=0 (window 33's F2); Y = + fuse3; Z = + par_attn; W = h5
+# (+ fuse4). eval --decode 1 seq x 1023 steps, defer 3, adapt 8, 2 interleaved rounds; DSX_ADAPT=0 base vs W (KL must
+# be equal); gen 120 after 300 base / W x2; nsys of W. Predicted: Y -0.3 ms/token, Z -0.4..-0.6 ms, W -0.2 ms over the
+# previous arm (kill each < 0.1 ms).
 cd ~/ai/ds41
 [ -e GPU_LOCK ] && { echo "locked: $(cat GPU_LOCK)"; exit 1; }
-echo "DSX Dev 1: fuse3 / par_attn teacher-forced A/B (base / X / Y / Z), serve stopped (~40 min) $(date)" > GPU_LOCK
+echo "DSX Dev 1: fuse3 / par_attn / fuse4 teacher-forced A/B (base / X / Y / Z / W), serve stopped (~50 min) $(date)" > GPU_LOCK
 trap "rm -f ~/ai/ds41/GPU_LOCK" EXIT
 pid=$(pgrep -x dsx-server); [ -n "$pid" ] && kill $pid; while [ -n "$pid" ] && kill -0 $pid 2>/dev/null; do sleep 1; done
 tmux kill-session -t serve 2>/dev/null; systemctl --user reset-failed ds41-serve.scope 2>/dev/null
@@ -21,19 +22,20 @@ run() { # label env binary
 }
 for r in 1 2; do
   run "round $r base" "" base
-  run "round $r X" "DSX_FUSE3=0 DSX_PAR_ATTN=0" h5
-  run "round $r Y" "DSX_PAR_ATTN=0" h5
-  run "round $r Z" "" h5
+  run "round $r X" "DSX_FUSE3=0 DSX_PAR_ATTN=0 DSX_FUSE4=0" h5
+  run "round $r Y" "DSX_PAR_ATTN=0 DSX_FUSE4=0" h5
+  run "round $r Z" "DSX_FUSE4=0" h5
+  run "round $r W" "" h5
 done
 run "adapt 0 base" "DSX_ADAPT=0" base
-run "adapt 0 Z" "DSX_ADAPT=0" h5
+run "adapt 0 W" "DSX_ADAPT=0" h5
 P="--ctx 32768 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 --arena-gb 104 --rank calib/rank.json"
 for b in base h5 base h5; do sleep 40
   echo "gen $b: $(DSX_DEFER=3 /tmp/dsx-sk-$b gen --model $M --ids @prompt300.ids -n 120 $P 2>&1 | grep -E "^decode|rror|panic")"
 done
 sleep 40; rm -f /tmp/dec15.*
 DSX_DEFER=3 /usr/local/bin/nsys profile -t cuda --sample=none --cpuctxsw=none -o /tmp/dec15 /tmp/dsx-sk-h5 gen --model $M --ids @prompt300.ids -n 120 $P > /tmp/dec15.out 2>&1
-echo "traced Z: $(grep -E "^decode" /tmp/dec15.out)"; grep -iE "rror|panic" /tmp/dec15.out | head -3
+echo "traced W: $(grep -E "^decode" /tmp/dec15.out)"; grep -iE "rror|panic" /tmp/dec15.out | head -3
 /usr/local/bin/nsys export --type sqlite -o /tmp/dec15.sqlite /tmp/dec15.nsys-rep > /dev/null 2>&1; ls -la /tmp/dec15.sqlite
 grep STOP watchdog.log | tail -1
 systemctl --user reset-failed ds41-serve.scope 2>/dev/null
