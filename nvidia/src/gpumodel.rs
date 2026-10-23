@@ -182,7 +182,7 @@ pub struct GpuModel<'m> {
     fuse2: bool,
     /// one token: attention merge + inverse RoPE + fake FP8 in one launch (DSX_FUSE3=0: separate)
     fuse3: bool,
-    /// one token: the sublayers' closing hc_post inside o_b's GEMV and combine_post (DSX_FUSE4=0: separate)
+    /// one token: the sublayers' closing hc_post inside o_b's GEMV and combine_post (DSX_FUSE4=1; off by default)
     fuse4: bool,
     post_attn_done: bool,
     post_ffn_done: bool,
@@ -454,7 +454,8 @@ impl<'m> GpuModel<'m> {
             hc_join: g.event()?,
             attn_fork: g.event()?,
             attn_join: g.event()?,
-            par_attn: std::env::var("DSX_PAR_ATTN").map_or(true, |v| v != "0"),
+            // window 34: +0.04 ms/token (36.01 -> 36.05 tok/s teacher-forced), under the 0.1 ms bar: opt-in
+            par_attn: std::env::var("DSX_PAR_ATTN").is_ok_and(|v| v == "1"),
             tmp: fz(1 << 18)?,
             tmp2: fz(32768)?,
             iq: fz(c.idx_heads * c.idx_dim)?,
@@ -487,7 +488,8 @@ impl<'m> GpuModel<'m> {
             combine_fused: std::env::var("DSX_COMBINE_FUSED").map_or(true, |v| v != "0"),
             fuse2: std::env::var("DSX_FUSE2").map_or(true, |v| v != "0"),
             fuse3: std::env::var("DSX_FUSE3").map_or(true, |v| v != "0"),
-            fuse4: std::env::var("DSX_FUSE4").map_or(true, |v| v != "0"),
+            // window 34: 36.05 -> 36.03 tok/s teacher-forced (no gain): opt-in
+            fuse4: std::env::var("DSX_FUSE4").is_ok_and(|v| v == "1"),
             post_attn_done: false,
             post_ffn_done: false,
             warned_nan: false,
