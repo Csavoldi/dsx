@@ -321,8 +321,14 @@ both GPUs wait (`DSX_PROF`), next to ~2.8 s of attention.
   draft's expected acceptance on a 2-bit model it would gain ~0-5% at best; it pays where every expert sits in GPU
   memory (1.2-1.7x on the MI325X build, [FINDINGS-AMD.md](FINDINGS-AMD.md)).
 - **Routing bias toward VRAM-resident experts.** +4 tok/s at a bias of 0.2, for 2 points of top-1. Off by default.
-- **EXL2 / EXL3.** ExLlama keeps all weights in VRAM and has no RAM tier. EXL3's trellis codes would improve quality per
-  bit for GPU-resident experts, but decoding them on the CPU is likely compute-bound.
+- **EXL3's own codebook (mul1) instead of T16.** Measured 2026-10-22 on .102 with mul1 twins of dsx's T16 kernels (same
+  bit streams, tiles and fusion; only the codebook differs; bench/t16_mul1_gemv.cu, cpubench `t16` with
+  DSX_T16_CODEBOOK=mul1). CPU, ms per 6-expert call at 14 threads, T16 vs mul1: K 1.5 1.16 vs 1.98, K 2 1.37 vs 2.02,
+  K 2.5 1.67 vs 2.21 (T16 32-71% faster; mul1 tops out at 20-30 GB/s, below RAM speed; one P-core 4.3-5.1 vs 2.4-2.9
+  weights per clock). ExLlamaV3's own CPU MoE kernel (AVX2 tier here, since it has no AVX-VNNI path): 3.65 / 2.09 /
+  2.94 ms. GPU decode GEMV (RTX 3090, 6 experts, gate + up + down): 100 / 107 / 126 µs vs the better of two mul1
+  kernels 149 / 135 / 162 µs (T16 26-48% faster): mul1 needs a dp4a per weight and a 16-bit mask per window where T16
+  packs two products into one dp4a. ExLlamaV3 has had CPU offload of MoE experts since July 2026 (moe_mul1.cpp).
 - **Experts on disk.** Each token needs ~2 GB of expert weights; serving 10% of it from a 6 GB/s drive adds ~30 ms.
 - **Swapping on the x4 GPU** (`DSX_AUX_ADAPTIVE=1`). Decode on a 3K agent prompt 28.8 → 31.0 tok/s, on prose 29.1 →
   22.0: evictable experts need RAM copies, GPU1's 23 GB of them push ~2,200 cold experts out of the arena onto disk.

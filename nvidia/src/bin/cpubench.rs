@@ -133,8 +133,14 @@ fn t16_bench(nexp: usize, rng: &mut Rng) {
         ("UD IQ mix", make(&[(Iq1S, Iq2Xxs), (Iq2Xxs, Iq2Xs), (Iq1S, Iq2S), (Iq2Xxs, Iq2Xxs), (Iq2Xs, Iq2S), (Iq1S, Iq2Xs)], nexp, rng)),
         ("T16 1.5/2", (0..nexp).map(|_| t16_ex(T16K15, T16K2, rng)).collect()),
         ("T16 2/2.5", (0..nexp).map(|_| t16_ex(T16K2, T16K25, rng)).collect()),
+        ("K1.5", (0..nexp).map(|_| t16_ex(T16K15, T16K15, rng)).collect()),
+        ("K2", (0..nexp).map(|_| t16_ex(T16K2, T16K2, rng)).collect()),
+        ("K2.5", (0..nexp).map(|_| t16_ex(T16K25, T16K25, rng)).collect()),
     ];
-    for th in [8usize, 14, 16] {
+    // DSX_T16_CODEBOOK=mul1 runs the T16 sets with EXL3's mul1 codebook (same streams); CPUB_THREADS="1,14"
+    println!("codebook: {}", if dsx::cpu::t16k::mul1() { "mul1" } else { "T16" });
+    let ths: Vec<usize> = std::env::var("CPUB_THREADS").unwrap_or("8,14,16".into()).split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    for th in ths {
         let mut moe = CpuMoe::new(Pool::new(&cpus(th), Duration::from_millis(5)));
         let mut line = format!("{th:2} threads:");
         for round in 0..2 {

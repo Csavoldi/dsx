@@ -15,11 +15,25 @@ use half::f16;
 pub const C_B: f32 = 0.009567260742;
 pub const C_0: f32 = 2.4375;
 
+/// EXL3's stock "mul1" codebook on the same bit streams, for speed comparisons only (DSX_T16_CODEBOOK=mul1, read
+/// once): x = state * 0x83DCD12D (u32), b4 = sum of x's 4 bytes, value fp16(fma(fp16(1024 + b4), 0x1eee, 0xc931)) =
+/// 0.006767272949 b4 - 3.453125 (taken as exactly affine here, like T16's)
+pub const M1_MUL: u32 = 0x83DC_D12D;
+pub const M1_CB: f32 = 0.006767272949;
+pub const M1_C0: f32 = 3.453125;
+
+pub fn mul1() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var("DSX_T16_CODEBOOK").is_ok_and(|v| v == "mul1"))
+}
+
 /// int8 activations of one matrix input as pair words: x4[i / 2] = bytes [q_i, q_i, q_i+1, q_i+1] for even i, so one
 /// vpdpbusd of two windows' product bytes [lo_i hi_i lo_i+1 hi_i+1] gives q_i b_i + q_i+1 b_i+1; d / s per 256 inputs
 #[derive(Default, Clone)]
 pub struct Act {
     pub x4: Vec<i32>,
+    /// mul1 only: x1[i] = bytes [q_i q_i q_i q_i]
+    pub x1: Vec<i32>,
     pub d: Vec<f32>,
     pub s: Vec<i32>,
 }
@@ -50,6 +64,11 @@ pub fn prep_group(x: &[f32], suh: &[u8], gr: usize, a: &mut Act) {
         sum += q0 + q1;
         let (b0, b1) = ((q0 & 255) as u32, (q1 & 255) as u32);
         a.x4[128 * gr + i / 2] = (b0 | b0 << 8 | b1 << 16 | b1 << 24) as i32;
+        if mul1() {
+            // sized by the caller (groups of one Act are prepped by several threads at once)
+            a.x1[256 * gr + i] = (b0 * 0x0101_0101) as i32;
+            a.x1[256 * gr + i + 1] = (b1 * 0x0101_0101) as i32;
+        }
     }
     a.d[gr] = m / 127.0;
     a.s[gr] = sum;
@@ -57,6 +76,9 @@ pub fn prep_group(x: &[f32], suh: &[u8], gr: usize, a: &mut Act) {
 
 pub fn prep(x: &[f32], suh: &[u8], k: usize, a: &mut Act) {
     a.x4.resize(k / 2, 0);
+    if mul1() {
+        a.x1.resize(k, 0);
+    }
     a.d.resize(k / 256, 0.0);
     a.s.resize(k / 256, 0);
     for gr in 0..k / 256 {
@@ -78,6 +100,15 @@ fn hend(k2: usize, t: usize) -> usize {
 
 /// raw outputs of tile columns nb0..nb1 into out[(nb - nb0) * 16 ..]: per 256-group d (C_B acc - C_0 s)
 pub fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
+    if mul1() {
+        return match isa() {
+            #[cfg(target_arch = "x86_64")]
+            Isa::Vnni => unsafe { vnni::gemv_m1(m, k2, k, n, a, nb0, nb1, out) },
+            #[cfg(target_arch = "x86_64")]
+            Isa::Vnni512 => unsafe { vnni512::gemv_m1(m, k2, k, n, a, nb0, nb1, out) },
+            _ => gemv_scalar_m1(m, k2, k, n, a, nb0, nb1, out),
+        };
+    }
     match isa() {
         #[cfg(target_arch = "x86_64")]
         Isa::Vnni => unsafe { vnni::gemv(m, k2, k, n, a, nb0, nb1, out) },
@@ -110,6 +141,31 @@ pub fn gemv_scalar(m: &[u8], k2: usize, k: usize, _n: usize, a: &Act, nb0: usize
         }
     }
     let _ = hend;
+}
+
+/// gemv_scalar with the mul1 codebook (reference for gemv_m1)
+pub fn gemv_scalar_m1(m: &[u8], k2: usize, k: usize, _n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
+    let (kt, tb) = (k / 16, t16::tile_bytes(k2));
+    for nb in nb0..nb1 {
+        for c in 0..16 {
+            let mut f = 0f32;
+            for gr in 0..k / 256 {
+                let mut acc = 0i64;
+                for kb in 16 * gr..16 * gr + 16 {
+                    let tile = &m[(nb * kt + kb) * tb..][..tb];
+                    for r in 0..16 {
+                        let x = (t16::state(tile, k2, 16 * c + r) as u32).wrapping_mul(M1_MUL);
+                        let b4 = (x & 0xFF) + (x >> 8 & 0xFF) + (x >> 16 & 0xFF) + (x >> 24);
+                        let q = (a.x4[8 * kb + r / 2] >> (16 * (r % 2))) as i8;
+                        acc += b4 as i64 * q as i64;
+                    }
+                }
+                // fused like the SIMD epilogue, so the two agree bit for bit
+                f = a.d[gr].mul_add(M1_CB.mul_add(acc as f32, -(M1_C0 * a.s[gr] as f32)), f);
+            }
+            out[(nb - nb0) * 16 + c] = f;
+        }
+    }
 }
 
 /// per K2: for each of the 4 views (lo cols 0-7, lo 8-15, hi 0-7, hi 8-15) and 128-bit half (4 columns): one or two
@@ -193,6 +249,23 @@ macro_rules! tile {
     }};
 }
 
+// mul1: one window per 32-bit lane (window j = the view shifted right by o_j = end(15) - end(j), masked to 16 bits),
+// vpmulld by 0x83DCD12D, vpdpbusd of the product's 4 bytes with [q_j q_j q_j q_j]: 8 weights per multiply and dot
+macro_rules! tile_m1 {
+    ($t:ident, $p:ident, $msk:ident, $x1:ident, $kb:ident, $a0:ident, $a1:ident, $mul:ident, $m16:ident; $($j:literal: ($k:ident $($o:literal)?)),*) => {{
+        let l0 = view($t, $p, &$msk, 0);
+        let l1 = view($t, $p, &$msk, 1);
+        let h0 = view($t, $p, &$msk, 2);
+        let h1 = view($t, $p, &$msk, 3);
+        $(
+            let xq = _mm256_set1_epi32(*$x1.get_unchecked(16 * $kb + $j));
+            let w0 = _mm256_and_si256(sh!(l0, h0, $k $($o)?), $m16);
+            let w1 = _mm256_and_si256(sh!(l1, h1, $k $($o)?), $m16);
+            $a0 = dp($a0, _mm256_mullo_epi32(w0, $mul), xq);
+            $a1 = dp($a1, _mm256_mullo_epi32(w1, $mul), xq);
+        )*
+    }};
+}
 
 macro_rules! t16_kernels {
     ($m:ident, $feat:literal, |$s:ident, $a:ident, $b:ident| $dp:expr) => {
@@ -292,6 +365,49 @@ macro_rules! t16_kernels {
                     }
                 }
             }
+
+            #[target_feature(enable = $feat)]
+            pub(super) unsafe fn gemv_m1(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
+                unsafe {
+                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.x1.len() >= k);
+                    let p = &plans()[k2 - 3];
+                    let mut msk = [[[_mm_setzero_si128(); 2]; 2]; 4];
+                    for v in 0..4 {
+                        for hh in 0..2 {
+                            for q in 0..2 {
+                                msk[v][hh][q] = _mm_loadu_si128(p.mask[v][hh][q].as_ptr() as *const __m128i);
+                            }
+                        }
+                    }
+                    let (kt, tb) = (k / 16, 16 * k2);
+                    let mul = _mm256_set1_epi32(M1_MUL as i32);
+                    let m16 = _mm256_set1_epi32(0xFFFF);
+                    let x1 = &a.x1[..];
+                    for nb in nb0..nb1 {
+                        let (mut f0, mut f1) = (_mm256_setzero_ps(), _mm256_setzero_ps());
+                        let col = m.as_ptr().add(nb * kt * tb);
+                        for gr in 0..k / 256 {
+                            let (mut a0, mut a1) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+                            for kb in 16 * gr..16 * gr + 16 {
+                                let t = col.add(kb * tb);
+                                match k2 {
+                                    3 => tile_m1!(t, p, msk, x1, kb, a0, a1, mul, m16; 0: (lo 23), 1: (lo 21), 2: (lo 20), 3: (lo 18), 4: (lo 17), 5: (lo 15), 6: (lo 14), 7: (lo 12), 8: (lo 11), 9: (lo 9), 10: (lo 8), 11: (lo 6), 12: (lo 5), 13: (lo 3), 14: (lo 2), 15: (zero)),
+                                    4 => tile_m1!(t, p, msk, x1, kb, a0, a1, mul, m16; 0: (lo 30), 1: (lo 28), 2: (lo 26), 3: (lo 24), 4: (lo 22), 5: (lo 20), 6: (lo 18), 7: (lo 16), 8: (lo 14), 9: (lo 12), 10: (lo 10), 11: (lo 8), 12: (lo 6), 13: (lo 4), 14: (lo 2), 15: (zero)),
+                                    _ => tile_m1!(t, p, msk, x1, kb, a0, a1, mul, m16; 0: (hi 6), 1: (hi 3), 2: (hi 1), 3: (lo 30), 4: (lo 28), 5: (lo 25), 6: (lo 23), 7: (lo 20), 8: (lo 18), 9: (lo 15), 10: (lo 13), 11: (lo 10), 12: (lo 8), 13: (lo 5), 14: (lo 3), 15: (zero)),
+                                }
+                            }
+                            let d = _mm256_set1_ps(a.d[gr]);
+                            let c0 = _mm256_set1_ps(M1_C0 * a.s[gr] as f32);
+                            let cb = _mm256_set1_ps(M1_CB);
+                            f0 = _mm256_fmadd_ps(d, _mm256_fmsub_ps(cb, _mm256_cvtepi32_ps(a0), c0), f0);
+                            f1 = _mm256_fmadd_ps(d, _mm256_fmsub_ps(cb, _mm256_cvtepi32_ps(a1), c0), f1);
+                        }
+                        let o = out.as_mut_ptr().add((nb - nb0) * 16);
+                        _mm256_storeu_ps(o, f0);
+                        _mm256_storeu_ps(o.add(8), f1);
+                    }
+                }
+            }
         }
     };
 }
@@ -302,6 +418,37 @@ t16_kernels!(vnni512, "avx2,avx512vnni,avx512vl,fma,f16c,ssse3", |s, a, b| _mm25
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// gemv_m1 (SIMD, mul1 codebook) against gemv_scalar_m1 on random streams; called directly, not via DSX_T16_CODEBOOK
+    #[test]
+    fn mul1_simd_matches_scalar() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for (k2, k, n) in [(3usize, 512usize, 256usize), (4, 768, 128), (5, 256, 384)] {
+            let ty = t16::ty_for_k2(k2).unwrap();
+            let m: Vec<u8> = (0..t16::matrix_bytes(ty, k, n)).map(|_| rng(&mut seed) as u8).collect();
+            let mut a = Act { x4: vec![0; k / 2], x1: vec![0; k], d: vec![0.0; k / 256], s: vec![0; k / 256] };
+            for i in 0..k {
+                let q = (rng(&mut seed) % 255) as i32 - 127;
+                let b = (q & 255) as u32;
+                a.x1[i] = (b * 0x0101_0101) as i32;
+                a.x4[i / 2] |= ((b | b << 8) << (16 * (i % 2))) as i32;
+                a.s[i / 256] += q;
+            }
+            for d in a.d.iter_mut() {
+                *d = 0.01;
+            }
+            let (mut ys, mut yv) = (vec![0f32; n], vec![0f32; n]);
+            gemv_scalar_m1(&m, k2, k, n, &a, 0, n / 16, &mut ys);
+            match isa() {
+                #[cfg(target_arch = "x86_64")]
+                Isa::Vnni => unsafe { vnni::gemv_m1(&m, k2, k, n, &a, 0, n / 16, &mut yv) },
+                #[cfg(target_arch = "x86_64")]
+                Isa::Vnni512 => unsafe { vnni512::gemv_m1(&m, k2, k, n, &a, 0, n / 16, &mut yv) },
+                _ => return,
+            }
+            assert_eq!(ys, yv, "k2 {k2}: mul1 SIMD vs scalar ({:?})", isa());
+        }
+    }
 
     fn rng(s: &mut u64) -> u64 {
         *s ^= *s << 13;
