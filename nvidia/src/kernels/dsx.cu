@@ -1629,6 +1629,63 @@ extern "C" __global__ void hc_reduce_finish(const float *part, float *mixes, int
   hc_finish_warp(mixes, lane < 24 ? acc * r : 0.f, lane, scale, base, hc_eps, iters);
 }
 
+// gemv_q8r for at most TT tokens, with up to U of a lane's 16-byte loads issued before any is used: the same per-chunk
+// arithmetic in the same order, so outputs are bit-identical to gemv_q8r (bench/q8h_gemv.cu has the U > 1 variants).
+template <int TT, int U>
+__device__ __forceinline__ void gemv_q8h_body(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
+                                              int rows, int k, int T, int ldx, int ldy, const __half *__restrict__ d) {
+  int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+  if (r >= rows) return;
+  const int8_t *qr = qs + (size_t)r * k;
+  const __half *dr = d + (size_t)r * (k / 32);
+  float acc[TT] = {0};
+  for (int i0 = lane * 16; i0 < k; i0 += U * 512) {
+    int4 raw[U];
+    float scs[U];
+#pragma unroll
+    for (int u = 0; u < U; u++) {
+      int i = i0 + u * 512;
+      if (i < k) {
+        raw[u] = __ldg((const int4 *)(qr + i));
+        scs[u] = __half2float(dr[i / 32]);
+      }
+    }
+#pragma unroll
+    for (int u = 0; u < U; u++) {
+      int i = i0 + u * 512;
+      if (i < k) {
+        const int8_t *q = (const int8_t *)&raw[u];
+        float sc = scs[u];
+        float w[16];
+#pragma unroll
+        for (int j = 0; j < 16; j++) w[j] = (float)q[j] * sc;
+#pragma unroll
+        for (int t = 0; t < TT; t++) {
+          if (t < T) {
+            const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+            float4 a = xp[0], b = xp[1], c = xp[2], e = xp[3];
+            acc[t] += w[0] * a.x + w[1] * a.y + w[2] * a.z + w[3] * a.w + w[4] * b.x + w[5] * b.y + w[6] * b.z + w[7] * b.w +
+                      w[8] * c.x + w[9] * c.y + w[10] * c.z + w[11] * c.w + w[12] * e.x + w[13] * e.y + w[14] * e.z + w[15] * e.w;
+          }
+        }
+      }
+    }
+  }
+#pragma unroll
+  for (int t = 0; t < TT; t++) {
+    if (t < T) {
+      float s = warp_sum(acc[t]);
+      if (lane == 0) y[(size_t)t * ldy + r] = s;
+    }
+  }
+}
+// decode (T = 1): gemv_q8r in 40 registers instead of 62 (no MAXT accumulators): more warps per SM, bit-identical.
+// 3090 (bench/q8h_gemv.cu, interleaved): o_b -21..-30%, q_b -10..-15%, shared gate/up -12%, shared down equal.
+extern "C" __global__ void gemv_q8r1(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
+                                     int rows, int k, int T, int ldx, int ldy, const __half *__restrict__ d) {
+  gemv_q8h_body<1, 1>(qs, x, y, rows, k, 1, ldx, ldy, d);
+}
+
 // Q8_0 repacked, one row per warp, 4 independent 16-byte loads in flight per lane (latency hiding).
 extern "C" __global__ void __launch_bounds__(128) gemv_q8u(const int8_t *__restrict__ qs, const float *__restrict__ x,
                                                            float *__restrict__ y, int rows, int k, int T, int ldx, int ldy,

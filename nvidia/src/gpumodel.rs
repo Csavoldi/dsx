@@ -168,6 +168,8 @@ pub struct GpuModel<'m> {
     pub adapt_s: f64,
     /// on_cpu flag changes from adapt_step, applied after the token's sync (the CPU worker may still be running the token)
     adapt_flags: Vec<(usize, bool)>,
+    /// one-token Q8_0 GEMVs on gemv_q8r1 (DSX_Q8R1=0: gemv_q8r, for A/Bs)
+    q8r1: bool,
     warned_nan: bool,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
@@ -272,7 +274,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -444,6 +446,7 @@ impl<'m> GpuModel<'m> {
             adapt_swaps: 0,
             adapt_s: 0.0,
             adapt_flags: vec![],
+            q8r1: std::env::var("DSX_Q8R1").map_or(true, |v| v != "0"),
             warned_nan: false,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
@@ -569,9 +572,9 @@ impl<'m> GpuModel<'m> {
                 .unwrap_or(0);
             if !sets[0].is_empty() {
                 let mut s0 = crate::experts::GpuExperts::new(&gm.g, m, &sets[0])?;
-                // twice the per-token swaps in flight: replacements start before a token's sync and finish (commit) after
-                // the next token's, so a stage is busy for two tokens
-                s0.enable_swaps(&gm.g, 2 * gm.adapt, max_raw)?;
+                // DSX_ADAPT_EARLY: replacements start before a token's sync and commit after the next token's, so a stage is
+                // busy for two tokens and twice the stages are needed
+                s0.enable_swaps(&gm.g, if adapt_early() { 2 } else { 1 } * gm.adapt, max_raw)?;
                 gm.exp0 = Some(s0);
             }
             let mut msg = format!("experts resident: GPU{ordinal} {} ({:.1} GB)", sets[0].len(), gm.exp0.as_ref().map_or(0, |x| x.bytes) as f64 / 1e9);
@@ -584,7 +587,7 @@ impl<'m> GpuModel<'m> {
                 if adaptive {
                     // DSX_ADAPT_AUX: in-flight replacements on aux GPUs (default DSX_ADAPT)
                     let n = std::env::var("DSX_ADAPT_AUX").ok().and_then(|v| v.parse().ok()).unwrap_or(gm.adapt);
-                    exp.enable_swaps(&ga, 2 * n, max_raw)?;
+                    exp.enable_swaps(&ga, if adapt_early() { 2 } else { 1 } * n, max_raw)?;
                 }
                 let pre = if pl.prefill_chunk > 0 { Some(prefill::AuxPrefill::new(&ga, m, pl.prefill_chunk, stream, bw)?) } else { None };
                 msg += &format!(", GPU{} {} ({:.1} GB, {}{}, {bw:.1} GB/s link)", ga.ordinal, set.len(), exp.bytes as f64 / 1e9, if adaptive { "adaptive" } else { "static" }, if stream { ", streams prefill experts" } else { "" });
@@ -1126,6 +1129,8 @@ impl<'m> GpuModel<'m> {
         // few rows: one block per row with the warps splitting k (measured faster below ~2K rows)
         let sk = n < 2048 && matches!(kname, "gemv_q8r" | "gemv_f16" | "gemv_bf16" | "gemv_f32");
         let kname = if sk { match kname { "gemv_q8r" => "gemv_q8r_sk", "gemv_f16" => "gemv_f16_sk", "gemv_bf16" => "gemv_bf16_sk", _ => "gemv_f32_sk" } } else { kname };
+        // one token: gemv_q8r without the MAXT accumulators (bit-identical, more warps per SM)
+        let kname = if kname == "gemv_q8r" && t == 1 && self.q8r1 { "gemv_q8r1" } else { kname };
         let per_block = if sk { 1 } else if kname == "gemv_q8r4" { 16 } else { 4 };
         self.g.launch(
             self.k[kname],
@@ -1549,8 +1554,9 @@ impl<'m> GpuModel<'m> {
 
     pub fn step(&mut self, token: u32) -> Result<Vec<f32>> {
         let t_step = std::time::Instant::now();
-        // DSX_ADAPT_EARLY=0: the whole adapt step after the sync, as before (A/B switch)
-        let early = std::env::var("DSX_ADAPT_EARLY").map_or(true, |v| v != "0");
+        // DSX_ADAPT_EARLY=1: scan and start replacements before the sync (off: window 30 measured the same swap count but
+        // CPU picks 22.9 -> 26.2% and KL 0.151 -> 0.159; cause not found yet)
+        let early = adapt_early();
         let r = self.step_inner(token).and_then(|()| {
             let t = std::time::Instant::now();
             if self.adapt > 0 && early {
@@ -1638,8 +1644,8 @@ impl<'m> GpuModel<'m> {
         // GPU1's work for the token is enqueued after GPU0's layer-0 attention (below): it cannot start before layer 0's
         // router publishes, and enqueueing it first (~0.15 ms of host calls) kept GPU0 idle at the token's start
         let mut aux_pending = self.worker.is_some() && !self.skip_experts;
-        // DSX_AUX_LATE=0: enqueue GPU1's token first, as before (A/B switch)
-        if aux_pending && std::env::var("DSX_AUX_LATE").is_ok_and(|v| v == "0") {
+        // DSX_AUX_LATE=1: enqueue GPU1's token after GPU0's layer-0 attention (off until measured on its own)
+        if aux_pending && !std::env::var("DSX_AUX_LATE").is_ok_and(|v| v == "1") {
             aux_pending = false;
             self.enqueue_aux(1)?;
             self.g.bind();
@@ -1718,6 +1724,10 @@ impl<'m> GpuModel<'m> {
         }
         Ok(())
     }
+}
+
+fn adapt_early() -> bool {
+    std::env::var("DSX_ADAPT_EARLY").is_ok_and(|v| v == "1")
 }
 
 /// most 32-row tiles of the small-T attention (window 128 + top-512 = 20)
