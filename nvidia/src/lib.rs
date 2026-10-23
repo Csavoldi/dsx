@@ -7,6 +7,7 @@ pub use dsx_core::{dspark, formats, gguf, iqgrid, model, numerics, safetensors, 
 #[cfg(feature = "cuda")]
 pub mod attn;
 pub mod cpu;
+pub mod engram_gather;
 #[cfg(feature = "cuda")]
 pub mod experts;
 #[cfg(feature = "cuda")]

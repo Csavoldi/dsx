@@ -163,6 +163,8 @@ pub struct GpuModel<'m> {
     pub adapt_swaps: usize,
     pub adapt_s: f64,
     warned_nan: bool,
+    /// DSX_ENGRAM_PERSIST=1: persistent threads gather the rows into eng_host (declared first: dropped before it)
+    eng_gather: Option<crate::engram_gather::EngramGather>,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
     /// DSX_ROUTE_BIAS=x: per-layer selection bonus x for GPU-resident experts ([layers][E] f32), off by default
@@ -450,6 +452,7 @@ impl<'m> GpuModel<'m> {
             adapt_swaps: 0,
             adapt_s: 0.0,
             warned_nan: false,
+            eng_gather: None,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
             pb: None,
@@ -497,6 +500,11 @@ impl<'m> GpuModel<'m> {
             prof: std::env::var_os("DSX_PROF").map(|_| Default::default()),
         };
         let mut gm = gm;
+        if m.engram.is_some() && std::env::var("DSX_ENGRAM_PERSIST").is_ok_and(|v| v == "1") {
+            let out = gm.eng_host.as_mut_slice::<f32>();
+            gm.eng_gather = Some(crate::engram_gather::EngramGather::new(m, out, gm.prof.is_some())?);
+            eprintln!("engram: rows gathered by persistent threads (layer 1's first)");
+        }
         // prefill buffers before the experts take the rest of VRAM
         gm.pb = Some(PrefillBufs::new(&gm.g, m, pl.prefill_chunk, max_ctx)?);
         let gpu0_bytes = if pl.gpu0_gb < 0.0 {
@@ -1578,8 +1586,14 @@ impl<'m> GpuModel<'m> {
             self.enqueue_aux(1)?;
             self.g.bind();
         }
-        // Engram rows on a helper thread while layer 0 (no engram) is enqueued and runs
-        let mut prefetch = {
+        // Engram rows on persistent threads (DSX_ENGRAM_PERSIST=1) or a helper thread while layer 0 (no engram) is
+        // enqueued and runs
+        let mut prefetch = if let Some(eg) = &self.eng_gather {
+            let th = std::time::Instant::now();
+            eg.publish(&self.engram_hist);
+            self.hmark(th, "host: engram publish");
+            None
+        } else {
             let ms: &'static Model = unsafe { std::mem::transmute::<&Model, &'static Model>(m) };
             let hist = self.engram_hist.clone();
             let (ptr, len) = (self.eng_host.host_ptr() as usize, self.eng_host.bytes / 4);
@@ -1598,6 +1612,19 @@ impl<'m> GpuModel<'m> {
                     j.join().map_err(|_| anyhow::anyhow!("engram prefetch thread panicked"))??;
                     if let Some(p) = self.prof.as_mut() {
                         *p.entry("host: engram join wait").or_default() += tpe.elapsed().as_secs_f64();
+                    }
+                }
+                if let Some(eg) = &self.eng_gather {
+                    let tpe = std::time::Instant::now();
+                    eg.wait(eidx)?;
+                    if let Some(p) = self.prof.as_mut() {
+                        *p.entry("host: engram join wait").or_default() += tpe.elapsed().as_secs_f64();
+                        let (cold, t) = eg.stats(eidx);
+                        *p.entry(if eidx == 0 { "host: engram gather, 1st layer" } else { "host: engram gather, later" }).or_default() += t;
+                        if eidx + 1 == c.engram_layers.len() {
+                            // a count, printed in the ms/token column as rows per token
+                            *p.entry("engram rows not cached (n)").or_default() += cold as f64 * 1e-3;
+                        }
                     }
                 }
                 self.engram(li, eidx)?;
