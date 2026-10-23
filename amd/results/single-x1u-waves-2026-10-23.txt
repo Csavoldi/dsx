@@ -1,0 +1,631 @@
+== reload /root/x4.hsaco
+reloaded /root/x4.hsaco
+== waves 2048
+waves 2048 min units -
+== prof 4096
+ctx 4096: decode step 8666 us median (115.4 tok/s), min 8637 max 8708
+  eager step: 9652 us in 541 launches
+  gemv experts gate/up           1578.7 us    40 launches  39.47 us each
+  hc_step                        1321.0 us    83 launches  15.92 us each
+  gemv experts down               960.9 us    40 launches  24.02 us each
+  attn_part                       938.2 us    40 launches  23.45 us each
+  gemv q_b(+idx)                  769.5 us    40 launches  19.24 us each
+  gemv wo_b                       767.9 us    40 launches  19.20 us each
+  attn_merge                      647.1 us    40 launches  16.18 us each
+  gemv router+shared g/u          573.0 us    40 launches  14.33 us each
+  gemv wo_a                       563.1 us    40 launches  14.08 us each
+  gemv q_a/kv/comp/idxw           434.6 us    40 launches  10.87 us each
+  gemv head                       285.6 us     1 launches 285.60 us each
+  attn_kv                         247.2 us    40 launches   6.18 us each
+  idx_score                       123.8 us     8 launches  15.48 us each
+  topk_final                      118.9 us     9 launches  13.21 us each
+  gemv_jobs                        92.0 us     2 launches  46.02 us each
+  topk_collect                     52.2 us     9 launches   5.80 us each
+  topk_hist                        50.4 us     9 launches   5.60 us each
+  topk_scan                        50.4 us     9 launches   5.60 us each
+  hc_final                         14.5 us     1 launches  14.52 us each
+  engram_sums                      12.2 us     2 launches   6.12 us each
+  (memset)                         10.3 us     1 launches  10.32 us each
+  expand_blocks                     5.9 us     1 launches   5.88 us each
+  embed                             5.8 us     1 launches   5.80 us each
+  argmax_part                       5.8 us     1 launches   5.76 us each
+  gather_f                          5.8 us     1 launches   5.76 us each
+  advance                           5.7 us     1 launches   5.68 us each
+  argmax                            5.7 us     1 launches   5.68 us each
+  block_max8                        5.6 us     1 launches   5.56 us each
+== waves 4096
+waves 4096 min units -
+== prof 4096
+ctx 4096: decode step 8863 us median (112.8 tok/s), min 8824 max 8899
+  eager step: 9856 us in 541 launches
+  gemv experts gate/up           1944.3 us    40 launches  48.61 us each
+  hc_step                        1316.2 us    83 launches  15.86 us each
+  attn_part                       949.4 us    40 launches  23.73 us each
+  gemv experts down               938.0 us    40 launches  23.45 us each
+  gemv q_b(+idx)                  774.0 us    40 launches  19.35 us each
+  attn_merge                      647.0 us    40 launches  16.17 us each
+  gemv wo_b                       614.0 us    40 launches  15.35 us each
+  gemv wo_a                       588.4 us    40 launches  14.71 us each
+  gemv router+shared g/u          539.4 us    40 launches  13.49 us each
+  gemv q_a/kv/comp/idxw           438.9 us    40 launches  10.97 us each
+  gemv head                       285.6 us     1 launches 285.56 us each
+  attn_kv                         244.3 us    40 launches   6.11 us each
+  idx_score                       128.0 us     8 launches  16.00 us each
+  topk_final                      119.9 us     9 launches  13.32 us each
+  gemv_jobs                        92.2 us     2 launches  46.12 us each
+  topk_collect                     51.6 us     9 launches   5.74 us each
+  topk_hist                        50.8 us     9 launches   5.64 us each
+  topk_scan                        50.7 us     9 launches   5.64 us each
+  hc_final                         16.2 us     1 launches  16.24 us each
+  engram_sums                      12.3 us     2 launches   6.16 us each
+  (memset)                         10.1 us     1 launches  10.08 us each
+  block_max8                        9.7 us     1 launches   9.72 us each
+  argmax_part                       5.9 us     1 launches   5.88 us each
+  expand_blocks                     5.9 us     1 launches   5.88 us each
+  embed                             5.8 us     1 launches   5.80 us each
+  advance                           5.7 us     1 launches   5.72 us each
+  argmax                            5.7 us     1 launches   5.72 us each
+  gather_f                          5.7 us     1 launches   5.72 us each
+== waves 8192
+waves 8192 min units -
+== prof 4096
+ctx 4096: decode step 9294 us median (107.6 tok/s), min 9219 max 9339
+  eager step: 10218 us in 541 launches
+  gemv experts gate/up           2162.4 us    40 launches  54.06 us each
+  hc_step                        1324.5 us    83 launches  15.96 us each
+  gemv experts down               955.0 us    40 launches  23.87 us each
+  attn_part                       936.2 us    40 launches  23.41 us each
+  gemv q_b(+idx)                  768.8 us    40 launches  19.22 us each
+  gemv wo_b                       728.7 us    40 launches  18.22 us each
+  attn_merge                      642.0 us    40 launches  16.05 us each
+  gemv wo_a                       592.3 us    40 launches  14.81 us each
+  gemv router+shared g/u          569.6 us    40 launches  14.24 us each
+  gemv q_a/kv/comp/idxw           440.8 us    40 launches  11.02 us each
+  gemv head                       286.8 us     1 launches 286.84 us each
+  attn_kv                         241.0 us    40 launches   6.02 us each
+  idx_score                       124.6 us     8 launches  15.57 us each
+  topk_final                      120.5 us     9 launches  13.39 us each
+  gemv_jobs                        91.4 us     2 launches  45.70 us each
+  topk_scan                        52.5 us     9 launches   5.83 us each
+  topk_collect                     52.2 us     9 launches   5.80 us each
+  topk_hist                        50.6 us     9 launches   5.63 us each
+  hc_final                         15.1 us     1 launches  15.12 us each
+  engram_sums                      12.3 us     2 launches   6.14 us each
+  (memset)                          9.8 us     1 launches   9.76 us each
+  advance                           6.2 us     1 launches   6.16 us each
+  argmax_part                       6.0 us     1 launches   6.04 us each
+  argmax                            5.8 us     1 launches   5.80 us each
+  embed                             5.8 us     1 launches   5.80 us each
+  expand_blocks                     5.8 us     1 launches   5.80 us each
+  gather_f                          5.7 us     1 launches   5.68 us each
+  block_max8                        5.6 us     1 launches   5.60 us each
+== reload /root/x6.hsaco
+reloaded /root/x6.hsaco
+== waves 2048
+waves 2048 min units -
+== prof 4096
+ctx 4096: decode step 8721 us median (114.7 tok/s), min 8694 max 8770
+  eager step: 9722 us in 541 launches
+  gemv experts gate/up           1609.2 us    40 launches  40.23 us each
+  hc_step                        1319.7 us    83 launches  15.90 us each
+  attn_part                       938.6 us    40 launches  23.47 us each
+  gemv experts down               938.3 us    40 launches  23.46 us each
+  gemv q_b(+idx)                  789.4 us    40 launches  19.74 us each
+  gemv wo_b                       777.4 us    40 launches  19.43 us each
+  attn_merge                      649.4 us    40 launches  16.23 us each
+  gemv router+shared g/u          578.8 us    40 launches  14.47 us each
+  gemv wo_a                       566.7 us    40 launches  14.17 us each
+  gemv q_a/kv/comp/idxw           446.6 us    40 launches  11.17 us each
+  gemv head                       287.8 us     1 launches 287.80 us each
+  attn_kv                         238.9 us    40 launches   5.97 us each
+  idx_score                       126.0 us     8 launches  15.74 us each
+  topk_final                      114.8 us     9 launches  12.76 us each
+  gemv_jobs                        94.8 us     2 launches  47.42 us each
+  topk_hist                        56.1 us     9 launches   6.23 us each
+  topk_collect                     51.6 us     9 launches   5.73 us each
+  topk_scan                        51.4 us     9 launches   5.71 us each
+  (memset)                         15.4 us     1 launches  15.40 us each
+  hc_final                         14.5 us     1 launches  14.48 us each
+  engram_sums                      12.0 us     2 launches   6.02 us each
+  embed                            11.1 us     1 launches  11.08 us each
+  expand_blocks                     5.8 us     1 launches   5.80 us each
+  argmax_part                       5.8 us     1 launches   5.76 us each
+  gather_f                          5.7 us     1 launches   5.72 us each
+  advance                           5.7 us     1 launches   5.68 us each
+  block_max8                        5.6 us     1 launches   5.60 us each
+  argmax                            5.6 us     1 launches   5.56 us each
+== waves 4096
+waves 4096 min units -
+== prof 4096
+ctx 4096: decode step 9109 us median (109.8 tok/s), min 9091 max 9190
+  eager step: 10092 us in 541 launches
+  gemv experts gate/up           1917.3 us    40 launches  47.93 us each
+  hc_step                        1318.7 us    83 launches  15.89 us each
+  attn_part                       956.1 us    40 launches  23.90 us each
+  gemv experts down               935.4 us    40 launches  23.38 us each
+  gemv q_b(+idx)                  787.8 us    40 launches  19.70 us each
+  gemv wo_b                       704.9 us    40 launches  17.62 us each
+  gemv router+shared g/u          684.7 us    40 launches  17.12 us each
+  attn_merge                      641.7 us    40 launches  16.04 us each
+  gemv wo_a                       598.2 us    40 launches  14.96 us each
+  gemv q_a/kv/comp/idxw           448.2 us    40 launches  11.20 us each
+  gemv head                       287.2 us     1 launches 287.20 us each
+  attn_kv                         244.9 us    40 launches   6.12 us each
+  idx_score                       125.6 us     8 launches  15.69 us each
+  topk_final                      117.0 us     9 launches  13.00 us each
+  gemv_jobs                        93.3 us     2 launches  46.66 us each
+  topk_collect                     52.4 us     9 launches   5.83 us each
+  topk_scan                        51.8 us     9 launches   5.75 us each
+  topk_hist                        50.5 us     9 launches   5.61 us each
+  hc_final                         14.9 us     1 launches  14.88 us each
+  engram_sums                      12.2 us     2 launches   6.08 us each
+  (memset)                          9.6 us     1 launches   9.56 us each
+  expand_blocks                     5.8 us     1 launches   5.80 us each
+  embed                             5.8 us     1 launches   5.76 us each
+  argmax_part                       5.7 us     1 launches   5.72 us each
+  advance                           5.7 us     1 launches   5.68 us each
+  gather_f                          5.7 us     1 launches   5.68 us each
+  argmax                            5.6 us     1 launches   5.56 us each
+  block_max8                        5.6 us     1 launches   5.56 us each
+== waves 8192
+waves 8192 min units -
+== prof 4096
+ctx 4096: decode step 9541 us median (104.8 tok/s), min 9460 max 9607
+  eager step: 10524 us in 541 launches
+  gemv experts gate/up           2205.1 us    40 launches  55.13 us each
+  hc_step                        1330.8 us    83 launches  16.03 us each
+  gemv experts down               947.1 us    40 launches  23.68 us each
+  attn_part                       944.7 us    40 launches  23.62 us each
+  gemv wo_b                       834.6 us    40 launches  20.86 us each
+  gemv q_b(+idx)                  791.5 us    40 launches  19.79 us each
+  gemv router+shared g/u          681.8 us    40 launches  17.05 us each
+  attn_merge                      643.4 us    40 launches  16.09 us each
+  gemv wo_a                       597.9 us    40 launches  14.95 us each
+  gemv q_a/kv/comp/idxw           448.8 us    40 launches  11.22 us each
+  gemv head                       290.1 us     1 launches 290.08 us each
+  attn_kv                         243.6 us    40 launches   6.09 us each
+  idx_score                       125.2 us     8 launches  15.65 us each
+  topk_final                      114.2 us     9 launches  12.69 us each
+  gemv_jobs                        96.3 us     2 launches  48.14 us each
+  topk_collect                     51.6 us     9 launches   5.74 us each
+  topk_hist                        50.6 us     9 launches   5.62 us each
+  topk_scan                        50.1 us     9 launches   5.57 us each
+  hc_final                         14.7 us     1 launches  14.68 us each
+  engram_sums                      12.2 us     2 launches   6.08 us each
+  (memset)                         10.0 us     1 launches  10.04 us each
+  expand_blocks                     5.8 us     1 launches   5.84 us each
+  argmax                            5.8 us     1 launches   5.80 us each
+  embed                             5.8 us     1 launches   5.76 us each
+  advance                           5.7 us     1 launches   5.72 us each
+  argmax_part                       5.7 us     1 launches   5.72 us each
+  gather_f                          5.7 us     1 launches   5.72 us each
+  block_max8                        5.6 us     1 launches   5.60 us each
+== reload /root/x8.hsaco
+reloaded /root/x8.hsaco
+== waves 2048
+waves 2048 min units -
+== prof 4096
+ctx 4096: decode step 8734 us median (114.5 tok/s), min 8720 max 8828
+  eager step: 9704 us in 541 launches
+  gemv experts gate/up           1609.4 us    40 launches  40.23 us each
+  hc_step                        1312.6 us    83 launches  15.81 us each
+  gemv experts down               957.1 us    40 launches  23.93 us each
+  attn_part                       941.7 us    40 launches  23.54 us each
+  gemv wo_b                       776.9 us    40 launches  19.42 us each
+  gemv q_b(+idx)                  773.9 us    40 launches  19.35 us each
+  attn_merge                      644.9 us    40 launches  16.12 us each
+  gemv router+shared g/u          579.9 us    40 launches  14.50 us each
+  gemv wo_a                       562.6 us    40 launches  14.07 us each
+  gemv q_a/kv/comp/idxw           438.7 us    40 launches  10.97 us each
+  gemv head                       287.0 us     1 launches 286.96 us each
+  attn_kv                         243.9 us    40 launches   6.10 us each
+  idx_score                       124.4 us     8 launches  15.54 us each
+  topk_final                      120.3 us     9 launches  13.36 us each
+  gemv_jobs                        92.4 us     2 launches  46.22 us each
+  topk_collect                     58.9 us     9 launches   6.54 us each
+  topk_scan                        51.4 us     9 launches   5.71 us each
+  topk_hist                        50.7 us     9 launches   5.63 us each
+  hc_final                         14.5 us     1 launches  14.52 us each
+  engram_sums                      12.5 us     2 launches   6.24 us each
+  (memset)                         10.1 us     1 launches  10.12 us each
+  embed                             5.8 us     1 launches   5.84 us each
+  expand_blocks                     5.8 us     1 launches   5.84 us each
+  gather_f                          5.8 us     1 launches   5.80 us each
+  argmax_part                       5.7 us     1 launches   5.72 us each
+  advance                           5.6 us     1 launches   5.64 us each
+  argmax                            5.6 us     1 launches   5.64 us each
+  block_max8                        5.6 us     1 launches   5.60 us each
+== waves 4096
+waves 4096 min units -
+== prof 4096
+ctx 4096: decode step 9117 us median (109.7 tok/s), min 9093 max 9212
+  eager step: 10071 us in 541 launches
+  gemv experts gate/up           1945.4 us    40 launches  48.63 us each
+  hc_step                        1318.7 us    83 launches  15.89 us each
+  gemv experts down               959.4 us    40 launches  23.98 us each
+  attn_part                       937.0 us    40 launches  23.42 us each
+  gemv q_b(+idx)                  770.8 us    40 launches  19.27 us each
+  gemv wo_b                       698.5 us    40 launches  17.46 us each
+  gemv router+shared g/u          673.9 us    40 launches  16.85 us each
+  attn_merge                      645.0 us    40 launches  16.12 us each
+  gemv wo_a                       588.2 us    40 launches  14.70 us each
+  gemv q_a/kv/comp/idxw           436.4 us    40 launches  10.91 us each
+  gemv head                       286.2 us     1 launches 286.24 us each
+  attn_kv                         242.2 us    40 launches   6.05 us each
+  idx_score                       125.4 us     8 launches  15.67 us each
+  topk_final                      117.5 us     9 launches  13.06 us each
+  gemv_jobs                        93.7 us     2 launches  46.84 us each
+  topk_collect                     52.0 us     9 launches   5.78 us each
+  topk_hist                        50.2 us     9 launches   5.57 us each
+  topk_scan                        50.0 us     9 launches   5.56 us each
+  hc_final                         14.7 us     1 launches  14.72 us each
+  engram_sums                      13.0 us     2 launches   6.50 us each
+  (memset)                         10.2 us     1 launches  10.24 us each
+  block_max8                        8.5 us     1 launches   8.52 us each
+  embed                             5.8 us     1 launches   5.84 us each
+  argmax_part                       5.8 us     1 launches   5.76 us each
+  argmax                            5.7 us     1 launches   5.72 us each
+  advance                           5.7 us     1 launches   5.68 us each
+  expand_blocks                     5.7 us     1 launches   5.68 us each
+  gather_f                          5.7 us     1 launches   5.68 us each
+== waves 8192
+waves 8192 min units -
+== prof 4096
+ctx 4096: decode step 9567 us median (104.5 tok/s), min 9514 max 9635
+  eager step: 10537 us in 541 launches
+  gemv experts gate/up           2247.7 us    40 launches  56.19 us each
+  hc_step                        1316.9 us    83 launches  15.87 us each
+  gemv experts down               963.2 us    40 launches  24.08 us each
+  attn_part                       944.2 us    40 launches  23.60 us each
+  gemv wo_b                       826.0 us    40 launches  20.65 us each
+  gemv q_b(+idx)                  773.3 us    40 launches  19.33 us each
+  gemv router+shared g/u          672.1 us    40 launches  16.80 us each
+  attn_merge                      648.7 us    40 launches  16.22 us each
+  gemv wo_a                       596.6 us    40 launches  14.92 us each
+  gemv q_a/kv/comp/idxw           445.2 us    40 launches  11.13 us each
+  gemv head                       286.5 us     1 launches 286.52 us each
+  attn_kv                         247.4 us    40 launches   6.19 us each
+  idx_score                       127.5 us     8 launches  15.94 us each
+  topk_final                      119.4 us     9 launches  13.27 us each
+  gemv_jobs                        91.6 us     2 launches  45.78 us each
+  topk_collect                     52.9 us     9 launches   5.88 us each
+  topk_hist                        50.2 us     9 launches   5.58 us each
+  topk_scan                        50.2 us     9 launches   5.58 us each
+  hc_final                         14.5 us     1 launches  14.52 us each
+  engram_sums                      12.4 us     2 launches   6.22 us each
+  (memset)                         10.2 us     1 launches  10.24 us each
+  embed                             6.1 us     1 launches   6.12 us each
+  argmax_part                       5.8 us     1 launches   5.84 us each
+  advance                           5.7 us     1 launches   5.72 us each
+  expand_blocks                     5.7 us     1 launches   5.72 us each
+  gather_f                          5.7 us     1 launches   5.72 us each
+  argmax                            5.7 us     1 launches   5.68 us each
+  block_max8                        5.6 us     1 launches   5.56 us each
+== reload /root/x4.hsaco
+reloaded /root/x4.hsaco
+== waves 2048
+waves 2048 min units -
+== prof 4096
+ctx 4096: decode step 8724 us median (114.6 tok/s), min 8632 max 8765
+  eager step: 9664 us in 541 launches
+  gemv experts gate/up           1584.3 us    40 launches  39.61 us each
+  hc_step                        1317.7 us    83 launches  15.88 us each
+  gemv experts down               956.3 us    40 launches  23.91 us each
+  attn_part                       947.3 us    40 launches  23.68 us each
+  gemv wo_b                       773.0 us    40 launches  19.33 us each
+  gemv q_b(+idx)                  773.0 us    40 launches  19.32 us each
+  attn_merge                      644.5 us    40 launches  16.11 us each
+  gemv router+shared g/u          572.8 us    40 launches  14.32 us each
+  gemv wo_a                       565.8 us    40 launches  14.14 us each
+  gemv q_a/kv/comp/idxw           436.5 us    40 launches  10.91 us each
+  gemv head                       285.5 us     1 launches 285.52 us each
+  attn_kv                         240.2 us    40 launches   6.00 us each
+  idx_score                       124.0 us     8 launches  15.49 us each
+  topk_final                      120.5 us     9 launches  13.39 us each
+  gemv_jobs                        91.5 us     2 launches  45.74 us each
+  topk_collect                     52.0 us     9 launches   5.78 us each
+  topk_hist                        50.4 us     9 launches   5.60 us each
+  topk_scan                        50.3 us     9 launches   5.59 us each
+  hc_final                         15.0 us     1 launches  15.00 us each
+  engram_sums                      12.2 us     2 launches   6.12 us each
+  (memset)                          9.8 us     1 launches   9.80 us each
+  block_max8                        6.6 us     1 launches   6.56 us each
+  expand_blocks                     5.8 us     1 launches   5.84 us each
+  advance                           5.8 us     1 launches   5.76 us each
+  argmax_part                       5.8 us     1 launches   5.76 us each
+  embed                             5.8 us     1 launches   5.76 us each
+  gather_f                          5.8 us     1 launches   5.76 us each
+  argmax                            5.7 us     1 launches   5.68 us each
+== waves 4096
+waves 4096 min units -
+== prof 4096
+ctx 4096: decode step 8915 us median (112.2 tok/s), min 8847 max 8945
+  eager step: 9856 us in 541 launches
+  gemv experts gate/up           1934.3 us    40 launches  48.36 us each
+  hc_step                        1327.3 us    83 launches  15.99 us each
+  attn_part                       955.0 us    40 launches  23.87 us each
+  gemv experts down               939.2 us    40 launches  23.48 us each
+  gemv q_b(+idx)                  773.0 us    40 launches  19.32 us each
+  attn_merge                      644.7 us    40 launches  16.12 us each
+  gemv wo_b                       615.3 us    40 launches  15.38 us each
+  gemv wo_a                       591.8 us    40 launches  14.79 us each
+  gemv router+shared g/u          541.4 us    40 launches  13.53 us each
+  gemv q_a/kv/comp/idxw           436.4 us    40 launches  10.91 us each
+  gemv head                       286.9 us     1 launches 286.88 us each
+  attn_kv                         238.2 us    40 launches   5.95 us each
+  topk_final                      126.6 us     9 launches  14.06 us each
+  idx_score                       124.2 us     8 launches  15.52 us each
+  gemv_jobs                        90.6 us     2 launches  45.32 us each
+  topk_collect                     51.6 us     9 launches   5.73 us each
+  topk_hist                        51.5 us     9 launches   5.72 us each
+  topk_scan                        51.4 us     9 launches   5.71 us each
+  hc_final                         14.3 us     1 launches  14.32 us each
+  engram_sums                      12.4 us     2 launches   6.20 us each
+  (memset)                         10.1 us     1 launches  10.12 us each
+  argmax_part                       5.8 us     1 launches   5.80 us each
+  expand_blocks                     5.8 us     1 launches   5.80 us each
+  embed                             5.8 us     1 launches   5.76 us each
+  advance                           5.7 us     1 launches   5.72 us each
+  argmax                            5.7 us     1 launches   5.72 us each
+  gather_f                          5.7 us     1 launches   5.72 us each
+  block_max8                        5.5 us     1 launches   5.52 us each
+== waves 8192
+waves 8192 min units -
+== prof 4096
+ctx 4096: decode step 9277 us median (107.8 tok/s), min 9228 max 9329
+  eager step: 10252 us in 541 launches
+  gemv experts gate/up           2175.6 us    40 launches  54.39 us each
+  hc_step                        1331.6 us    83 launches  16.04 us each
+  gemv experts down               964.6 us    40 launches  24.12 us each
+  attn_part                       934.1 us    40 launches  23.35 us each
+  gemv q_b(+idx)                  774.3 us    40 launches  19.36 us each
+  gemv wo_b                       731.1 us    40 launches  18.28 us each
+  attn_merge                      642.5 us    40 launches  16.06 us each
+  gemv wo_a                       593.8 us    40 launches  14.85 us each
+  gemv router+shared g/u          571.6 us    40 launches  14.29 us each
+  gemv q_a/kv/comp/idxw           437.6 us    40 launches  10.94 us each
+  gemv head                       287.2 us     1 launches 287.20 us each
+  attn_kv                         238.7 us    40 launches   5.97 us each
+  idx_score                       124.2 us     8 launches  15.53 us each
+  topk_final                      120.3 us     9 launches  13.37 us each
+  gemv_jobs                        91.1 us     2 launches  45.54 us each
+  topk_collect                     52.0 us     9 launches   5.78 us each
+  topk_scan                        50.5 us     9 launches   5.61 us each
+  topk_hist                        50.4 us     9 launches   5.60 us each
+  hc_final                         14.9 us     1 launches  14.92 us each
+  engram_sums                      12.3 us     2 launches   6.16 us each
+  (memset)                          9.6 us     1 launches   9.56 us each
+  embed                             9.6 us     1 launches   9.56 us each
+  expand_blocks                     5.8 us     1 launches   5.84 us each
+  advance                           5.8 us     1 launches   5.80 us each
+  argmax_part                       5.8 us     1 launches   5.80 us each
+  gather_f                          5.8 us     1 launches   5.76 us each
+  argmax                            5.7 us     1 launches   5.68 us each
+  block_max8                        5.6 us     1 launches   5.60 us each
+== reload /root/x6.hsaco
+reloaded /root/x6.hsaco
+== waves 2048
+waves 2048 min units -
+== prof 4096
+ctx 4096: decode step 8756 us median (114.2 tok/s), min 8709 max 8817
+  eager step: 9711 us in 541 launches
+  gemv experts gate/up           1604.5 us    40 launches  40.11 us each
+  hc_step                        1324.5 us    83 launches  15.96 us each
+  gemv experts down               951.2 us    40 launches  23.78 us each
+  attn_part                       946.2 us    40 launches  23.65 us each
+  gemv q_b(+idx)                  787.1 us    40 launches  19.68 us each
+  gemv wo_b                       775.4 us    40 launches  19.38 us each
+  attn_merge                      644.2 us    40 launches  16.10 us each
+  gemv router+shared g/u          576.8 us    40 launches  14.42 us each
+  gemv wo_a                       556.4 us    40 launches  13.91 us each
+  gemv q_a/kv/comp/idxw           438.8 us    40 launches  10.97 us each
+  gemv head                       286.8 us     1 launches 286.76 us each
+  attn_kv                         240.2 us    40 launches   6.01 us each
+  idx_score                       124.6 us     8 launches  15.57 us each
+  topk_final                      118.8 us     9 launches  13.20 us each
+  gemv_jobs                        94.4 us     2 launches  47.20 us each
+  topk_collect                     53.4 us     9 launches   5.94 us each
+  topk_hist                        50.5 us     9 launches   5.61 us each
+  topk_scan                        50.3 us     9 launches   5.59 us each
+  (memset)                         14.8 us     1 launches  14.80 us each
+  hc_final                         14.5 us     1 launches  14.52 us each
+  engram_sums                      12.7 us     2 launches   6.34 us each
+  embed                            10.4 us     1 launches  10.44 us each
+  expand_blocks                     5.9 us     1 launches   5.88 us each
+  argmax_part                       5.8 us     1 launches   5.84 us each
+  gather_f                          5.8 us     1 launches   5.76 us each
+  advance                           5.7 us     1 launches   5.68 us each
+  argmax                            5.7 us     1 launches   5.68 us each
+  block_max8                        5.6 us     1 launches   5.56 us each
+== waves 4096
+waves 4096 min units -
+== prof 4096
+ctx 4096: decode step 9139 us median (109.4 tok/s), min 9084 max 9213
+  eager step: 10100 us in 541 launches
+  gemv experts gate/up           1908.6 us    40 launches  47.72 us each
+  hc_step                        1336.0 us    83 launches  16.10 us each
+  attn_part                       940.9 us    40 launches  23.52 us each
+  gemv experts down               936.1 us    40 launches  23.40 us each
+  gemv q_b(+idx)                  784.0 us    40 launches  19.60 us each
+  gemv wo_b                       703.0 us    40 launches  17.58 us each
+  gemv router+shared g/u          684.1 us    40 launches  17.10 us each
+  attn_merge                      641.8 us    40 launches  16.04 us each
+  gemv wo_a                       595.8 us    40 launches  14.90 us each
+  gemv q_a/kv/comp/idxw           449.3 us    40 launches  11.23 us each
+  gemv head                       290.7 us     1 launches 290.72 us each
+  attn_kv                         244.9 us    40 launches   6.12 us each
+  idx_score                       125.6 us     8 launches  15.69 us each
+  topk_final                      124.6 us     9 launches  13.84 us each
+  gemv_jobs                        94.3 us     2 launches  47.16 us each
+  topk_collect                     55.7 us     9 launches   6.19 us each
+  topk_hist                        50.3 us     9 launches   5.59 us each
+  topk_scan                        50.1 us     9 launches   5.56 us each
+  hc_final                         15.0 us     1 launches  14.96 us each
+  (memset)                         12.7 us     1 launches  12.68 us each
+  engram_sums                      12.1 us     2 launches   6.06 us each
+  embed                            10.7 us     1 launches  10.68 us each
+  argmax_part                       5.8 us     1 launches   5.84 us each
+  expand_blocks                     5.8 us     1 launches   5.84 us each
+  gather_f                          5.8 us     1 launches   5.76 us each
+  advance                           5.7 us     1 launches   5.72 us each
+  argmax                            5.6 us     1 launches   5.60 us each
+  block_max8                        5.5 us     1 launches   5.52 us each
+== waves 8192
+waves 8192 min units -
+== prof 4096
+ctx 4096: decode step 9554 us median (104.7 tok/s), min 9528 max 9602
+  eager step: 10500 us in 541 launches
+  gemv experts gate/up           2206.0 us    40 launches  55.15 us each
+  hc_step                        1323.8 us    83 launches  15.95 us each
+  gemv experts down               945.9 us    40 launches  23.65 us each
+  attn_part                       934.4 us    40 launches  23.36 us each
+  gemv wo_b                       828.5 us    40 launches  20.71 us each
+  gemv q_b(+idx)                  781.5 us    40 launches  19.54 us each
+  gemv router+shared g/u          679.8 us    40 launches  17.00 us each
+  attn_merge                      648.6 us    40 launches  16.21 us each
+  gemv wo_a                       601.1 us    40 launches  15.03 us each
+  gemv q_a/kv/comp/idxw           451.5 us    40 launches  11.29 us each
+  gemv head                       285.6 us     1 launches 285.60 us each
+  attn_kv                         244.7 us    40 launches   6.12 us each
+  idx_score                       124.1 us     8 launches  15.51 us each
+  topk_final                      118.5 us     9 launches  13.16 us each
+  gemv_jobs                        93.3 us     2 launches  46.66 us each
+  topk_collect                     52.7 us     9 launches   5.85 us each
+  topk_scan                        52.0 us     9 launches   5.77 us each
+  topk_hist                        50.2 us     9 launches   5.58 us each
+  hc_final                         14.8 us     1 launches  14.76 us each
+  engram_sums                      12.1 us     2 launches   6.06 us each
+  (memset)                         10.0 us     1 launches  10.04 us each
+  embed                             5.9 us     1 launches   5.92 us each
+  advance                           5.8 us     1 launches   5.84 us each
+  argmax_part                       5.8 us     1 launches   5.84 us each
+  block_max8                        5.8 us     1 launches   5.84 us each
+  gather_f                          5.8 us     1 launches   5.84 us each
+  expand_blocks                     5.8 us     1 launches   5.80 us each
+  argmax                            5.6 us     1 launches   5.56 us each
+== reload /root/x8.hsaco
+reloaded /root/x8.hsaco
+== waves 2048
+waves 2048 min units -
+== prof 4096
+ctx 4096: decode step 8755 us median (114.2 tok/s), min 8702 max 8811
+  eager step: 9698 us in 541 launches
+  gemv experts gate/up           1618.9 us    40 launches  40.47 us each
+  hc_step                        1317.8 us    83 launches  15.88 us each
+  gemv experts down               956.4 us    40 launches  23.91 us each
+  attn_part                       938.4 us    40 launches  23.46 us each
+  gemv wo_b                       782.4 us    40 launches  19.56 us each
+  gemv q_b(+idx)                  774.5 us    40 launches  19.36 us each
+  attn_merge                      643.9 us    40 launches  16.10 us each
+  gemv router+shared g/u          580.0 us    40 launches  14.50 us each
+  gemv wo_a                       558.5 us    40 launches  13.96 us each
+  gemv q_a/kv/comp/idxw           433.2 us    40 launches  10.83 us each
+  gemv head                       288.5 us     1 launches 288.52 us each
+  attn_kv                         238.2 us    40 launches   5.96 us each
+  idx_score                       124.4 us     8 launches  15.55 us each
+  topk_final                      120.5 us     9 launches  13.39 us each
+  gemv_jobs                        91.1 us     2 launches  45.54 us each
+  topk_collect                     52.2 us     9 launches   5.80 us each
+  topk_scan                        51.9 us     9 launches   5.76 us each
+  topk_hist                        50.4 us     9 launches   5.60 us each
+  hc_final                         14.5 us     1 launches  14.48 us each
+  engram_sums                      12.4 us     2 launches   6.18 us each
+  (memset)                         10.4 us     1 launches  10.40 us each
+  argmax_part                       5.8 us     1 launches   5.84 us each
+  gather_f                          5.8 us     1 launches   5.80 us each
+  advance                           5.8 us     1 launches   5.76 us each
+  embed                             5.8 us     1 launches   5.76 us each
+  expand_blocks                     5.8 us     1 launches   5.76 us each
+  argmax                            5.6 us     1 launches   5.56 us each
+  block_max8                        5.6 us     1 launches   5.56 us each
+== waves 4096
+waves 4096 min units -
+== prof 4096
+ctx 4096: decode step 9148 us median (109.3 tok/s), min 9088 max 9195
+  eager step: 10119 us in 541 launches
+  gemv experts gate/up           1961.4 us    40 launches  49.03 us each
+  hc_step                        1328.0 us    83 launches  16.00 us each
+  gemv experts down               972.0 us    40 launches  24.30 us each
+  attn_part                       944.0 us    40 launches  23.60 us each
+  gemv q_b(+idx)                  770.4 us    40 launches  19.26 us each
+  gemv wo_b                       699.4 us    40 launches  17.48 us each
+  gemv router+shared g/u          665.0 us    40 launches  16.62 us each
+  attn_merge                      652.0 us    40 launches  16.30 us each
+  gemv wo_a                       586.2 us    40 launches  14.66 us each
+  gemv q_a/kv/comp/idxw           436.6 us    40 launches  10.92 us each
+  gemv head                       285.6 us     1 launches 285.60 us each
+  attn_kv                         239.7 us    40 launches   5.99 us each
+  idx_score                       125.4 us     8 launches  15.68 us each
+  topk_final                      121.0 us     9 launches  13.44 us each
+  gemv_jobs                        92.4 us     2 launches  46.20 us each
+  topk_collect                     54.5 us     9 launches   6.05 us each
+  topk_scan                        52.4 us     9 launches   5.82 us each
+  topk_hist                        50.1 us     9 launches   5.57 us each
+  hc_final                         14.6 us     1 launches  14.60 us each
+  engram_sums                      12.4 us     2 launches   6.20 us each
+  (memset)                         11.5 us     1 launches  11.52 us each
+  embed                             9.6 us     1 launches   9.64 us each
+  advance                           5.9 us     1 launches   5.88 us each
+  expand_blocks                     5.8 us     1 launches   5.84 us each
+  argmax_part                       5.8 us     1 launches   5.76 us each
+  gather_f                          5.7 us     1 launches   5.72 us each
+  argmax                            5.7 us     1 launches   5.68 us each
+  block_max8                        5.6 us     1 launches   5.56 us each
+== waves 8192
+waves 8192 min units -
+== prof 4096
+ctx 4096: decode step 9562 us median (104.6 tok/s), min 9541 max 9611
+  eager step: 10554 us in 541 launches
+  gemv experts gate/up           2241.0 us    40 launches  56.02 us each
+  hc_step                        1317.7 us    83 launches  15.88 us each
+  gemv experts down               963.2 us    40 launches  24.08 us each
+  attn_part                       956.2 us    40 launches  23.91 us each
+  gemv wo_b                       819.7 us    40 launches  20.49 us each
+  gemv q_b(+idx)                  781.8 us    40 launches  19.54 us each
+  gemv router+shared g/u          668.2 us    40 launches  16.70 us each
+  attn_merge                      645.8 us    40 launches  16.14 us each
+  gemv wo_a                       598.1 us    40 launches  14.95 us each
+  gemv q_a/kv/comp/idxw           438.4 us    40 launches  10.96 us each
+  gemv head                       287.7 us     1 launches 287.68 us each
+  attn_kv                         252.4 us    40 launches   6.31 us each
+  idx_score                       126.5 us     8 launches  15.81 us each
+  topk_final                      119.1 us     9 launches  13.24 us each
+  gemv_jobs                        92.8 us     2 launches  46.40 us each
+  topk_scan                        54.0 us     9 launches   6.00 us each
+  topk_collect                     51.8 us     9 launches   5.76 us each
+  topk_hist                        51.0 us     9 launches   5.66 us each
+  engram_sums                      16.6 us     2 launches   8.32 us each
+  hc_final                         15.0 us     1 launches  15.00 us each
+  (memset)                         12.8 us     1 launches  12.84 us each
+  gather_f                          8.6 us     1 launches   8.56 us each
+  embed                             7.6 us     1 launches   7.56 us each
+  expand_blocks                     5.8 us     1 launches   5.80 us each
+  argmax_part                       5.7 us     1 launches   5.72 us each
+  advance                           5.7 us     1 launches   5.68 us each
+  block_max8                        5.6 us     1 launches   5.60 us each
+  argmax                            5.5 us     1 launches   5.52 us each
+== waves 2048
+waves 2048 min units -
+== reload /root/prep0.hsaco
+reloaded /root/prep0.hsaco
+== bsweep 8192 4000 8 1,8,12 distinct
+bdense: 15.2 GB of BF16 dense weights in 7.1 s
+error: pack_fp4_rows: 144 groups without an exact FP4 scale
+== reload /root/x4.hsaco
+reloaded /root/x4.hsaco
+== bsweep 8192 4000 8 1,8,12 distinct
+error: pack_fp4_rows: 144 groups without an exact FP4 scale
+== reload /root/prep0.hsaco
+reloaded /root/prep0.hsaco
+== bsweep 8192 4000 8 1,8,12 distinct
+error: pack_fp4_rows: 144 groups without an exact FP4 scale
+== reload /root/x4.hsaco
+reloaded /root/x4.hsaco
+== bsweep 8192 4000 8 1,8,12 distinct
+error: pack_fp4_rows: 144 groups without an exact FP4 scale
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1104 (6 s, 21.5 ms/step)
+pos 512: kl 0.0830 (13 s, 21.8 ms/step)
+pos 768: kl 0.0745 (19 s, 21.9 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 22.00, "replicas": [{"ppl": 8.8668, "kl_top256": 0.071819, "top1_agree": 0.885020}]}
+RUN6-DONE

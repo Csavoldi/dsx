@@ -1,4 +1,4 @@
-Eager back-to-back launches on one stream, MI325X (rental 6, 2026-10-23 04:35 PT), launch_bench.hip:
+Eager back-to-back launches on one stream, MI325X (rental 6, 2026-10-23 ~04:25 PT), launch_bench.hip:
 empty 1x64                           1.52 us per launch
 empty 40x256                         1.53 us per launch
 empty 1024x256                       1.55 us per launch
