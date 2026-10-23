@@ -1119,6 +1119,81 @@ extern "C" __global__ void publish_route(const int *sel, const float *wts, int k
   }
 }
 
+// decode (one token): router_topk + publish_route in one launch, bit-identical to the two. Block 1024: thread e scores
+// expert e (in parallel instead of 12 per lane), warp 0 then runs router_topk's selection on the same keys, and every
+// thread publishes as publish_route does. E <= 512.
+extern "C" __global__ void __launch_bounds__(1024) router_publish(const float *logits, const float *bias, int *out_idx,
+                                                                  float *out_w, int E, int k, float route_scale,
+                                                                  const float *sel_bonus, const float *x, int dim,
+                                                                  uint8_t *xch, uint32_t seq) {
+  __shared__ float sc[512], ks[512];
+  __shared__ int ssel[8];
+  __shared__ float sw[8];
+  int tid = threadIdx.x, lane = tid & 31;
+  if (tid < E) {
+    float v = logits[tid];
+    float sp = v > 20.f ? v : log1pf(expf(v));
+    float s = sqrtf(sp);
+    float kk = s + bias[tid] + (sel_bonus ? sel_bonus[tid] : 0.f);
+    ks[tid] = isnan(kk) ? -INFINITY : kk;
+    sc[tid] = isnan(s) ? 0.f : s;
+  }
+  __syncthreads();
+  if (tid < 32) {
+    float key[16];
+#pragma unroll
+    for (int j = 0; j < 16; j++) {
+      int e = lane + 32 * j;
+      key[j] = e < E ? ks[e] : -INFINITY;
+    }
+    float wsum = 0.f;
+    int sel[8];
+    for (int r = 0; r < k; r++) {
+      float best = -INFINITY;
+      int bi = 0x7fffffff;
+#pragma unroll
+      for (int j = 0; j < 16; j++)
+        if (key[j] > best) { best = key[j]; bi = lane + 32 * j; }
+      for (int o = 16; o; o >>= 1) {
+        float ob = __shfl_xor_sync(0xffffffff, best, o);
+        int oi = __shfl_xor_sync(0xffffffff, bi, o);
+        if (ob > best || (ob == best && oi < bi)) { best = ob; bi = oi; }
+      }
+      if (bi >= E) bi = r;
+      sel[r] = bi;
+      wsum += sc[bi];
+#pragma unroll
+      for (int j = 0; j < 16; j++)
+        if (lane + 32 * j == bi) key[j] = -INFINITY;
+    }
+    if (lane < k) {
+      float w = sc[sel[lane]] / (wsum + 1e-20f) * route_scale;
+      out_idx[lane] = sel[lane];
+      out_w[lane] = w;
+      ssel[lane] = sel[lane];
+      sw[lane] = w;
+    }
+  }
+  // publish_route for T = 1
+  int *hs = (int *)(xch + XCH_SEL);
+  float *hw = (float *)(xch + XCH_WTS), *hx = (float *)(xch + XCH_X);
+  for (int i = tid; i < dim; i += blockDim.x) hx[i] = x[i];
+  __syncthreads();
+  if (tid < k) {
+    hs[tid] = ssel[tid];
+    hw[tid] = sw[tid];
+  }
+  if (tid == 0) *(volatile int *)(xch + XCH_T) = 1;
+  __syncthreads();
+  if (tid == 0) {
+    unsigned long long now;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+    *(volatile unsigned long long *)(xch + 8) = now;  // handoff timing (DSX_HANDOFF_TS readers)
+    __threadfence_system();
+    *(volatile uint32_t *)xch = seq;
+  }
+}
+
 // test helper: keep one thread busy for `ns` nanoseconds of GPU time
 extern "C" __global__ void gpu_sleep(uint32_t ns) {
   unsigned long long t0, t;

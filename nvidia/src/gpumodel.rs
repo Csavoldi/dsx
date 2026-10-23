@@ -272,7 +272,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -716,7 +716,11 @@ impl<'m> GpuModel<'m> {
         self.ev(li, 1)?;
         self.gemv_t(&l.gate_w, x, self.tmp.ptr, t)?;
         let idx_buf = self.tmp2.ptr; // [t][k] i32 then [t][k] f32 at +256
-        self.g.launch(self.k["router_topk"], (t as u32, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
+        // one token: top-k and publish in one launch (router_publish, below)
+        let fused = t == 1 && !self.skip_experts && self.pregate.is_none();
+        if !fused {
+            self.g.launch(self.k["router_topk"], (t as u32, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
+        }
         if let (Some(pg), 1) = (self.pregate.as_ref(), t) {
             // actual picks of this layer next to the prediction made one layer earlier
             self.g.dtod(pg.ptr + (li * 64 + 32) as u64, idx_buf, c.top_k * 4)?;
@@ -744,7 +748,11 @@ impl<'m> GpuModel<'m> {
         if deferred && li > 0 {
             self.flag_wait(d0 + crate::handoff::XACK as u64, seq - 1)?;
         }
-        self.g.launch(self.k["publish_route"], (1, 1, 1), 1024, 0, &[Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.top_k as i32), Arg::P(x), Arg::I(d as i32), Arg::P(d0), Arg::I(seq as i32), Arg::I(t as i32)])?;
+        if fused {
+            self.g.launch(self.k["router_publish"], (1, 1, 1), 1024, 0, &[Arg::P(self.tmp.ptr), Arg::P(self.layers[li].gate_bias.ptr), Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li)), Arg::P(x), Arg::I(d as i32), Arg::P(d0), Arg::I(seq as i32)])?;
+        } else {
+            self.g.launch(self.k["publish_route"], (1, 1, 1), 1024, 0, &[Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.top_k as i32), Arg::P(x), Arg::I(d as i32), Arg::P(d0), Arg::I(seq as i32), Arg::I(t as i32)])?;
+        }
         match self.exp0.as_ref() {
             Some(s0) if t == 1 => s0.run_device(&self.g, li, idx_buf, idx_buf + 256, c.top_k, x, self.out0.ptr)?,
             Some(s0) => s0.run_device_fast(&self.g, li, idx_buf, idx_buf + 256, c.top_k, t, x, self.out0.ptr)?,
