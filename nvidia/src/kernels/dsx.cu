@@ -1002,6 +1002,45 @@ __device__ __forceinline__ float e4m3_to_f32(uint8_t b) {
   float v = e ? ldexpf(1.f + m * 0.125f, e - 7) : ldexpf((float)m, -9);
   return (b & 0x80) ? -v : v;
 }
+// gemv_f16's exact arithmetic on FP8 + 32x32 E8M0 weights: each e4m3 x 2^s is exactly the f16 value it came from
+// (numerics::f16_to_fp8b32), and lane / column order, the 8-product expression and the warp sum are gemv_f16's, so
+// the output is bit-identical to gemv_f16 on the F16 copy at half the bytes. Two iterations' codes are loaded ahead.
+extern "C" __global__ void gemv_fp8b32_o(const uint8_t *__restrict__ w, const float *__restrict__ x, float *__restrict__ y,
+                                         int rows, int k, int T, int ldx, int ldy, const uint8_t *__restrict__ scale) {
+  int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+  if (r >= rows) return;
+  const uint8_t *wr = w + (size_t)r * k;
+  const uint8_t *sr = scale + (size_t)(r / 32) * (k / 32);
+  float acc[MAXT] = {0};
+  for (int i = lane * 8; i < k; i += 256) {
+    uint2 raw = *(const uint2 *)(wr + i);
+    // e4m3 bits shifted into f16 are the value times 2^-8; times (2^s * 2^8) it is exact
+    const float d = __uint_as_float(((uint32_t)sr[i / 32] + 8) << 23);
+    const uint32_t u[2] = {raw.x, raw.y};
+    float wf[8];
+#pragma unroll
+    for (int j = 0; j < 2; j++) {
+#pragma unroll
+      for (int h = 0; h < 2; h++) {
+        uint32_t xx = __byte_perm(u[j], 0, h ? 0x4342 : 0x4140);
+        uint32_t f = ((xx & 0x00800080u) << 8) | ((xx & 0x007F007Fu) << 7);
+        float2 v = __half22float2(*(const __half2 *)&f);
+        wf[4 * j + 2 * h] = v.x * d;
+        wf[4 * j + 2 * h + 1] = v.y * d;
+      }
+    }
+    for (int t = 0; t < T; t++) {
+      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+      float4 a = xp[0], b = xp[1];
+      acc[t] += wf[0] * a.x + wf[1] * a.y + wf[2] * a.z + wf[3] * a.w + wf[4] * b.x + wf[5] * b.y + wf[6] * b.z + wf[7] * b.w;
+    }
+  }
+  for (int t = 0; t < T; t++) {
+    float s = warp_sum(acc[t]);
+    if (lane == 0) y[(size_t)t * ldy + r] = s;
+  }
+}
+
 // 4 rows per warp (16 per block of 128) sharing each x load; lane l takes 16 columns at l*16 + 512*i (k % 32 == 0).
 // e4m3 bits shifted into f16 (sign to bit 15, exponent + mantissa to bits 7..14) are the value times 2^-8,
 // subnormals included; the 2^8 goes into the block scale, applied once per 16-column partial sum. The token loops run

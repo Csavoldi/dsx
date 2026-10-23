@@ -51,12 +51,31 @@ fn setup() -> Setup {
     Setup { w16: g.upload(&h).unwrap(), w8: g.upload(&q).unwrap(), sc: g.upload(&sc).unwrap(), x: g.upload(&x).unwrap(), y16: g.alloc(ROWS * 4).unwrap(), y8: g.alloc(ROWS * 4).unwrap(), g }
 }
 
-fn launch(s: &Setup, fp8: bool) {
-    let (k, w, y) = if fp8 { ("gemv_fp8b32", s.w8.ptr, s.y8.ptr) } else { ("gemv_f16", s.w16.ptr, s.y16.ptr) };
-    let k = s.g.kernel(k).unwrap();
+/// 0: gemv_f16 on the F16 copy, 1: gemv_fp8b32 (4 rows a warp), 2: gemv_fp8b32_o (gemv_f16's order)
+const KERNELS: [(&str, u32); 3] = [("gemv_f16", 4), ("gemv_fp8b32", 16), ("gemv_fp8b32_o", 4)];
+
+fn launch_k(s: &Setup, which: usize, y: u64) {
+    let (name, per) = KERNELS[which];
+    let w = if which == 0 { s.w16.ptr } else { s.w8.ptr };
     let c = COLS as i32;
-    // gemv_fp8b32: 16 rows per block, gemv_f16: 4
-    s.g.launch(k, ((ROWS as u32).div_ceil(if fp8 { 16 } else { 4 }), 1, 1), 128, 0, &[Arg::P(w), Arg::P(s.x.ptr), Arg::P(y), Arg::I(ROWS as i32), Arg::I(c), Arg::I(1), Arg::I(c), Arg::I(ROWS as i32), Arg::P(s.sc.ptr)]).unwrap();
+    s.g.launch(s.g.kernel(name).unwrap(), ((ROWS as u32).div_ceil(per), 1, 1), 128, 0, &[Arg::P(w), Arg::P(s.x.ptr), Arg::P(y), Arg::I(ROWS as i32), Arg::I(c), Arg::I(1), Arg::I(c), Arg::I(ROWS as i32), Arg::P(s.sc.ptr)]).unwrap();
+}
+
+fn launch(s: &Setup, fp8: bool) {
+    launch_k(s, fp8 as usize, if fp8 { s.y8.ptr } else { s.y16.ptr });
+}
+
+#[test]
+fn fp8_gemv_in_f16_order_is_bit_identical() {
+    let s = setup();
+    launch_k(&s, 0, s.y16.ptr);
+    launch_k(&s, 2, s.y8.ptr);
+    s.g.sync().unwrap();
+    let a: Vec<f32> = s.g.download(s.y16.ptr, ROWS).unwrap();
+    let b: Vec<f32> = s.g.download(s.y8.ptr, ROWS).unwrap();
+    let diff = a.iter().zip(&b).filter(|(p, q)| p.to_bits() != q.to_bits()).count();
+    println!("gemv_fp8b32_o vs gemv_f16: {diff} of {ROWS} outputs differ in any bit");
+    assert_eq!(diff, 0);
 }
 
 #[test]
@@ -79,18 +98,18 @@ fn fp8_gemv_matches_f16() {
 fn fp8_gemv_speed() {
     let s = setup();
     let (e0, e1) = (s.g.timed_event().unwrap(), s.g.timed_event().unwrap());
-    let mut t = [vec![], vec![]];
+    let mut t = [vec![], vec![], vec![]];
     // interleaved, median of 31 each
     for _ in 0..31 {
-        for (i, fp8) in [false, true].into_iter().enumerate() {
+        for (i, tt) in t.iter_mut().enumerate() {
             s.g.record(e0, false).unwrap();
-            launch(&s, fp8);
+            launch_k(&s, i, s.y8.ptr);
             s.g.record(e1, false).unwrap();
             s.g.sync().unwrap();
-            t[i].push(s.g.elapsed_ms(e0, e1).unwrap());
+            tt.push(s.g.elapsed_ms(e0, e1).unwrap());
         }
     }
-    for (i, name) in ["gemv_f16", "gemv_fp8b32"].iter().enumerate() {
+    for (i, (name, _)) in KERNELS.iter().enumerate() {
         t[i].sort_by(f32::total_cmp);
         let ms = t[i][t[i].len() / 2];
         let bytes = if i == 0 { ROWS * COLS * 2 } else { ROWS * COLS + ROWS * COLS / 1024 };
