@@ -53,6 +53,16 @@ pub struct Batch {
     pub(crate) bprev: Buf,
     pub(crate) stage: Vec<Option<Buf>>,
     pub(crate) multi: bool,
+    /// DSpark (when loaded): per draft layer window rings [S][SRING][HD] bf16 (the main model's projected residual);
+    /// a draft step's block kv rows [t][HD], each token's block start position and block rows [t][dblock], kept-row
+    /// gather list, drafted tokens [dblock + 1][S]
+    pub(crate) drings: Vec<Buf>,
+    pub(crate) dblk: Buf,
+    pub(crate) dstart: Buf,
+    pub(crate) dcidx: Buf,
+    pub(crate) orow: Buf,
+    pub(crate) dtok: Buf,
+    pub dblock: usize,
 }
 
 impl Batch {
@@ -120,6 +130,13 @@ impl Decoder {
             bprev: g.alloc_zeroed(BMAX * 4)?,
             stage: self.layers.iter().map(|l| if l.kv_src && l.ratio == 2 { g.alloc_zeroed(BMAX * 2 * HD * 4).ok() } else { None }).collect(),
             multi: false,
+            drings: match &self.dspark { Some(ds) => ds.layers.iter().map(|_| g.alloc_zeroed(slots * SRING * HD * 2)).collect::<Result<Vec<_>>>()?, None => vec![] },
+            dblk: g.alloc_zeroed(BMAX * HD * 2)?,
+            dstart: g.alloc_zeroed(BMAX * 4)?,
+            dcidx: g.alloc_zeroed(BMAX * 16 * 4)?,
+            orow: g.alloc_zeroed(BMAX * 4)?,
+            dtok: g.alloc_zeroed(17 * BMAX * 4)?,
+            dblock: self.dspark.as_ref().map(|d| d.block).unwrap_or(0),
         })
     }
 
@@ -141,6 +158,11 @@ impl Decoder {
                 pack(l.comp_cache.as_ref().unwrap().ptr, HD, 16, true, b.comp[li].as_ref().unwrap().at(slot * r * CROW_B), CROW_B)?;
                 pack(l.idx_cache.as_ref().unwrap().ptr, ID, 32, false, b.idx[li].as_ref().unwrap().at(slot * r * IROW_B), IROW_B)?;
                 g.dtod(b.cst[li].as_ref().unwrap().at(slot * 4 * HD * 4), l.cstate.as_ref().unwrap().ptr, 4 * HD * 4)?;
+            }
+        }
+        if let Some(ds) = &self.dspark {
+            for (li, l) in ds.layers.iter().enumerate() {
+                g.launch("ring_remap", (WIN as u32, 1, 1), 256, 0, &[Arg::P(l.ring.ptr), Arg::I(WIN as i32), Arg::P(b.drings[li].at(slot * SRING * HD * 2)), Arg::I(SRING as i32), Arg::I(self.pos as i32 - WIN as i32)])?;
             }
         }
         let bad: Vec<i32> = g.dtoh(b.bad.ptr, 1)?;
@@ -167,6 +189,11 @@ impl Decoder {
                 unpack(b.comp[li].as_ref().unwrap().at(slot * r * CROW_B), HD, 16, true, CROW_B, l.comp_cache.as_ref().unwrap().ptr)?;
                 unpack(b.idx[li].as_ref().unwrap().at(slot * r * IROW_B), ID, 32, false, IROW_B, l.idx_cache.as_ref().unwrap().ptr)?;
                 g.dtod(l.cstate.as_ref().unwrap().ptr, b.cst[li].as_ref().unwrap().at(slot * 4 * HD * 4), 4 * HD * 4)?;
+            }
+        }
+        if let Some(ds) = &self.dspark {
+            for (li, l) in ds.layers.iter().enumerate() {
+                g.launch("ring_remap", (WIN as u32, 1, 1), 256, 0, &[Arg::P(b.drings[li].at(slot * SRING * HD * 2)), Arg::I(SRING as i32), Arg::P(l.ring.ptr), Arg::I(WIN as i32), Arg::I(pos as i32 - WIN as i32)])?;
             }
         }
         self.hist_tokens = b.hist[slot].clone();
@@ -288,6 +315,53 @@ impl Decoder {
         }
         b.pos[slot] += keep;
         Ok(())
+    }
+
+    /// DSpark drafts for slots[i] whose next (sampled, not yet fed) token is nexts[i]: the draft layers over a block
+    /// [next, noise x (block-1)] per slot at its next positions, then the Markov head in order. Returns `block`
+    /// drafted tokens per slot (the tokens after next).
+    pub fn batch_draft(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32]) -> Result<Vec<Vec<u32>>> {
+        let ds = self.dspark.as_ref().ok_or_else(|| anyhow::anyhow!("DSpark not loaded (DSXA_DSPARK=3)"))?;
+        let (blk, noise, rank) = (ds.block, ds.noise, ds.rank);
+        let (mh_w, me) = (ds.markov_head.w.ptr, ds.markov_embed.ptr);
+        let nb = slots.len();
+        let t = nb * blk;
+        anyhow::ensure!(t <= BMAX, "draft batch of {t} tokens");
+        let (mut bp, mut bs, mut st, mut ci, mut tk) = (vec![], vec![], vec![], vec![], vec![]);
+        for (i, &s) in slots.iter().enumerate() {
+            for j in 0..blk {
+                bp.push((b.pos[s] + j) as i32);
+                bs.push(s as i32);
+                st.push(b.pos[s] as i32);
+                for jj in 0..blk {
+                    ci.push((i * blk + jj) as i32);
+                }
+                tk.push(if j == 0 { nexts[i] } else { noise });
+            }
+        }
+        let g = &self.g;
+        g.htod(b.bpos.ptr, &bp)?;
+        g.htod(b.bslot.ptr, &bs)?;
+        g.htod(b.dstart.ptr, &st)?;
+        g.htod(b.dcidx.ptr, &ci)?;
+        let nx: Vec<i32> = nexts.iter().map(|&x| x as i32).collect();
+        g.htod(b.dtok.ptr, &nx)?;
+        b.step_pos = bp.iter().map(|&p| p as usize).collect();
+        b.erows = vec![0u8; t * 2 * ENG_ROW_BYTES];
+        *b.eng1.borrow_mut() = None;
+        if self.pf.is_none() {
+            self.prefill(&[])?;
+        }
+        self.run_chunk_draft_b(&tk, b)?;
+        // Markov head in order: row (slot i, block j) += markov(previous drafted token), argmax
+        let g = &self.g;
+        for j in 0..blk {
+            let mj = crate::verify::VJob { w: mh_w, n: VOCAB as i32, k: rank as i32, fmt: 4, xb: me, rows: b.dtok.at(j * BMAX * 4), ldx: rank as i32, ntok: nb as i32, y: b.logits.at(j * VOCAB * 4), ldy: (blk * VOCAB) as i32, atomic: 1, mul: 1.0, split: 1, ..Default::default() };
+            self.blaunch("dspark markov", vec![mj])?;
+            g.launch("argmax_b", (nb as u32, 1, 1), 1024, 0, &[Arg::P(b.logits.at(j * VOCAB * 4)), Arg::I(VOCAB as i32), Arg::I((blk * VOCAB) as i32), Arg::P(b.dtok.at((j + 1) * BMAX * 4))])?;
+        }
+        let v: Vec<i32> = g.dtoh(b.dtok.ptr, (blk + 1) * BMAX)?;
+        Ok((0..nb).map(|i| (1..=blk).map(|j| v[j * BMAX + i] as u32).collect()).collect())
     }
 
     /// head over the batch's final-norm rows (bf16 hi + lo), argmax per token into b.next

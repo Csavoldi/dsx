@@ -366,3 +366,31 @@ extern "C" __global__ void ring_remap(const uint16_t* src, int smod, uint16_t* d
     uint16_t* d = dst + (size_t)(p % dmod) * HD;
     for (int i = threadIdx.x; i < HD; i += blockDim.x) d[i] = s[i];
 }
+
+// ---- batched DSpark drafting: blocks of consecutive draft tokens per slot, bidirectional inside the block
+// draft window kv rows of a step's tokens (rmsnorm, rope(pos), fake_fp8) -> blk[t] (bf16; never committed)
+extern "C" __global__ void __launch_bounds__(512) kv_bt(const float* kv_raw, const float* kv_norm, const float* rf, const int* bpos, uint16_t* blk) {
+    __shared__ float red[16];
+    const int t = blockIdx.x, i = threadIdx.x, pos = bpos[t];
+    float v = kv_raw[(size_t)t * HD + i];
+    const float ss = block_sum(v * v, red);
+    v = kv_norm[i] * (v * (1.f / sqrtf(ss / HD + 1e-20f)));
+    const float other = __shfl_xor(v, 1);
+    if (i >= HD - RD) {
+        const int p = (i - (HD - RD)) / 2;
+        const float ang = (float)pos * rf[p];
+        const float sn = sinf(ang), cs = cosf(ang);
+        v = (i & 1) ? other * sn + v * cs : v * cs - other * sn;
+    }
+    blk[(size_t)t * HD + i] = (uint16_t)bf16_bits(fake_fp8_lane(v));
+}
+// attention of a draft token: its slot's ring rows of the positions before its block (bstart[t]), then the block's
+// rows blk[cidx[t][0..nb)] (all of the block: bidirectional)
+extern "C" __global__ void __launch_bounds__(1024) attn_bd(const int* bstart, const int* bslot, float* __restrict__ q,
+                                                           const uint16_t* __restrict__ rings, long long ring_stride,
+                                                           const uint16_t* __restrict__ blk, const int* __restrict__ cidx, int nb,
+                                                           float scale, const float* sinks) {
+    const int t = blockIdx.x, p0 = bstart[t], s = bslot[t];
+    const int lo = max(0, p0 - WIN);
+    attn_core(t, lo, p0 - lo, 0, true, q, rings + (size_t)s * ring_stride, blk, cidx, nb, nb, 0, scale, sinks, false);
+}

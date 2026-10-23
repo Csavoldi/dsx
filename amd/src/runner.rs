@@ -31,6 +31,8 @@ struct Seq {
     /// first stop token: emitted to end a sequence at the context limit
     stop: Option<u32>,
     cached: usize,
+    /// speculative decoding state (prompt lookup, DSpark acceptance), from the end of the prefill
+    spec: Option<crate::spec::SpecState>,
 }
 
 struct Slot {
@@ -119,7 +121,7 @@ impl BatchEngine for Runner<'_> {
             sl.tokens.clear();
         }
         let sampler = if p.temperature > 0.0 { Some(Sampler::from_params(p)) } else { None };
-        self.seqs.insert(id, Seq { slot, phase: Phase::Prefill { prompt: prompt.to_vec(), done: reuse }, fed: prompt[..reuse].to_vec(), sampler, stop: p.stop_token_ids.first().copied(), cached: reuse });
+        self.seqs.insert(id, Seq { slot, phase: Phase::Prefill { prompt: prompt.to_vec(), done: reuse }, fed: prompt[..reuse].to_vec(), sampler, stop: p.stop_token_ids.first().copied(), cached: reuse, spec: None });
         self.waiting.push_back(id);
         Ok(())
     }
@@ -152,6 +154,11 @@ impl BatchEngine for Runner<'_> {
                 let mut s = self.seqs.remove(&wid).unwrap();
                 let tok = self.pick(&mut s, |d| d.logits(), next)?;
                 s.phase = Phase::Decode { next: tok };
+                let mut h = s.fed.clone();
+                h.push(tok);
+                let mut sp = crate::spec::SpecState::new(&h);
+                sp.greedy = s.sampler.is_none();
+                s.spec = Some(sp);
                 self.seqs.insert(wid, s);
                 out.push((wid, tok));
                 // stays in the lane; parked below if others decode or prompts wait
@@ -176,14 +183,16 @@ impl BatchEngine for Runner<'_> {
                 true
             }
         });
-        // a lone decoding sequence runs in the lane (the decode graph is ~2.5x faster than a batch of one)
-        if dec_ids.len() == 1 && self.waiting.is_empty() && self.lane != Some(dec_ids[0]) {
+        // DSXR_SOLO=1: a lone decoding sequence runs in the lane on the decode graph (faster than a batch of one
+        // without drafts; with prompt-lookup drafts the batched path is much faster on agentic output)
+        let solo_lane = std::env::var("DSXR_SOLO").map(|v| v == "1").unwrap_or(false);
+        if solo_lane && dec_ids.len() == 1 && self.waiting.is_empty() && self.lane != Some(dec_ids[0]) {
             self.park_lane()?;
             let slot = self.seqs[&dec_ids[0]].slot;
             self.dec.unload_slot(&self.b, slot)?;
             self.lane = Some(dec_ids[0]);
         }
-        let solo = dec_ids.len() == 1 && self.waiting.is_empty() && self.lane == Some(dec_ids[0]);
+        let solo = solo_lane && dec_ids.len() == 1 && self.waiting.is_empty() && self.lane == Some(dec_ids[0]);
         if solo {
             let id = dec_ids[0];
             let mut s = self.seqs.remove(&id).unwrap();
@@ -203,24 +212,42 @@ impl BatchEngine for Runner<'_> {
             }
         }
         dec_ids.sort();
-        let slots: Vec<usize> = dec_ids.iter().map(|id| self.seqs[id].slot).collect();
-        let toks: Vec<u32> = dec_ids.iter().map(|id| match self.seqs[id].phase { Phase::Decode { next } => next, _ => unreachable!() }).collect();
-        for chunk in (0..dec_ids.len()).collect::<Vec<_>>().chunks(crate::batch::BMAX) {
-            let cs: Vec<usize> = chunk.iter().map(|&i| slots[i]).collect();
-            let ct: Vec<u32> = chunk.iter().map(|&i| toks[i]).collect();
-            let greedy = self.dec.batch_step(&mut self.b, &cs, &ct)?;
-            for (j, &i) in chunk.iter().enumerate() {
-                let id = dec_ids[i];
-                let mut s = self.seqs.remove(&id).unwrap();
-                s.fed.push(ct[j]);
-                let b = &self.b;
-                let tok = match s.sampler.as_mut() {
-                    Some(sm) => sm.sample(&self.dec.batch_logits(b, j)?),
-                    None => greedy[j],
-                };
-                s.phase = Phase::Decode { next: tok };
-                self.seqs.insert(id, s);
-                out.push((id, tok));
+        // speculative step (prompt lookup / DSpark drafts for greedy sessions); at most BMAX fed tokens per step
+        let mut todo = dec_ids.clone();
+        while !todo.is_empty() {
+            let take: Vec<u64> = todo.drain(..todo.len().min(crate::batch::BMAX / (crate::spec::MAX_DRAFTS + 1))).collect();
+            let slots: Vec<usize> = take.iter().map(|id| self.seqs[id].slot).collect();
+            let nexts: Vec<u32> = take.iter().map(|id| match self.seqs[id].phase { Phase::Decode { next } => next, _ => unreachable!() }).collect();
+            let mut seqs: Vec<Seq> = take.iter().map(|id| self.seqs.remove(id).unwrap()).collect();
+            let r = {
+                let mut sts: Vec<&mut crate::spec::SpecState> = vec![];
+                let mut samplers: Vec<Option<&mut Sampler>> = vec![];
+                for sq in seqs.iter_mut() {
+                    let Seq { spec, sampler, .. } = sq;
+                    sts.push(spec.as_mut().unwrap());
+                    samplers.push(sampler.as_mut());
+                }
+                self.dec.spec_step_s(&mut self.b, &slots, &nexts, &mut sts, &mut |i, l| samplers[i].as_mut().map(|s| s.sample(l)).unwrap_or(0))
+            };
+            match r {
+                Ok(em) => {
+                    for ((id, mut s), e) in take.iter().zip(seqs).zip(em) {
+                        let Phase::Decode { next } = s.phase else { unreachable!() };
+                        s.fed.push(next);
+                        s.fed.extend_from_slice(&e[..e.len() - 1]);
+                        s.phase = Phase::Decode { next: *e.last().unwrap() };
+                        for &tk in &e {
+                            out.push((*id, tk));
+                        }
+                        self.seqs.insert(*id, s);
+                    }
+                }
+                Err(e) => {
+                    for (id, s) in take.iter().zip(seqs) {
+                        self.seqs.insert(*id, s);
+                    }
+                    return Err(e);
+                }
             }
         }
         Ok(out)

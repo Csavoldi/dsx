@@ -435,6 +435,11 @@ impl Decoder {
         self.run_chunk_full(tk, false, false, Some(b))
     }
 
+    /// Batched DSpark draft pass over the draft layers (logits of every row left in b.logits)
+    pub(crate) fn run_chunk_draft_b(&mut self, tk: &[u32], b: &crate::batch::Batch) -> Result<Vec<u32>> {
+        self.run_chunk_full(tk, false, true, Some(b))
+    }
+
     fn run_chunk_full(&mut self, tk: &[u32], verify: bool, draft: bool, bt: Option<&crate::batch::Batch>) -> Result<Vec<u32>> {
         let t = tk.len();
         let p0 = self.pos;
@@ -497,7 +502,8 @@ impl Decoder {
         // prompt chunks: experts grouped on the device too (bgroup jobs of 16 * DSXA_PG tokens; DSXA_PGROUP=0: mm)
         let pg = bt.is_none() && !verify && !draft && t >= 16 && t * 6 <= 12288 && !plain("mm experts")
             && std::env::var("DSXA_PGROUP").map(|v| v != "0").unwrap_or(true);
-        let mh_slot = |li: usize| if draft || bt.is_some() { None } else { dsx.and_then(|d| d.targets.iter().position(|&x| x == li)) };
+        // DSpark main_hidden capture (prompt, verify and batched verify passes): layer -> slot
+        let mh_slot = |li: usize| if draft { None } else { dsx.and_then(|d| d.targets.iter().position(|&x| x == li)) };
         let nl = layers.len();
         let hc = |y: u64, round: bool, pm: u64, pa: &HcArgs, pre: u64, prea: &HcArgs, fnw: u64, nmix: u64, xr: u64, xss: u64, eng: Option<(u64, u64)>| -> Result<()> {
             let (ev, es) = eng.unwrap_or((0, 0));
@@ -604,7 +610,7 @@ impl Decoder {
                 if l.idx_wq_b.is_some() {
                     g.launch("rope_b", (t as u32, IH as u32, 1), 32, 0, &[Arg::P(pf.iq.ptr), Arg::I(IH as i32), Arg::I(ID as i32), Arg::P(self.rope_fc.ptr), Arg::P(b.bpos.ptr), Arg::I(0)])?;
                 }
-                self.batch_attn(b, li, t, rf, wscale)?;
+                if draft { self.batch_attn_draft(b, li, t, rf)?; } else { self.batch_attn(b, li, t, rf, wscale)?; }
             } else {
             g.launch("rope_t", (t as u32, NH as u32, 1), 32, 0, &[Arg::P(pf.q.ptr), Arg::I(NH as i32), Arg::I(HD as i32), Arg::P(rf), Arg::I(p0a), Arg::I(0)])?;
             if l.idx_wq_b.is_some() {
@@ -996,6 +1002,50 @@ impl Decoder {
 }
 
 impl Decoder {
+    /// Batched DSpark draft, draft layer li: block kv rows into b.dblk, attention over each token's slot draft ring
+    /// (positions before its block) and its whole block, inverse RoPE + FP8 for wo_a
+    fn batch_attn_draft(&self, b: &crate::batch::Batch, li: usize, t: usize, rf: u64) -> Result<()> {
+        let g = &self.g;
+        let pf = self.pf.as_ref().unwrap();
+        let l = &self.dspark.as_ref().unwrap().layers[li];
+        g.launch("kv_bt", (t as u32, 1, 1), 512, 0, &[Arg::P(pf.kvraw.ptr), Arg::P(l.kv_norm.ptr), Arg::P(rf), Arg::P(b.bpos.ptr), Arg::P(b.dblk.ptr)])?;
+        g.launch(
+            "attn_bd",
+            (t as u32, 1, 1),
+            1024,
+            0,
+            &[Arg::P(b.dstart.ptr), Arg::P(b.bslot.ptr), Arg::P(pf.q.ptr), Arg::P(b.drings[li].ptr), Arg::P((SRING * HD) as u64), Arg::P(b.dblk.ptr), Arg::P(b.dcidx.ptr), Arg::I(b.dblock as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr)],
+        )?;
+        g.launch("attn_out_b", (t as u32, (NH / 8) as u32, 1), 256, 0, &[Arg::P(b.bpos.ptr), Arg::P(pf.q.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])
+    }
+
+    /// After a batched verify: record the main model's residual (main_hidden, captured for every verify row) of the
+    /// kept rows `rows` (positions `pos`, slots `slots`) in the slots' draft rings, as observe does for one sequence
+    pub(crate) fn batch_observe(&self, b: &crate::batch::Batch, t: usize, rows: &[i32], pos: &[i32], slots: &[i32]) -> Result<()> {
+        let ds = self.dspark.as_ref().unwrap();
+        let g = &self.g;
+        let pf = self.pf.as_ref().unwrap();
+        let n = rows.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let (mh, aq, as_, y, kvraw, _) = pf.dspark_bufs();
+        g.htod(b.orow.ptr, rows)?;
+        g.htod(b.bpos.ptr, pos)?;
+        g.htod(b.bslot.ptr, slots)?;
+        // main_proj(main_hidden of the kept rows) -> rmsnorm(main_norm) -> FP8
+        self.prep(4, mh, 0, 3 * D, 0, 0, 0, 3 * D, t, aq, as_, 0, 0)?;
+        let j = crate::verify::VJob { w: ds.main_proj.w.ptr, sc: ds.main_proj.sc.as_ref().unwrap().ptr, fmt: 0, n: D as i32, k: (3 * D) as i32, xq: aq, xs: as_, ldx: (3 * D) as i32, rows: b.orow.ptr, ntok: n as i32, y, ldy: D as i32, mul: 1.0, ..Default::default() };
+        self.blaunch("dspark main_proj", vec![j])?;
+        self.prep(1, y, 0, D, ds.main_norm.ptr, 0, 0, D, n, aq, as_, 0, 0)?;
+        for (li, l) in ds.layers.iter().enumerate() {
+            let j = crate::verify::VJob { w: l.wkv.w.ptr, sc: l.wkv.sc.as_ref().unwrap().ptr, fmt: 0, n: HD as i32, k: D as i32, xq: aq, xs: as_, ldx: D as i32, ntok: n as i32, y: kvraw, ldy: HD as i32, mul: 1.0, ..Default::default() };
+            self.blaunch("dspark kv", vec![j])?;
+            g.launch("kv_b", (n as u32, 1, 1), 512, 0, &[Arg::P(kvraw), Arg::P(l.kv_norm.ptr), Arg::P(self.rope_f.ptr), Arg::P(b.bpos.ptr), Arg::P(b.bslot.ptr), Arg::P(b.drings[li].ptr), Arg::P((SRING * HD) as u64)])?;
+        }
+        Ok(())
+    }
+
     /// Batched decode, layer li after the q / kv / compressor projections: window row into each slot's ring,
     /// compressor + indexer keys, indexer top-k per token, sparse attention, inverse RoPE + FP8 for wo_a
     fn batch_attn(&self, b: &crate::batch::Batch, li: usize, t: usize, rf: u64, wscale: f32) -> Result<()> {

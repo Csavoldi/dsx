@@ -11,11 +11,12 @@ mod serve;
 mod verify;
 mod batch;
 mod runner;
+mod spec;
 mod dspark;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use decode::Decoder;
+use decode::{Decoder, NE};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -658,6 +659,220 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         println!("vbtest {bsz} x {k}: verify matched {same} / {} sequential tokens (logit KL mean {:.2e}, max {:.2e}); next step after commit {after} / {bsz} equal", bsz * k, klsum / (bsz * k) as f64, klmax);
                         println!("  slot 0 sequential {:?}\n  slot 0 verify     {:?}", &seq[0][1..=k], &outs[0]);
                     }
+                    "bspec" => {
+                        // bspec B N PLEN [K]: B distinct prompts; N greedy tokens per slot with batched DSpark drafts (K of the
+                        // block's drafts verified, default all) vs plain batched decoding from the same state
+                        let bsz: usize = w[1].parse()?;
+                        let n: usize = w[2].parse()?;
+                        let plen: usize = w[3].parse()?;
+                        let ev: Vec<u32> = std::fs::read("/data/models/lucebox/eval/heldout.i32")?.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as u32).collect();
+                        let mut a = dec.new_batch(bsz, plen + n + 64)?;
+                        let mut sb = dec.new_batch(bsz, plen + n + 64)?;
+                        let kd: usize = w.get(4).map(|s| s.parse()).transpose()?.unwrap_or(sb.dblock);
+                        // PLEN 0: chat prompts (coding / agentic questions); else eval text slices of PLEN tokens
+                        let qs = ["Write a Python function that merges two sorted lists, with tests.", "Explain how a hash map handles collisions, with a short Rust example.",
+                            "Write a bash script that finds the 10 largest files under a directory.", "Implement binary search in C and explain its edge cases.",
+                            "Write a SQL query that returns the top 3 customers by revenue per month.", "Refactor this JavaScript callback code into async/await: fs.readFile('a', (e, d) => { if (e) throw e; console.log(d) })",
+                            "Write a Go HTTP server with one JSON endpoint that returns the current time.", "Explain what a mutex is and show a deadlock example in Python.",
+                            "Write a TypeScript type for a deeply readonly object and explain it.", "Implement an LRU cache in Python with O(1) operations.",
+                            "Write a Dockerfile for a Node.js app with a multi-stage build.", "Explain the difference between processes and threads, then give a C example of fork().",
+                            "Write a regex that matches ISO 8601 dates and explain each part.", "Write a Rust function that parses a CSV line with quoted fields.",
+                            "Implement quicksort in Java and analyze its complexity.", "Write a Python asyncio program that fetches 5 URLs concurrently."];
+                        let tok = tokenizers::Tokenizer::from_file(model.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let mut first = vec![];
+                        for s in 0..bsz {
+                            dec.reset()?;
+                            let pr: Vec<u32> = if plen == 0 {
+                                let chat = format!("<｜begin▁of▁sentence｜><｜User｜>{}<｜Assistant｜></think>", qs[s % qs.len()]);
+                                tok.encode(chat.as_str(), false).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().to_vec()
+                            } else { (0..plen).map(|i| ev[(s * 997 + i) % ev.len()]).collect() };
+                            first.push(dec.prefill(&pr)?);
+                            dec.load_slot(&mut a, s)?;
+                            dec.load_slot(&mut sb, s)?;
+                        }
+                        let slots: Vec<usize> = (0..bsz).collect();
+                        // plain
+                        let t0 = Instant::now();
+                        let mut plain: Vec<Vec<u32>> = first.iter().map(|&f| vec![f]).collect();
+                        let mut cur = first.clone();
+                        for _ in 1..n {
+                            cur = dec.batch_step(&mut a, &slots, &cur)?;
+                            for s in 0..bsz { plain[s].push(cur[s]); }
+                        }
+                        let tp = t0.elapsed().as_secs_f64();
+                        // speculative
+                        let t1 = Instant::now();
+                        let mut out: Vec<Vec<u32>> = first.iter().map(|&f| vec![f]).collect();
+                        let mut next = first.clone();
+                        let (mut passes, mut acc_tot, mut tdraft) = (0usize, 0usize, 0f64);
+                        let mut live: Vec<usize> = (0..bsz).collect();
+                        while !live.is_empty() {
+                            let td = Instant::now();
+                            let nx: Vec<u32> = live.iter().map(|&s| next[s]).collect();
+                            let drafts = dec.batch_draft(&mut sb, &live, &nx)?;
+                            tdraft += td.elapsed().as_secs_f64();
+                            let feeds: Vec<Vec<u32>> = live.iter().enumerate().map(|(i, &s)| {
+                                let mut f = vec![next[s]];
+                                f.extend_from_slice(&drafts[i][..kd]);
+                                f.truncate(n - out[s].len() + 1);
+                                f
+                            }).collect();
+                            let pre: Vec<usize> = live.iter().map(|&s| sb.pos[s]).collect();
+                            let outs = dec.batch_verify(&mut sb, &live, &feeds)?;
+                            let (mut rows, mut opos, mut oslot) = (vec![], vec![], vec![]);
+                            let mut row = 0;
+                            for (i, &s) in live.iter().enumerate() {
+                                let f = &feeds[i];
+                                let mut acc = 0;
+                                while acc + 1 < f.len() && outs[i][acc] == f[acc + 1] { acc += 1; }
+                                dec.batch_commit(&mut sb, s, row, f, acc + 1)?;
+                                for j in 0..=acc {
+                                    rows.push((row + j) as i32);
+                                    opos.push((pre[i] + j) as i32);
+                                    oslot.push(s as i32);
+                                    if j > 0 { out[s].push(f[j]); }
+                                }
+                                out[s].push(outs[i][acc]);
+                                next[s] = outs[i][acc];
+                                passes += 1;
+                                acc_tot += acc;
+                                row += f.len();
+                            }
+                            let tv: usize = feeds.iter().map(|f| f.len()).sum();
+                            dec.batch_observe(&sb, tv, &rows, &opos, &oslot)?;
+                            live.retain(|&s| out[s].len() < n);
+                        }
+                        let ts = t1.elapsed().as_secs_f64();
+                        let mut same = 0;
+                        for s in 0..bsz {
+                            out[s].truncate(n);
+                            same += out[s].iter().zip(&plain[s]).take_while(|(x, y)| x == y).count();
+                        }
+                        println!("bspec B={bsz} N={n} ctx~{plen}: plain {:.1} tok/s per session, spec {:.1} tok/s per session ({:.2}x); {:.2} drafts accepted per pass; draft {:.0}% of the time; output = plain for {same} / {} tokens",
+                            (n - 1) as f64 / tp, (n - 1) as f64 / ts, tp / ts, acc_tot as f64 / passes as f64, 100.0 * tdraft / ts, bsz * n);
+                    }
+                    "dcmp" => {
+                        // dcmp PLEN: drafts after a prompt from the single-sequence path vs batch_draft from the same state
+                        let plen: usize = w[1].parse()?;
+                        let ev: Vec<u32> = std::fs::read("/data/models/lucebox/eval/heldout.i32")?.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as u32).collect();
+                        let mut b = dec.new_batch(2, plen + 64)?;
+                        dec.reset()?;
+                        let pr: Vec<u32> = ev[..plen].to_vec();
+                        let next = dec.prefill(&pr)?;
+                        dec.load_slot(&mut b, 1)?;
+                        // passes of draft -> verify -> commit -> observe on both paths
+                        let (mut n1, mut n2) = (next, next);
+                        for pass in 0..4 {
+                            let d1 = dec.draft(n1)?;
+                            let mut f1 = vec![n1];
+                            f1.extend_from_slice(&d1);
+                            let p0 = dec.pos;
+                            let o1 = dec.verify(&f1)?;
+                            let mut a1 = 0;
+                            while a1 + 1 < f1.len() && o1[a1] == f1[a1 + 1] { a1 += 1; }
+                            dec.commit(f1.len(), a1 + 1)?;
+                            dec.observe(p0, a1 + 1, 0)?;
+                            n1 = o1[a1];
+                            let d2 = dec.batch_draft(&mut b, &[1], &[n2])?;
+                            let mut f2 = vec![n2];
+                            f2.extend_from_slice(&d2[0]);
+                            let q0 = b.pos[1];
+                            let o2 = dec.batch_verify(&mut b, &[1], &[f2.clone()])?;
+                            let mut a2 = 0;
+                            while a2 + 1 < f2.len() && o2[0][a2] == f2[a2 + 1] { a2 += 1; }
+                            dec.batch_commit(&mut b, 1, 0, &f2, a2 + 1)?;
+                            let rows: Vec<i32> = (0..=a2 as i32).collect();
+                            let pos: Vec<i32> = (0..=a2).map(|j| (q0 + j) as i32).collect();
+                            dec.batch_observe(&b, f2.len(), &rows, &pos, &vec![1; a2 + 1])?;
+                            n2 = o2[0][a2];
+                            println!("pass {pass}: single feed {:?} verify {:?} acc {a1}\n        batch  feed {:?} verify {:?} acc {a2}", f1, o1, f2, o2[0], );
+                        }
+                    }
+                    "sspec" => {
+                        // sspec B N MODE: B sessions, N tokens each, plain batched decoding vs spec_step (prompt lookup + adaptive
+                        // DSpark). MODE chat: coding questions; edit: a source file to return with one change (agentic copying)
+                        let bsz: usize = w[1].parse()?;
+                        let n: usize = w[2].parse()?;
+                        let mode = w.get(3).copied().unwrap_or("chat");
+                        let tok = tokenizers::Tokenizer::from_file(model.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let qs = ["Write a Python function that merges two sorted lists, with tests.", "Explain how a hash map handles collisions, with a short Rust example.",
+                            "Write a bash script that finds the 10 largest files under a directory.", "Implement binary search in C and explain its edge cases.",
+                            "Write a SQL query that returns the top 3 customers by revenue per month.", "Write a Go HTTP server with one JSON endpoint that returns the current time.",
+                            "Explain what a mutex is and show a deadlock example in Python.", "Implement an LRU cache in Python with O(1) operations."];
+                        let files = ["/root/dsx/amd/src/runner.rs", "/root/dsx/amd/src/spec.rs", "/root/dsx/amd/src/serve.rs", "/root/dsx/amd/src/ck.rs", "/root/dsx/amd/src/export.rs", "/root/dsx/amd/src/load.rs"];
+                        let mut prompts = vec![];
+                        for s in 0..bsz {
+                            let user = if mode == "edit" {
+                                let f = files[s % files.len()];
+                                let src = std::fs::read_to_string(f)?;
+                                format!("Here is a file:\n\n```rust\n{src}\n```\n\nRewrite the whole file with every doc comment line starting with `//!` changed to start with `// NOTE:`. Output only the full file.")
+                            } else { qs[s % qs.len()].to_string() };
+                            let chat = format!("<｜begin▁of▁sentence｜><｜User｜>{user}<｜Assistant｜></think>");
+                            prompts.push(tok.encode(chat.as_str(), false).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().to_vec());
+                        }
+                        let ctx = prompts.iter().map(|p| p.len()).max().unwrap() + n + 64;
+                        let mut a = dec.new_batch(bsz, ctx)?;
+                        let mut sb = dec.new_batch(bsz, ctx)?;
+                        let mut first = vec![];
+                        for s in 0..bsz {
+                            dec.reset()?;
+                            first.push(dec.prefill(&prompts[s])?);
+                            dec.load_slot(&mut a, s)?;
+                            dec.load_slot(&mut sb, s)?;
+                        }
+                        let slots: Vec<usize> = (0..bsz).collect();
+                        let t0 = Instant::now();
+                        let mut cur = first.clone();
+                        for _ in 1..n {
+                            cur = dec.batch_step(&mut a, &slots, &cur)?;
+                        }
+                        let tp = t0.elapsed().as_secs_f64();
+                        let mut st: Vec<spec::SpecState> = (0..bsz).map(|s| { let mut h = prompts[s].clone(); h.push(first[s]); spec::SpecState::new(&h) }).collect();
+                        let mut got = vec![1usize; bsz];
+                        let mut next = first.clone();
+                        let t1 = Instant::now();
+                        let mut steps = 0;
+                        loop {
+                            let live: Vec<usize> = (0..bsz).filter(|&s| got[s] < n).collect();
+                            if live.is_empty() { break; }
+                            let nx: Vec<u32> = live.iter().map(|&s| next[s]).collect();
+                            let mut refs: Vec<&mut spec::SpecState> = st.iter_mut().enumerate().filter(|(s, _)| got[*s] < n).map(|(_, x)| x).collect();
+                            let em = dec.spec_step(&mut sb, &live, &nx, &mut refs)?;
+                            for (k, &s) in live.iter().enumerate() {
+                                got[s] += em[k].len();
+                                next[s] = *em[k].last().unwrap();
+                            }
+                            steps += 1;
+                        }
+                        let ts = t1.elapsed().as_secs_f64();
+                        let ngen: usize = got.iter().sum::<usize>() - bsz;
+                        let acc: usize = st.iter().map(|x| x.accepted).sum();
+                        let ng: usize = st.iter().map(|x| x.ngram_hits).sum();
+                        let passes: usize = st.iter().map(|x| x.passes).sum();
+                        println!("sspec B={bsz} N={n} {mode} (prompts ~{} tokens): plain {:.1} tok/s per session ({:.0} total); spec {:.1} tok/s per session ({:.0} total, {:.2}x); {steps} steps, {:.2} drafts accepted per session-step ({} from prompt lookup)",
+                            prompts.iter().map(|p| p.len()).sum::<usize>() / bsz, (n - 1) as f64 / tp, (bsz * (n - 1)) as f64 / tp, ngen as f64 / bsz as f64 / ts, ngen as f64 / ts, tp / (ts * (bsz * (n - 1)) as f64 / ngen as f64), acc as f64 / passes as f64, ng);
+                    }
+                    "prune" => {
+                        // prune FRAC: the coldest FRAC of each layer's experts (rank file order) never routed (router bias -1e30);
+                        // the remaining picks renormalize as usual. prune 0 restores the router.
+                        let frac: f64 = w[1].parse()?;
+                        thread_local! { static ORIG: std::cell::RefCell<Vec<Vec<f32>>> = const { std::cell::RefCell::new(vec![]) }; }
+                        ORIG.with(|o| -> Result<()> {
+                            let mut o = o.borrow_mut();
+                            if o.is_empty() {
+                                for l in &dec.layers { o.push(dec.g.dtoh(l.gate_bias.ptr, NE)?); }
+                            }
+                            let k = (frac * NE as f64).round() as usize;
+                            for (li, l) in dec.layers.iter().enumerate() {
+                                let mut bias = o[li].clone();
+                                let cold: Vec<usize> = rank.iter().rev().filter(|(lr, _)| *lr == li).map(|&(_, e)| e).take(k).collect();
+                                for e in cold { bias[e] = -1e30; }
+                                dec.g.htod(l.gate_bias.ptr, &bias)?;
+                            }
+                            println!("pruned {k} of {NE} experts per layer");
+                            Ok(())
+                        })?;
+                    }
                     "rbench" => {
                         // rbench SLOTS CTX N PROMPT GEN [TURNS]: N requests of PROMPT synthetic tokens (distinct per request),
                         // GEN greedy tokens each, through the batched runner; TURNS > 1 sends each conversation's
@@ -695,6 +910,7 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                             if out.len() > 1 { tdec += dt; toks += out.len(); }
                             for (id, tk) in out {
                                 let i = id as usize;
+                                if got[i] >= ngen { continue; } // tokens of a step past the end
                                 first[i].get_or_insert(t0.elapsed().as_secs_f64());
                                 got[i] += 1;
                                 hist[i].push(tk);
