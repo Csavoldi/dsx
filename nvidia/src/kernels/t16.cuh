@@ -211,6 +211,18 @@ __device__ __forceinline__ void t16_prod16(const uint32_t *ptr, int i0, int i1, 
   }
 }
 
+// t16_prod16 from the three words already loaded (a = ptr[i0], b = ptr[i1], c = ptr[i2])
+template <int K2>
+__device__ __forceinline__ void t16_prod16w(uint32_t a, uint32_t b, uint32_t c, int sh, uint32_t (&p)[16]) {
+  const uint32_t lo = t16_fsr(c, b, sh), hi = t16_fsr(b, a, sh);
+#pragma unroll
+  for (int j = 0; j < 16; j++) {
+    const int o = t16_hend(K2, 15) - t16_hend(K2, j);
+    const uint32_t wj = o < 32 ? __funnelshift_r(lo, hi, o) : hi >> (o - 32);
+    p[j] = wj * 0x3A2Fu;
+  }
+}
+
 __device__ __forceinline__ int t16_dp4a(uint32_t a, int b, int c) {
   int d;
   asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
@@ -235,19 +247,45 @@ __device__ __forceinline__ void t16d_gemv_k(const uint4 *__restrict__ xp, const 
   const uint32_t *tp = (const uint32_t *)t16_mat(sl, base, role) + ((size_t)16 * g0 * nbs + nb) * WT;
   const uint32_t step = (uint32_t)nbs * WT;
   const uint4 *xe = xp + (size_t)j * (k / 8) + 2 * 16 * g0;
+  // the warp's two tile columns (nb0, nb0 + 1: TW words a tile row) for a whole 256-group go to shared memory with
+  // cp.async, double-buffered: the next group's 16 rows stream in while this group is computed. Bytes in flight per
+  // warp, not latency, bound this kernel; the arithmetic and its order are unchanged (bit-identical).
+  constexpr int TW = 2 * WT, CH = TW / 4;
+  __shared__ __align__(16) uint32_t sm[4][2][16 * TW];
+  uint32_t(*const buf)[16 * TW] = sm[(threadIdx.x >> 5) & 3];
+  const uint32_t *tw = (const uint32_t *)t16_mat(sl, base, role) + ((size_t)16 * g0 * nbs + (nb & ~1)) * WT;
+  auto issue = [&](int gr, int bi) {
+    const uint32_t *src = tw + (size_t)(gr - g0) * 16 * step;
+    for (int q = lane; q < 16 * CH; q += 32) {
+      const int row = q / CH, ch = q % CH;
+      const uint32_t d = (uint32_t)__cvta_generic_to_shared(&buf[bi][row * TW + 4 * ch]);
+      asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(d), "l"(src + (size_t)row * step + 4 * ch));
+    }
+    asm volatile("cp.async.commit_group;");
+  };
+  issue(g0, 0);
+  const int lo = (lane / 16) * WT;
   float f = 0.f;
-  for (int gr = g0; gr < g1; gr++) {
-    int acc = 0;
+  for (int gr = g0, bi = 0; gr < g1; gr++, bi ^= 1) {
+    if (gr + 1 < g1) issue(gr + 1, bi ^ 1);
+    else asm volatile("cp.async.commit_group;");
+    asm volatile("cp.async.wait_group 1;" ::: "memory");
+    __syncwarp();
+    // four dp4a chains (an exact integer sum in any order), so one warp's dependent dp4a latency is not the limit
+    int ac[4] = {0, 0, 0, 0};
 #pragma unroll 4
-    for (int i = 0; i < 16; i++, tp += step, xe += 2) {
+    for (int i = 0; i < 16; i++, xe += 2) {
       uint32_t p[16];
-      t16_prod16<K2>(tp, i0, i1, i2, sh, p);
+      const uint32_t *w = &buf[bi][i * TW + lo];
+      t16_prod16w<K2>(w[i0], w[i1], w[i2], sh, p);
       const uint4 xa = __ldg(xe), xb = __ldg(xe + 1);
       const uint32_t xw[8] = {xa.x, xa.y, xa.z, xa.w, xb.x, xb.y, xb.z, xb.w};
 #pragma unroll
-      for (int q = 0; q < 8; q++) acc = t16_dp4a(__byte_perm(p[2 * q], p[2 * q + 1], 0x5410), (int)xw[q], acc);
+      for (int q = 0; q < 8; q++) ac[q & 3] = t16_dp4a(__byte_perm(p[2 * q], p[2 * q + 1], 0x5410), (int)xw[q], ac[q & 3]);
     }
+    const int acc = (ac[0] + ac[1]) + (ac[2] + ac[3]);
     f += __ldg(xd + (size_t)j * groups + gr) * (0.009567260742f * (float)acc - 2.4375f * (float)__ldg(xs + (size_t)j * groups + gr));
+    __syncwarp();
   }
   part[((size_t)s * picks + j) * n + 16 * nb + c] = f;
 }
