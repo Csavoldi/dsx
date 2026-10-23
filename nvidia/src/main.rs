@@ -565,10 +565,17 @@ fn main() -> Result<()> {
             let mut gm = dsx::gpumodel::GpuModel::with_placement(&m, -1, len + 64, dsx::gpumodel::Placement { gpu0_gb, aux_gb: gpu1_gb, arena_gb, prefill_chunk: len, rank })?;
             let (mut nll, mut kl, mut agree, mut cnt) = (0f64, 0f64, 0usize, 0usize);
             let t0 = Instant::now();
+            // --decode: the steps alone (teacher-forced: every arm decodes the same tokens), for speed A/Bs
+            let (mut steps, mut t_steps) = (0usize, 0f64);
             for sq in 0..seqs {
                 gm.reset();
                 let seq = &toks[sq * len..(sq + 1) * len];
+                let ts = Instant::now();
                 let lg = if decode { seq[..len - 1].iter().map(|&tk| gm.step(tk)).collect::<Result<Vec<_>>>()? } else { gm.eval_logits(seq)? };
+                if decode {
+                    steps += len - 1;
+                    t_steps += ts.elapsed().as_secs_f64();
+                }
                 for p in from.saturating_sub(1)..len - 1 {
                     let l = &lg[p];
                     let mx = l.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
@@ -583,6 +590,14 @@ fn main() -> Result<()> {
                     cnt += 1;
                 }
                 eprintln!("seq {sq}: running ppl {:.3} kl {:.4} top1 {:.4} ({:.0} s)", (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64, t0.elapsed().as_secs_f64());
+            }
+            if decode {
+                println!("teacher-forced decode {steps} steps in {t_steps:.2} s ({:.2} tok/s)", steps as f64 / t_steps);
+                if let Some(p) = &gm.prof {
+                    for (k, v) in p {
+                        println!("  {k:<28} {:.2} ms/token", v * 1e3 / steps as f64);
+                    }
+                }
             }
             println!("{{\"tokens\": {cnt}, \"nll\": {:.6}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}}}", nll / cnt as f64, (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64);
         }
