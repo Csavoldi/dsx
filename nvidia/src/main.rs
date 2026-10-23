@@ -335,7 +335,9 @@ fn main() -> Result<()> {
             while s0 < total {
                 let mut e = (s0 + chunk).min(total);
                 if e < total && total - e < cone {
-                    e = total.saturating_sub(cone).max(s0 + 1);
+                    // the final chunk takes the rest (it must hold the cone; shrinking this one to total - cone made
+                    // 1-token chunks once s0 passed total - cone)
+                    e = if total - cone > s0 { total - cone } else { total };
                 }
                 bounds.push((s0, e));
                 s0 = e;
