@@ -176,6 +176,8 @@ pub struct GpuModel<'m> {
     combine_fused: bool,
     /// one token: wo_a's rounding inside its GEMV, shared gate + up + swiglu in one launch (DSX_FUSE2=0: separate)
     fuse2: bool,
+    /// one token: attention merge + inverse RoPE + fake FP8 in one launch (DSX_FUSE3=0: separate)
+    fuse3: bool,
     warned_nan: bool,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
@@ -280,7 +282,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "gemv_q8g_bf", "gemv_q8r_gu", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "gemv_q8g_bf", "gemv_q8r_gu", "sparse_attn_merge_rf", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -456,6 +458,7 @@ impl<'m> GpuModel<'m> {
             sk1: std::env::var("DSX_SK1").map_or(true, |v| v != "0"),
             combine_fused: std::env::var("DSX_COMBINE_FUSED").map_or(true, |v| v != "0"),
             fuse2: std::env::var("DSX_FUSE2").map_or(true, |v| v != "0"),
+            fuse3: std::env::var("DSX_FUSE3").map_or(true, |v| v != "0"),
             warned_nan: false,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
@@ -1369,11 +1372,23 @@ impl<'m> GpuModel<'m> {
         self.ev(li, 13)?;
         let l = &self.layers[li];
         let comp_ptr = if n_comp_rows > 0 { self.layers[self.comp_src].comp_cache.as_ref().unwrap().ptr } else { 0 };
-        self.sparse_attn_small(1, self.q.ptr, l.window.ptr, self.tokp.ptr, w, comp_ptr, self.comp_idx.ptr, n_comp_rows, l.sinks.ptr, self.o.ptr)?;
-        self.ev(li, 14)?;
-        self.rope(self.o.ptr, nh, hd, compressed, t, true)?;
+        // the merge, the inverse RoPE and fake FP8 in one launch (sparse_attn_merge_rf) when the shapes fit it
+        let fuse3 = self.fuse3 && hd == 512 && std::env::var_os("DSX_OLD_ATTN").is_none();
+        if fuse3 {
+            let s = (w + n_comp_rows).div_ceil(32);
+            anyhow::ensure!(s <= ATTN_SPLITS, "attention over {} rows: more than {ATTN_SPLITS} tiles", w + n_comp_rows);
+            let scale = 1.0 / (hd as f32).sqrt();
+            self.g.launch(self.k["sparse_attn_tile"], (1, (nh / 16) as u32, s as u32), 256, 0, &[Arg::P(self.q.ptr), Arg::P(l.window.ptr), Arg::P(self.tokp.ptr), Arg::I(w as i32), Arg::P(comp_ptr), Arg::P(self.comp_idx.ptr), Arg::I(n_comp_rows as i32), Arg::P(self.attn_part.ptr), Arg::I(nh as i32), Arg::I(hd as i32), Arg::F(scale)])?;
+            self.ev(li, 14)?;
+            let f = if compressed { &self.freqs.1 } else { &self.freqs.0 };
+            self.g.launch(self.k["sparse_attn_merge_rf"], (1, nh as u32, 1), (hd / 2) as u32, 0, &[Arg::P(self.attn_part.ptr), Arg::I(s as i32), Arg::P(l.sinks.ptr), Arg::P(self.o.ptr), Arg::I(nh as i32), Arg::I(hd as i32), Arg::P(f.ptr), Arg::I(c.rope_dim as i32), Arg::I(t as i32)])?;
+        } else {
+            self.sparse_attn_small(1, self.q.ptr, l.window.ptr, self.tokp.ptr, w, comp_ptr, self.comp_idx.ptr, n_comp_rows, l.sinks.ptr, self.o.ptr)?;
+            self.ev(li, 14)?;
+            self.rope(self.o.ptr, nh, hd, compressed, t, true)?;
+            self.fake_fp8(self.o.ptr, nh * hd)?;
+        }
         let gsz = nh * hd / c.o_groups;
-        self.fake_fp8(self.o.ptr, nh * hd)?;
         // wo_a's bf16 rounding inside the GEMV (gemv_q8g_bf) when it is the Q8_0 one
         let rounded = l.o_a.q8r && self.fuse2;
         if l.o_a.q8r {

@@ -481,6 +481,47 @@ extern "C" __global__ void sparse_attn_merge(const float *part, int S, const flo
   oh[2 * tid + 1] = bf16r(a1 / L);
 }
 
+// decode (T = 1): sparse_attn_merge, then the inverse RoPE on each head's last rd dims at `pos` (rope with inverse = 1)
+// and fake FP8 per 32 values (fake_fp8), in one launch, bit-identical to the three: thread tid holds dims 2 tid, 2 tid + 1
+// (a RoPE pair when 2 tid >= hd - rd), and 16 threads hold a fake-FP8 block of 32. Grid (1, H), block hd / 2 (= 256).
+extern "C" __global__ void sparse_attn_merge_rf(const float *part, int S, const float *sinks, float *o, int H, int hd,
+                                                const float *freqs, int rd, int pos) {
+  int h = blockIdx.y, tid = threadIdx.x;
+  const float *p0 = part + (size_t)h * (hd + 2);
+  size_t zs = (size_t)H * (hd + 2);
+  float M = -1e30f;
+  for (int z = 0; z < S; z++) M = fmaxf(M, p0[z * zs + hd]);
+  float L = 0.f, a0 = 0.f, a1 = 0.f;
+  for (int z = 0; z < S; z++) {
+    const float *pz = p0 + z * zs;
+    float f = expf(pz[hd] - M);
+    L += pz[hd + 1] * f;
+    float2 v = *(const float2 *)(pz + 2 * tid);
+    a0 += v.x * f;
+    a1 += v.y * f;
+  }
+  L += expf(sinks[h] - M);
+  float x0 = bf16r(a0 / L), x1 = bf16r(a1 / L);
+  int p = tid - (hd - rd) / 2;
+  if (p >= 0) {
+    float ang = (float)pos * freqs[p];
+    float sn, cs;
+    sincosf(ang, &sn, &cs);
+    sn = -sn;
+    float a = x0, b = x1;
+    x0 = a * cs - b * sn;
+    x1 = a * sn + b * cs;
+  }
+  float amax = fmaxf(fabsf(x0), fabsf(x1));
+#pragma unroll
+  for (int off = 1; off < 16; off <<= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffff, amax, off));
+  amax = fmaxf(amax, 1e-4f);
+  float sc = pow2_ceil(amax / 448.f);
+  float *oh = o + (size_t)h * hd;
+  oh[2 * tid] = e4m3_round(fminf(fmaxf(x0 / sc, -448.f), 448.f)) * sc;
+  oh[2 * tid + 1] = e4m3_round(fminf(fmaxf(x1 / sc, -448.f), 448.f)) * sc;
+}
+
 // ---------------------------------------------------------------- attention (prefill, tensor cores)
 // Same contract as sparse_attn; hd = 512, H % 32 == 0. Grid (T, H/32), block 256, dynamic smem attn::smem_bytes(W + K).
 // Per token the 32 heads of a block share the rows: S = Q . R^T, O += P . R (mma m16n8k16 bf16, f32 accumulate),
