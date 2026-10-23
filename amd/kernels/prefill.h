@@ -236,8 +236,12 @@ extern "C" __global__ void __launch_bounds__(256) prep_t(int mode, const float* 
     const float* x2 = src2 ? src2 + (size_t)r * lds : nullptr;
     float sc = 1.f;
     if (mode == 0) {
+        // the NPART per-block partial sums of squares: one load per lane and a wave sum (each wave on its own; a
+        // serial loop of 80 loads per thread was the latency chain of this small kernel)
+        const int ln = threadIdx.x & 63;
         float ss = 0;
-        for (int b = 0; b < NPART; b++) ss += part[(size_t)r * NPART + b];
+        for (int b = ln; b < NPART; b += 64) ss += part[(size_t)r * NPART + b];
+        ss = wave_sum(ss);
         sc = 1.f / sqrtf(ss / n + eps);
     } else if (mode == 1) {
         float ss = 0;

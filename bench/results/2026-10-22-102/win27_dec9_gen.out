@@ -1,0 +1,15 @@
+GPU0 NVIDIA GeForce RTX 3090: 25.4 GB, host link 24.6 GB/s (main)
+GPU1 NVIDIA GeForce RTX 3090: 25.4 GB, host link 3.3 GB/s
+experts resident: GPU0 1294 (10.9 GB), GPU1 2753 (23.3 GB, static, 3.3 GB/s link)
+arena: 104.0 GB allocated and pinned in 39.9 s
+arena: 12189 experts, 104.0 GB in 57 s; 418 left in the file
+prefill chunk 0..300: 2.18 s
+prefill 300 tokens in 2.18 s (137 tok/s); next top5 [(16, 28.723408), (305, 26.461655), (339, 25.93658), (14, 25.453579), (396, 20.966503)]
+decode 120 tokens in 3.25 s (36.92 tok/s); CPU experts busy 13.4 ms/token, 20.6% of picks on the CPU; GPU0 expert swaps 960 (0.44 ms/token host)
+  CPU worker idle / prep / forward: 31.90 / 0.12 / 5.04 ms/token
+generated: [16, 2042, 477, 13792, 304, 4843, 1205, 734, 4869, 305, 11545, 436, 1407, 16, 2042, 4750, 47468, 790, 554, 84834, 16, 2042, 1347, 6704, 304, 51441, 270, 26548, 305, 1635, 4123, 16, 2042, 4750, 6558, 304, 15826, 67116, 6160, 377, 6460, 11868, 10017, 16, 2042, 1531, 1347, 270, 6704, 3510, 304, 3287, 4218, 305, 1635, 4181, 4123, 339, 5, 27193, 271, 3476, 611, 3278, 304, 270, 2502, 6704, 979, 15, 3608, 35562, 66, 2136, 19633, 14444, 22586, 295, 270, 26548, 16, 6948, 566, 304, 51441, 9405, 14, 2632, 8499, 14, 305, 23393, 4123, 603, 15, 3608, 17632, 66, 2136, 36470, 19665, 107510, 304, 9405, 16, 33213, 270, 4245, 3618, 305, 270, 6319, 3072, 94909, 3445, 603, 15, 3608, 25837, 66]
+Collecting data...
+Generating '/tmp/nsys-lxe/nsys-report-5abc.qdstrm'
+[1/1] [0%                          ] dec9.nsys-rep[1/1] [0%                          ] dec9.nsys-rep[1/1] [1%                          ] dec9.nsys-rep[1/1] [2%                          ] dec9.nsys-rep[1/1] [5%                          ] dec9.nsys-rep[1/1] [6%                          ] dec9.nsys-rep[1/1] [7%                          ] dec9.nsys-rep[1/1] [8%                          ] dec9.nsys-rep[1/1] [9%                          ] dec9.nsys-rep[1/1] [10%                         ] dec9.nsys-rep[1/1] [11%                         ] dec9.nsys-rep[1/1] [12%                         ] dec9.nsys-rep[1/1] [13%                         ] dec9.nsys-rep[1/1] [14%                         ] dec9.nsys-rep[1/1] [=15%                        ] dec9.nsys-rep[1/1] [=16%                        ] dec9.nsys-rep[1/1] [=17%                        ] dec9.nsys-rep[1/1] [==18%                       ] dec9.nsys-rep[1/1] [==19%                       ] dec9.nsys-rep[1/1] [==20%                       ] dec9.nsys-rep[1/1] [=======================93%  ] dec9.nsys-rep[1/1] [=======================96%  ] dec9.nsys-rep[1/1] [========================98% ] dec9.nsys-rep[1/1] [========================100%] dec9.nsys-rep[1/1] [========================100%] dec9.nsys-rep
+Generated:
+	/tmp/dec9.nsys-rep

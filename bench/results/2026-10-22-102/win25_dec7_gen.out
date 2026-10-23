@@ -1,0 +1,16 @@
+Running as unit: ds41-n111691.scope; invocation ID: a318588553904333b0bdb4477f3c1feb
+GPU0 NVIDIA GeForce RTX 3090: 25.4 GB, host link 24.6 GB/s (main)
+GPU1 NVIDIA GeForce RTX 3090: 25.4 GB, host link 3.3 GB/s
+experts resident: GPU0 1294 (10.9 GB), GPU1 2753 (23.3 GB, static, 3.3 GB/s link)
+arena: 104.0 GB allocated and pinned in 42.8 s
+arena: 12189 experts, 104.0 GB in 60 s; 418 left in the file
+prefill chunk 0..300: 2.17 s
+prefill 300 tokens in 2.17 s (138 tok/s); next top5 [(16, 28.723408), (305, 26.461655), (339, 25.93658), (14, 25.453579), (396, 20.966503)]
+decode 120 tokens in 3.33 s (36.08 tok/s); CPU experts busy 12.4 ms/token, 20.3% of picks on the CPU; GPU0 expert swaps 960 (0.34 ms/token host)
+  CPU worker idle / prep / forward: 33.41 / 0.13 / 4.58 ms/token
+generated: [16, 2042, 477, 13792, 304, 15863, 1669, 20518, 4181, 305, 31714, 16, 2042, 1531, 366, 2624, 14, 14001, 14, 305, 5789, 4615, 69, 3301, 6728, 16, 2042, 1531, 366, 47468, 339, 5, 17635, 13782, 271, 15, 3245, 7723, 14, 1733, 270, 26548, 9405, 304, 2572, 270, 5148, 1936, 3490, 4123, 603, 15, 97113, 1387, 5081, 9405, 1060, 63303, 603, 15, 2866, 16372, 554, 304, 16507, 40367, 603, 15, 2866, 47468, 305, 5789, 28148, 11394, 603, 15, 2866, 14001, 943, 18867, 603, 15, 4147, 554, 1258, 8499, 11482, 270, 3967, 20407, 362, 1066, 603, 15, 2866, 16372, 418, 22586, 396, 21719, 270, 3431, 603, 15, 6948, 270, 1694, 4105, 304, 3281, 943, 270, 83295, 603, 15, 2866, 16372, 418, 1606, 22586]
+Collecting data...
+Generating '/tmp/nsys-lxe/nsys-report-d0b4.qdstrm'
+[1/1] [0%                          ] dec7.nsys-rep[1/1] [0%                          ] dec7.nsys-rep[1/1] [1%                          ] dec7.nsys-rep[1/1] [2%                          ] dec7.nsys-rep[1/1] [5%                          ] dec7.nsys-rep[1/1] [6%                          ] dec7.nsys-rep[1/1] [7%                          ] dec7.nsys-rep[1/1] [8%                          ] dec7.nsys-rep[1/1] [9%                          ] dec7.nsys-rep[1/1] [10%                         ] dec7.nsys-rep[1/1] [11%                         ] dec7.nsys-rep[1/1] [12%                         ] dec7.nsys-rep[1/1] [13%                         ] dec7.nsys-rep[1/1] [14%                         ] dec7.nsys-rep[1/1] [=15%                        ] dec7.nsys-rep[1/1] [=16%                        ] dec7.nsys-rep[1/1] [=17%                        ] dec7.nsys-rep[1/1] [==18%                       ] dec7.nsys-rep[1/1] [==19%                       ] dec7.nsys-rep[1/1] [==20%                       ] dec7.nsys-rep[1/1] [=======================93%  ] dec7.nsys-rep[1/1] [=======================96%  ] dec7.nsys-rep[1/1] [========================98% ] dec7.nsys-rep[1/1] [========================100%] dec7.nsys-rep[1/1] [========================100%] dec7.nsys-rep
+Generated:
+	/tmp/dec7.nsys-rep

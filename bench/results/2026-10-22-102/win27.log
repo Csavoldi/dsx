@@ -1,0 +1,32 @@
+  03:55:19 +32.0°C GPU 46, 26.58 W 40, 35.41 W 
+== round 1 base
+{"tokens": 1023, "nll": 2.310422, "ppl": 10.0787, "kl_top256": 0.150910, "top1_agree": 0.839687}
+  03:58:13 +33.0°C GPU 50, 27.53 W 41, 35.38 W 
+== round 1 new1
+{"tokens": 1023, "nll": 2.308352, "ppl": 10.0578, "kl_top256": 0.157529, "top1_agree": 0.839687}
+  04:01:09 +33.0°C GPU 51, 28.01 W 41, 35.49 W 
+== round 1 new2
+{"tokens": 1023, "nll": 2.311332, "ppl": 10.0879, "kl_top256": 0.158966, "top1_agree": 0.826979}
+  04:04:07 +36.0°C GPU 52, 27.64 W 41, 35.42 W 
+== round 2 base
+{"tokens": 1023, "nll": 2.310062, "ppl": 10.0750, "kl_top256": 0.151646, "top1_agree": 0.843597}
+  04:07:05 +34.0°C GPU 52, 27.82 W 41, 35.62 W 
+== round 2 new1
+{"tokens": 1023, "nll": 2.310206, "ppl": 10.0765, "kl_top256": 0.161518, "top1_agree": 0.834800}
+  04:10:05 +35.0°C GPU 52, 28.11 W 41, 35.57 W 
+== round 2 new2
+{"tokens": 1023, "nll": 2.311332, "ppl": 10.0879, "kl_top256": 0.158966, "top1_agree": 0.826979}
+  04:13:03 +35.0°C GPU 52, 27.98 W 41, 35.92 W 
+== adapt 0 base
+{"tokens": 1023, "nll": 2.312076, "ppl": 10.0954, "kl_top256": 0.160876, "top1_agree": 0.832845}
+  04:16:10 +36.0°C GPU 52, 28.25 W 41, 35.72 W 
+== adapt 0 new2
+{"tokens": 1023, "nll": 2.312076, "ppl": 10.0954, "kl_top256": 0.160876, "top1_agree": 0.832845}
+gen base: decode 120 tokens in 3.27 s (36.69 tok/s); CPU experts busy 14.0 ms/token, 22.9% of picks on the CPU; 
+gen new2: decode 120 tokens in 3.28 s (36.58 tok/s); CPU experts busy 16.4 ms/token, 26.2% of picks on the CPU; 
+gen base: decode 120 tokens in 3.27 s (36.71 tok/s); CPU experts busy 14.0 ms/token, 23.0% of picks on the CPU; 
+gen new2: decode 120 tokens in 3.27 s (36.68 tok/s); CPU experts busy 16.4 ms/token, 26.2% of picks on the CPU; 
+traced new: decode 120 tokens in 3.25 s (36.92 tok/s); CPU experts busy 13.4 ms/token, 20.6% of picks on the CPU; 
+-rw-r--r-- 1 lxe lxe 78573568 Oct 23 04:29 /tmp/dec9.sqlite
+2026-10-23 01:50:31 STOP: CPU 97C
+WIN27-DONE Fri Oct 23 04:29:21 AM PDT 2026

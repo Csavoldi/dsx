@@ -46,6 +46,10 @@ pub struct Batch {
     pub(crate) logits: Buf,
     pub(crate) next: Buf,
     pub(crate) bad: Buf,
+    /// graph-captured steps: pinned inputs, and the 16K-position bucket the indexer grid is sized for (0: exact)
+    pub(crate) pin_rows: *mut u8,
+    pub(crate) pin_toks: *mut u8,
+    pub(crate) gbucket: std::cell::Cell<usize>,
     /// split attention partials [token <= 128][10 splits][64 * 512 + 128] f32
     pub(crate) apart: Buf,
     /// multi-token steps: batch row of each token's previous position (-1: none), and the compressor state each
@@ -85,6 +89,9 @@ impl Batch {
 
 impl Decoder {
     pub fn new_batch(&mut self, slots: usize, ctx: usize) -> Result<Batch> {
+        // captured batch-step graphs hold the old batch's buffer pointers (freed buffers get reused): drop them
+        self.bgraphs.borrow_mut().clear();
+        self.bseen.borrow_mut().clear();
         if std::env::var("DSXA_BBLAS").map(|v| v != "0").unwrap_or(true) {
             self.build_bdense()?;
         }
@@ -126,6 +133,9 @@ impl Decoder {
             logits: g.alloc_zeroed(BMAX * VOCAB * 4)?,
             next: g.alloc_zeroed(BMAX * 4)?,
             bad: g.alloc_zeroed(4)?,
+            pin_rows: g.host_alloc(BMAX * 2 * ENG_ROW_BYTES)?,
+            pin_toks: g.host_alloc(BMAX * 4)?,
+            gbucket: std::cell::Cell::new(0),
             apart: g.alloc(128 * 10 * (NH * HD + 128) * 4)?,
             bprev: g.alloc_zeroed(BMAX * 4)?,
             stage: self.layers.iter().map(|l| if l.kv_src && l.ratio == 2 { g.alloc_zeroed(BMAX * 2 * HD * 4).ok() } else { None }).collect(),
@@ -149,10 +159,15 @@ impl Decoder {
             g.launch("ring_remap", (WIN as u32, 1, 1), 256, 0, &[Arg::P(l.ring.ptr), Arg::I(WIN as i32), Arg::P(b.rings[li].at(slot * SRING * HD * 2)), Arg::I(SRING as i32), Arg::I(self.pos as i32 - WIN as i32)])?;
             if l.kv_src {
                 let r = b.rows[li];
-                let used = (self.pos / l.ratio.max(1) + 1).min(r);
+                // completed compressed rows only (row n holds positions up to (n+1)*ratio-1); a row past them may hold stale
+                // values that are not FP4-exact
+                let used = (self.pos / l.ratio.max(1)).min(r);
                 // bf16 rows (values already FP4 x scale) -> packed FP4 rows
                 let pack = |src: u64, n: usize, grp: usize, e4m3: bool, dst: u64, rowb: usize| -> Result<()> {
                     let groups = used * n / grp;
+                    if groups == 0 {
+                        return Ok(());
+                    }
                     g.launch("pack_fp4_rows", (groups.div_ceil(256) as u32, 1, 1), 256, 0, &[Arg::P(src), Arg::I(used as i32), Arg::I(n as i32), Arg::I(grp as i32), Arg::I(e4m3 as i32), Arg::P(dst), Arg::I(rowb as i32), Arg::P(b.bad.ptr)])
                 };
                 pack(l.comp_cache.as_ref().unwrap().ptr, HD, 16, true, b.comp[li].as_ref().unwrap().at(slot * r * CROW_B), CROW_B)?;
@@ -181,9 +196,12 @@ impl Decoder {
             g.launch("ring_remap", (WIN as u32, 1, 1), 256, 0, &[Arg::P(b.rings[li].at(slot * SRING * HD * 2)), Arg::I(SRING as i32), Arg::P(l.ring.ptr), Arg::I(WIN as i32), Arg::I(pos as i32 - WIN as i32)])?;
             if l.kv_src {
                 let r = b.rows[li];
-                let used = (pos / l.ratio.max(1) + 1).min(r);
+                let used = (pos / l.ratio.max(1)).min(r);
                 let unpack = |src: u64, n: usize, grp: usize, e4m3: bool, rowb: usize, dst: u64| -> Result<()> {
                     let groups = used * n / grp;
+                    if groups == 0 {
+                        return Ok(());
+                    }
                     g.launch("unpack_fp4_rows", (groups.div_ceil(256) as u32, 1, 1), 256, 0, &[Arg::P(src), Arg::I(used as i32), Arg::I(n as i32), Arg::I(grp as i32), Arg::I(e4m3 as i32), Arg::I(rowb as i32), Arg::P(dst)])
                 };
                 unpack(b.comp[li].as_ref().unwrap().at(slot * r * CROW_B), HD, 16, true, CROW_B, l.comp_cache.as_ref().unwrap().ptr)?;

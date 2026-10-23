@@ -471,6 +471,34 @@ impl Decoder {
         let key = (t, draft, bucket);
         let cached = gmode && self.vgraphs.borrow().contains_key(&key);
         let p0a: i32 = if gmode { -1 } else { p0 as i32 };
+        // batched steps (DSXA_BGRAPH=1): one HIP graph per (tokens, draft, verify, 16K-position bucket, batch),
+        // captured the second time a shape is seen (the first run warms up hipBLASLt); inputs through pinned memory
+        let bgraph = bt.is_some() && std::env::var("DSXA_BGRAPH").map(|v| v == "1").unwrap_or(false) && !g.profiling();
+        let mut bkey = (0usize, false, false, 0usize, 0u64);
+        let mut bcap = false;
+        if let (true, Some(b)) = (bgraph, bt) {
+            let maxp = b.step_pos.iter().copied().max().unwrap_or(0) + t;
+            let bk = maxp.div_ceil(16384);
+            b.gbucket.set(bk);
+            bkey = (t, draft, b.multi, bk, b.bpos.ptr);
+            unsafe {
+                std::ptr::copy_nonoverlapping(rows.as_ptr(), b.pin_rows, rows.len());
+                std::ptr::copy_nonoverlapping(ti.as_ptr() as *const u8, b.pin_toks, t * 4);
+            }
+            if let Some(h) = b.eng1.borrow_mut().take() {
+                let v = h.join().map_err(|_| anyhow::anyhow!("engram fetch thread"))?;
+                unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), b.eng_pin, v.len()) };
+            }
+            if let Some(gr) = self.bgraphs.borrow().get(&bkey) {
+                g.graph_launch(gr)?;
+                let v: Vec<i32> = g.dtoh(b.next.ptr, t)?;
+                return Ok(v.iter().map(|&x| x as u32).collect());
+            }
+            bcap = !self.bseen.borrow_mut().insert(bkey);
+            if bcap {
+                g.begin_capture()?;
+            }
+        }
         if gmode {
             unsafe {
                 std::ptr::copy_nonoverlapping(rows.as_ptr(), pf.pin_in, rows.len());
@@ -487,6 +515,9 @@ impl Decoder {
         if gmode {
             g.htod_async(pf.erows.ptr, pf.pin_in, t * 2 * ER)?;
             g.htod_async(pf.toks.ptr, unsafe { pf.pin_in.add(PIN_TOKS) }, t * 4)?;
+        } else if let (true, Some(b)) = (bgraph, bt) {
+            g.htod_async(pf.erows.ptr, b.pin_rows, t * 2 * ER)?;
+            g.htod_async(pf.toks.ptr, b.pin_toks, t * 4)?;
         } else {
             g.htod(pf.erows.ptr, &rows)?;
             g.htod(pf.toks.ptr, &ti)?;
@@ -535,7 +566,10 @@ impl Decoder {
                     let ei = c.engram_layers.iter().position(|&x| x == li).unwrap();
                     // batched step: rows [table][token][ER]; table 1 arrives from the background fetch now
                     let (rp, rs) = if let Some(b) = bt {
-                        if ei == 1 {
+                        if ei == 1 && bgraph {
+                            // joined before the graph; the copy is part of it
+                            g.htod_async(pf.erows.at(t * ER), b.eng_pin, t * ER)?;
+                        } else if ei == 1 {
                             if let Some(h) = b.eng1.borrow_mut().take() {
                                 let v = h.join().map_err(|_| anyhow::anyhow!("engram fetch thread"))?;
                                 unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), b.eng_pin, v.len()) };
@@ -869,6 +903,9 @@ impl Decoder {
         if let Some(b) = bt {
             g.launch("hc_final_b", (t as u32, 1, 1), 256, 0, &[Arg::P(pf.h.ptr), Arg::P(pf.mix_f.ptr), Arg::B(bytes(&last.hc_ffn)), Arg::P(onorm), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(b.xb.ptr), Arg::P(b.xl.ptr)])?;
             self.batch_head(b, t)?;
+            if bgraph {
+                break 'body;
+            }
             let v: Vec<i32> = g.dtoh(b.next.ptr, t)?;
             return Ok(v.iter().map(|&x| x as u32).collect());
         }
@@ -924,6 +961,15 @@ impl Decoder {
         g.htod(self.st.ptr, &[self.pos as i32])?;
         let next: Vec<i32> = g.dtoh(self.next.ptr, 1)?;
         return Ok(vec![next[0] as u32]);
+        }
+        if let (true, Some(b)) = (bgraph, bt) {
+            if bcap {
+                let gr = g.end_capture()?;
+                g.graph_launch(&gr)?;
+                self.bgraphs.borrow_mut().insert(bkey, gr);
+            }
+            let v: Vec<i32> = g.dtoh(b.next.ptr, t)?;
+            return Ok(v.iter().map(|&x| x as u32).collect());
         }
         // verify / draft: finish the capture, replay
         if gmode {
@@ -1073,7 +1119,8 @@ impl Decoder {
             let kstride = (b.rows[ks] * IROW_B) as i64;
             let after = li > c.cand_layer;
             let lds = b.lds() as i32;
-            let chunks = ((maxp / l.ratio.max(1)).max(16384)).div_ceil(1024) as u32;
+            let pend = if b.gbucket.get() > 0 { b.gbucket.get() * 16384 } else { maxp };
+            let chunks = ((pend / l.ratio.max(1)).max(16384)).div_ceil(1024) as u32;
             let (rows, nrows) = if after { (pf.keep.ptr, pf.nkeep.ptr) } else { (0, 0) };
             let isc = |grid: u32, rows: u64, nrows: u64| {
                 g.launch("iscore_b", (grid, t as u32, 1), 256, 0, &[Arg::P(bp), Arg::P(bs), Arg::I(l.ratio as i32), Arg::P(pf.iq.ptr), Arg::P(pf.iw.ptr), Arg::F(wscale), Arg::P(kc), Arg::P((kstride) as u64), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::P(b.score.ptr), Arg::I(lds)])

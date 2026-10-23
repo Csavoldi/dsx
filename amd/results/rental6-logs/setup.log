@@ -1,0 +1,25 @@
++ cloud-init status --wait
++ pgrep -x apt-get
++ pgrep -x dpkg
++ mkdir -p /data
++ mount
++ grep -q /data
++ mount /dev/vdc1 /data
++ mkdir -p /data/models /data/hf
++ export DEBIAN_FRONTEND=noninteractive
++ DEBIAN_FRONTEND=noninteractive
++ for i in 1 2 3
++ apt-get update -qq
++ apt-get install -y -qq amdrocm-core-dev7.14-gfx942 amdrocm-blas-dev7.14 build-essential pkg-config git curl python3.12-venv bc psmisc tmux htop nvme-cli fio
++ break
++ ls /opt/rocm/bin/hipcc
+/opt/rocm/bin/hipcc
++ touch /root/hipcc.ready
++ python3 -m venv /root/venv
++ /root/venv/bin/pip install -q -U 'huggingface_hub[hf_xet]' hf_transfer numpy safetensors
++ echo PY-DONE
+PY-DONE
++ curl -sSf https://sh.rustup.rs
++ sh -s -- -y --profile minimal
++ echo SETUP-DONE
+SETUP-DONE

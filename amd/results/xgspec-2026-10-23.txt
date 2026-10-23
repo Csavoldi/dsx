@@ -1,0 +1,32 @@
+== env DSXA_BGRAPH
+== reload /root/base.hsaco
+reloaded /root/base.hsaco
+== bsweep 8192 4000 8 1,8,12 distinct
+bdense: 15.2 GB of BF16 dense weights in 6.8 s
+B=1   ctx~4000: 14.8 ms/step, 67.4 tok/s per session, 67 total | kernels 13.9 ms in 1050 launches: prep_t 1.66/240, verify experts gu 1.30/40, attn_bs 1.28/40, hc_step 0.98/83, hc_mix_t 0.98/83, mm router+shared 0.83/40
+B=8   ctx~4000: 22.7 ms/step, 44.0 tok/s per session, 352 total | kernels 21.2 ms in 1050 launches: verify experts gu 5.47/40, verify experts down 2.95/40, prep_t 1.67/240, attn_bs 1.40/40, hc_step 1.06/83, hc_mix_t 1.01/83
+B=12  ctx~4000: 26.5 ms/step, 37.7 tok/s per session, 452 total | kernels 24.3 ms in 1050 launches: verify experts gu 6.93/40, verify experts down 3.69/40, prep_t 1.68/240, attn_bs 1.43/40, hc_step 1.14/83, mm router+shared 1.10/40
+== reload /root/spec.hsaco
+reloaded /root/spec.hsaco
+== bsweep 8192 4000 8 1,8,12 distinct
+B=1   ctx~4000: 14.3 ms/step, 69.8 tok/s per session, 70 total | kernels 13.7 ms in 1050 launches: prep_t 1.67/240, attn_bs 1.28/40, verify experts gu 1.15/40, hc_mix_t 0.98/83, hc_step 0.97/83, mm router+shared 0.83/40
+B=8   ctx~4000: 22.1 ms/step, 45.2 tok/s per session, 362 total | kernels 20.4 ms in 1050 launches: verify experts gu 4.84/40, verify experts down 2.71/40, prep_t 1.68/240, attn_bs 1.40/40, hc_step 1.08/83, hc_mix_t 1.02/83
+B=12  ctx~4000: 25.8 ms/step, 38.7 tok/s per session, 464 total | kernels 24.1 ms in 1050 launches: verify experts gu 6.73/40, verify experts down 3.65/40, prep_t 1.69/240, attn_bs 1.43/40, hc_step 1.14/83, mm router+shared 1.10/40
+== reload /root/base.hsaco
+reloaded /root/base.hsaco
+== bsweep 8192 4000 8 1,8,12 distinct
+B=1   ctx~4000: 11.9 ms/step, 83.9 tok/s per session, 84 total | kernels 13.8 ms in 1050 launches: prep_t 1.68/240, verify experts gu 1.29/40, attn_bs 1.28/40, hc_step 0.98/83, hc_mix_t 0.96/83, mm router+shared 0.83/40
+B=8   ctx~4000: 22.2 ms/step, 45.1 tok/s per session, 361 total | kernels 21.6 ms in 1050 launches: verify experts gu 5.70/40, verify experts down 3.05/40, prep_t 1.68/240, attn_bs 1.41/40, hc_step 1.06/83, hc_mix_t 1.03/83
+B=12  ctx~4000: 26.5 ms/step, 37.7 tok/s per session, 453 total | kernels 25.0 ms in 1050 launches: verify experts gu 7.30/40, verify experts down 3.88/40, prep_t 1.68/240, attn_bs 1.44/40, hc_step 1.15/83, mm router+shared 1.11/40
+== reload /root/spec.hsaco
+reloaded /root/spec.hsaco
+== bsweep 8192 4000 8 1,8,12 distinct
+B=1   ctx~4000: 13.0 ms/step, 77.0 tok/s per session, 77 total | kernels 13.7 ms in 1050 launches: prep_t 1.66/240, attn_bs 1.28/40, verify experts gu 1.14/40, hc_mix_t 0.97/83, hc_step 0.97/83, verify experts down 0.83/40
+B=8   ctx~4000: 21.3 ms/step, 46.9 tok/s per session, 375 total | kernels 21.0 ms in 1050 launches: verify experts gu 5.23/40, verify experts down 2.90/40, prep_t 1.66/240, attn_bs 1.41/40, hc_step 1.06/83, hc_mix_t 1.03/83
+B=12  ctx~4000: 24.9 ms/step, 40.1 tok/s per session, 481 total | kernels 24.1 ms in 1050 launches: verify experts gu 6.72/40, verify experts down 3.63/40, prep_t 1.67/240, attn_bs 1.43/40, hc_step 1.14/83, mm router+shared 1.11/40
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1193 (6 s, 18.3 ms/step)
+pos 512: kl 0.0875 (11 s, 18.5 ms/step)
+pos 768: kl 0.0785 (17 s, 18.7 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 18.80, "replicas": [{"ppl": 8.8230, "kl_top256": 0.075819, "top1_agree": 0.881965}]}
+RUN5B-DONE

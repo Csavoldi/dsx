@@ -1,0 +1,83 @@
+warning: variable does not need to be mutable
+   --> core/src/server/engine.rs:260:9
+    |
+260 |     let mut done = |engine: &mut dyn BatchEngine, running: &mut std::collections::HashMap<u64, Running>, id: u64, f: Option<Finish>...
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> amd/src/prefill.rs:611:17
+    |
+611 |             let mut bf = |m: &crate::load::DMat, y: u64, ldy: usize| {
+    |                 ----^^
+    |                 |
+    |                 help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: type `XOut` is more private than the item `decode::Decoder::hc_step_x`
+    --> amd/src/decode.rs:1031:5
+     |
+1031 |     pub(crate) fn hc_step_x(&self, y: u64, round_y: bool, pmix: u64, pa: &HcArgs, premix: u64, prea: &HcArgs, fnw: u64, nmix: u64, x_raw: u64, xss: u64, eng: Option<(u64, u64)>, xo: XOut) -> Result<()> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `decode::Decoder::hc_step_x` is reachable at visibility `pub(crate)`
+     |
+note: but type `XOut` is only usable at visibility `pub(self)`
+    --> amd/src/decode.rs:145:1
+     |
+ 145 | struct XOut {
+     | ^^^^^^^^^^^
+     = note: `#[warn(private_interfaces)]` on by default
+
+warning: method `engram_rows_multi` is never used
+    --> amd/src/decode.rs:1637:19
+     |
+ 577 | impl Decoder {
+     | ------------ method in this implementation
+...
+1637 |     pub(crate) fn engram_rows_multi(&self, hists: &[&[i64]], out: &mut [u8]) -> Result<()> {
+     |                   ^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `device_sync` is never used
+   --> amd/src/hip.rs:316:12
+    |
+121 | impl Gpu {
+    | -------- method in this implementation
+...
+316 |     pub fn device_sync(&self) -> Result<()> {
+    |            ^^^^^^^^^^^
+
+warning: function `hipDeviceSynchronize` is never used
+  --> amd/src/hip.rs:28:8
+   |
+28 |     fn hipDeviceSynchronize() -> hipError_t;
+   |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: field `blk` is never read
+   --> amd/src/prefill.rs:113:5
+    |
+ 38 | pub struct PfBufs {
+    |            ------ field in this struct
+...
+113 |     blk: Buf,
+    |     ^^^
+
+warning: method `mm` is never used
+   --> amd/src/prefill.rs:246:8
+    |
+244 | impl Decoder {
+    | ------------ method in this implementation
+245 |     /// Run a batch of matrix jobs (each over `ntok` tokens) through the `mm` kernel.
+246 |     fn mm(&self, jobs: &[MmJob]) -> Result<()> {
+    |        ^^
+
+warning: function `xr_tiles` is never used
+  --> amd/src/verify.rs:42:4
+   |
+42 | fn xr_tiles() -> usize {
+   |    ^^^^^^^^
+

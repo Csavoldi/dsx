@@ -1,0 +1,54 @@
+W1023 11:39:57.518772   35556 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.129685 sec
+W1023 11:39:57.531783   35556 simple_timer.cpp:55] [rocprofv3] './target/release/dsx-amd dev --model /data/models/v41-1017 --rank /data/models/dsx-mxfp4/expert-rank.json --ctx 65536' ::     0.000000 sec
+W1023 11:39:57.545368   35556 tool.cpp:3082] HSA version 1.21.0 initialized (instance=0)
+dense layers: 2.3 s, 7.4 GB on device
+experts: 3520 MXFP4, 11840 3-bit, 0 2-bit: 236.4 GB (free 263.7 GB)
+experts: layer 3 done, 24.1 GB, 12 s
+experts: layer 7 done, 47.7 GB, 23 s
+experts: layer 11 done, 71.3 GB, 35 s
+experts: layer 15 done, 95.1 GB, 46 s
+experts: layer 19 done, 118.7 GB, 57 s
+experts: layer 23 done, 142.0 GB, 73 s
+experts: layer 27 done, 165.4 GB, 91 s
+experts: layer 31 done, 188.9 GB, 107 s
+experts: layer 35 done, 212.5 GB, 123 s
+experts: layer 39 done, 236.4 GB, 137 s
+loaded in 140.1 s; 246.8 GB on device
+dev: ready, waiting for /root/dev.cmd
+== prof 4096
+ctx 4096: decode step 30741 us median (32.5 tok/s), min 30432 max 30908
+  eager step: 30698 us in 541 launches
+  gemv experts gate/up           3913.0 us    40 launches  97.83 us each
+  gemv experts down              3276.6 us    40 launches  81.92 us each
+  gemv wo_b                      3139.8 us    40 launches  78.49 us each
+  gemv q_b(+idx)                 3111.2 us    40 launches  77.78 us each
+  gemv wo_a                      2915.3 us    40 launches  72.88 us each
+  gemv router+shared g/u         2897.8 us    40 launches  72.44 us each
+  gemv q_a/kv/comp/idxw          2820.8 us    40 launches  70.52 us each
+  hc_step                        2619.1 us    83 launches  31.56 us each
+  attn_merge                     1763.0 us    40 launches  44.07 us each
+  attn_part                      1556.2 us    40 launches  38.90 us each
+  attn_kv                         837.9 us    40 launches  20.95 us each
+  gemv head                       344.0 us     1 launches 344.04 us each
+  topk_final                      256.6 us     9 launches  28.52 us each
+  idx_score                       249.4 us     8 launches  31.18 us each
+  gemv_jobs                       209.2 us     2 launches 104.62 us each
+  topk_hist                       185.0 us     9 launches  20.55 us each
+  topk_scan                       182.4 us     9 launches  20.26 us each
+  topk_collect                    180.5 us     9 launches  20.05 us each
+  engram_sums                      44.5 us     2 launches  22.24 us each
+  hc_final                         29.4 us     1 launches  29.44 us each
+  block_max8                       22.0 us     1 launches  22.00 us each
+  (memset)                         21.8 us     1 launches  21.84 us each
+  argmax_part                      21.0 us     1 launches  20.96 us each
+  embed                            20.9 us     1 launches  20.88 us each
+  gather_f                         20.2 us     1 launches  20.24 us each
+  argmax                           20.2 us     1 launches  20.20 us each
+  advance                          19.9 us     1 launches  19.92 us each
+  expand_blocks                    19.8 us     1 launches  19.84 us each
+== quit
+E1023 11:42:29.271902   35556 output_stream.cpp:111] Opened result file: /root/c3/run_kernel_trace.csv
+E1023 11:42:29.313734   35556 output_stream.cpp:111] Opened result file: /root/c3/run_counter_collection.csv
+E1023 11:42:29.328882   35556 output_stream.cpp:111] Opened result file: /root/c3/run_agent_info.csv
+W1023 11:42:29.331139   35556 simple_timer.cpp:55] [rocprofv3] output generation ::     0.063572 sec
+W1023 11:42:29.331298   35556 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.063774 sec

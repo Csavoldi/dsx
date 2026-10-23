@@ -1,0 +1,9 @@
+Eager back-to-back launches on one stream, MI325X (rental 6, 2026-10-23 ~04:25 PT), launch_bench.hip:
+empty 1x64                           1.52 us per launch
+empty 40x256                         1.53 us per launch
+empty 1024x256                       1.55 us per launch
+1 load 40x256                        2.43 us per launch
+4 dependent loads 40x256             2.31 us per launch
+8 dependent loads 40x256             2.40 us per launch
+
+The runner's small kernels take 7-12 us each, so their cost is their own work, not launch overhead: folding ~160 launches into hc_step would save ~0.35 ms (gate was >= 4 us per launch). The hc_step fold is killed.

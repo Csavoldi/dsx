@@ -470,15 +470,17 @@ VGEMV_XS(2)
 
 // Expert jobs of up to 16*G tokens (bgroup jt = 16*G): R 16-row tiles per wave, each weight fragment decoded once and
 // multiplied into G token groups. Prompt chunks (~32 tokens per expert per 2048 tokens) read each expert once.
-template <int R, int G>
-DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
+// FMT: the job's weight format as a constant (1 MXFP4, 2 CB3, 3 CB2): a straight-line inner loop without format
+// branches (the runtime format made the loop dozens of small blocks with masked loads)
+template <int R, int G, int FMT>
+DEV void vgemv_xg_body(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
     const int lane = threadIdx.x & 63, wv = threadIdx.x >> 6;
     constexpr int JT = 16 * G;
     {
         const int per = J.blocks / J.ndyn;
         const int* d = J.dyn + (size_t)(b / per) * (8 + 2 * JT);
         b %= per;
-        J.fmt = d[0];
+        J.fmt = FMT;
         J.ntok = d[1];
         if (J.ntok == 0) return;
         J.woff = (long long)(uint32_t)d[2] | (long long)d[3] << 32;
@@ -507,8 +509,8 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
             if (rt * 16 >= J.n) break;
             const u4v* sp = (const u4v*)(base + J.soff) + ((size_t)rt * KU + u0) * 4 + (lane >> 4);
             f4 acc;
-            if (J.fmt == 1) acc = wave_x1g<0, X1U, true>((const uint32_t*)((const u4v*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 + lane), sp, S, xq1, xs1, 0u, 0u, lane);
-            else if (J.fmt == 2) acc = wave_x1g<3, X1U, true>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 3 + lane * 3, sp, S, xq1, xs1, cb3lo, cb3hi, lane);
+            if (FMT == 1) acc = wave_x1g<0, X1U, true>((const uint32_t*)((const u4v*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 + lane), sp, S, xq1, xs1, 0u, 0u, lane);
+            else if (FMT == 2) acc = wave_x1g<3, X1U, true>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 3 + lane * 3, sp, S, xq1, xs1, cb3lo, cb3hi, lane);
             else acc = wave_x1g<2, X1U, true>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 2 + lane * 2, sp, S, xq1, xs1, cb2, 0u, lane);
 #pragma unroll
             for (int j = 0; j < 4; j++) acc[j] = group_sum<16>(acc[j]);
@@ -532,8 +534,8 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
         lm[gi] = live ? 1.f : 0.f;
     }
     const char* base = (const char*)J.w;
-    const int NDW = J.fmt == 1 ? 4 : (J.fmt == 2 ? 3 : 2);
-    const uint32_t tlo = J.fmt == 2 ? cb3lo : cb2, thi = J.fmt == 2 ? cb3hi : 0u;
+    constexpr int NDW = FMT == 1 ? 4 : (FMT == 2 ? 3 : 2);
+    const uint32_t tlo = FMT == 2 ? cb3lo : cb2, thi = FMT == 2 ? cb3hi : 0u;
     f4 acc[R][G];
 #pragma unroll
     for (int r = 0; r < R; r++)
@@ -569,7 +571,7 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
             // the unit's 16 row scales (rows j, k-blocks m) as wsc[m][j]: packed FP8 -> f32 conversions (2 per
             // instruction) for the codebooks, exponent shifts for MXFP4; the products below use packed f32 math
             f4 wsc[4];
-            if (J.fmt == 1) {
+            if (FMT == 1) {
 #pragma unroll
                 for (int m = 0; m < 4; m++)
 #pragma unroll
@@ -584,12 +586,12 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
 #pragma unroll
             for (int m = 0; m < 4; m++) {
                 uint64_t a;
-                if (J.fmt == 1) a = fp4x8_to_fp8(cu.w[r][m]);
+                if (FMT == 1) a = fp4x8_to_fp8(cu.w[r][m]);
                 else {
                     const uint32_t dl = cu.w[r][m >> 1];
                     const int sh = 4 * (m & 1);
                     uint32_t s0 = (dl >> sh) & 0x03030303u, s1 = (dl >> (sh + 2)) & 0x03030303u;
-                    if (J.fmt == 2) {
+                    if (FMT == 2) {
                         s0 |= ((cu.w[r][2] >> (2 * m)) & 0x01010101u) << 2;
                         s1 |= ((cu.w[r][2] >> (2 * m + 1)) & 0x01010101u) << 2;
                     }
@@ -617,6 +619,15 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
             for (int j = 0; j < 4; j++) atomicAdd(yp + j, acc[r][gi][j] * J.mul);
         }
     }
+}
+template <int R, int G>
+DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
+    // the job's format, then the specialized body (uniform per wave: one job per block)
+    const int per = J.blocks / J.ndyn;
+    const int f = J.dyn[(size_t)(b / per) * (8 + 2 * 16 * G)];
+    if (f == 1) vgemv_xg_body<R, G, 1>(J, b, cb3lo, cb3hi, cb2);
+    else if (f == 2) vgemv_xg_body<R, G, 2>(J, b, cb3lo, cb3hi, cb2);
+    else vgemv_xg_body<R, G, 3>(J, b, cb3lo, cb3hi, cb2);
 }
 #define VGEMV_XG(R, G)                                                                                        \
     extern "C" __global__ void __launch_bounds__(256) vgemv_xg##R##G(VJobs js) {                              \
