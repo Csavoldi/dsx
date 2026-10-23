@@ -174,6 +174,8 @@ pub struct GpuModel<'m> {
     sk1: bool,
     /// one-token deferred decode: injection + post-weights copy inside the combine launch (DSX_COMBINE_FUSED=0: separate)
     combine_fused: bool,
+    /// one token: wo_a's rounding inside its GEMV, shared gate + up + swiglu in one launch (DSX_FUSE2=0: separate)
+    fuse2: bool,
     warned_nan: bool,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
@@ -278,7 +280,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "gemv_q8g_bf", "gemv_q8r_gu", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -453,6 +455,7 @@ impl<'m> GpuModel<'m> {
             q8r1: std::env::var("DSX_Q8R1").map_or(true, |v| v != "0"),
             sk1: std::env::var("DSX_SK1").map_or(true, |v| v != "0"),
             combine_fused: std::env::var("DSX_COMBINE_FUSED").map_or(true, |v| v != "0"),
+            fuse2: std::env::var("DSX_FUSE2").map_or(true, |v| v != "0"),
             warned_nan: false,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
@@ -773,9 +776,16 @@ impl<'m> GpuModel<'m> {
         let inter = c.inter;
         let (g_ptr, u_ptr, hm) = (self.tmp.ptr, self.tmp.ptr + (t * inter * 4) as u64, self.tmp.ptr + (2 * t * inter * 4) as u64);
         let l = &self.layers[li];
-        self.gemv_t(&l.sh_gate, x, g_ptr, t)?;
-        self.gemv_t(&l.sh_up, x, u_ptr, t)?;
-        self.g.launch(self.k["swiglu"], ((inter as u32).div_ceil(256), t as u32, 1), 256, 0, &[Arg::P(g_ptr), Arg::P(u_ptr), Arg::I(inter as i32), Arg::P(0), Arg::P(hm), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
+        // one token, Q8_0 gate and up on the one-row-per-warp path: both dots and swiglu in one launch (gemv_q8r_gu)
+        let gu = |w: &DMat| w.ty == GType::Q8_0 && w.q8r && !w.act_fp8 && w.rows >= 2048;
+        if t == 1 && self.fuse2 && self.q8r1 && gu(&l.sh_gate) && gu(&l.sh_up) {
+            let ((gw, gs, _), (uw, us, _)) = (l.sh_gate.ptrs(0), l.sh_up.ptrs(0));
+            self.g.launch(self.k["gemv_q8r_gu"], ((inter as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(gw), Arg::P(gs), Arg::P(uw), Arg::P(us), Arg::P(x), Arg::P(hm), Arg::I(inter as i32), Arg::I(l.sh_gate.cols as i32), Arg::F(c.swiglu_limit)])?;
+        } else {
+            self.gemv_t(&l.sh_gate, x, g_ptr, t)?;
+            self.gemv_t(&l.sh_up, x, u_ptr, t)?;
+            self.g.launch(self.k["swiglu"], ((inter as u32).div_ceil(256), t as u32, 1), 256, 0, &[Arg::P(g_ptr), Arg::P(u_ptr), Arg::I(inter as i32), Arg::P(0), Arg::P(hm), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
+        }
         self.gemv_t(&l.sh_down, hm, a, t)?;
         self.ev(li, 4)?;
         // the CPU's experts: this layer's (or, deferred, the previous layer's; the last layer waits for its own too)
@@ -1364,9 +1374,11 @@ impl<'m> GpuModel<'m> {
         self.rope(self.o.ptr, nh, hd, compressed, t, true)?;
         let gsz = nh * hd / c.o_groups;
         self.fake_fp8(self.o.ptr, nh * hd)?;
+        // wo_a's bf16 rounding inside the GEMV (gemv_q8g_bf) when it is the Q8_0 one
+        let rounded = l.o_a.q8r && self.fuse2;
         if l.o_a.q8r {
             let (wp, sp, _) = l.o_a.ptrs(0);
-            self.g.launch(self.k["gemv_q8g"], (((c.o_groups * c.o_lora) as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(wp), Arg::P(self.o.ptr), Arg::P(self.r.ptr), Arg::I((c.o_groups * c.o_lora) as i32), Arg::I(gsz as i32), Arg::I(c.o_lora as i32), Arg::I(gsz as i32), Arg::P(sp)])?;
+            self.g.launch(self.k[if rounded { "gemv_q8g_bf" } else { "gemv_q8g" }], (((c.o_groups * c.o_lora) as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(wp), Arg::P(self.o.ptr), Arg::P(self.r.ptr), Arg::I((c.o_groups * c.o_lora) as i32), Arg::I(gsz as i32), Arg::I(c.o_lora as i32), Arg::I(gsz as i32), Arg::P(sp)])?;
         } else if l.o_a.q6.is_some() && l.o_a.ty != GType::Q5K && c.o_lora % 16 == 0 {
             // 6-bit planes: every group in one launch (group gi's rows read o's slice gi)
             let ([lo, hi, sc, d], _, _) = l.o_a.planes(0);
@@ -1384,7 +1396,9 @@ impl<'m> GpuModel<'m> {
                 self.gemv_rows(&l.o_a, gi * c.o_lora, c.o_lora, self.o.ptr + (gi * gsz * 4) as u64, self.r.ptr + (gi * c.o_lora * 4) as u64)?;
             }
         }
-        self.g.launch(self.k["round_bf16"], (((c.o_groups * c.o_lora) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.r.ptr), Arg::I((c.o_groups * c.o_lora) as i32)])?;
+        if !rounded {
+            self.g.launch(self.k["round_bf16"], (((c.o_groups * c.o_lora) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.r.ptr), Arg::I((c.o_groups * c.o_lora) as i32)])?;
+        }
         self.gemv(&l.o_b, self.r.ptr, self.a.ptr)
     }
 

@@ -1759,8 +1759,9 @@ extern "C" __global__ void __launch_bounds__(128) gemv_q8u(const int8_t *__restr
 }
 
 // Q8_0 repacked with grouped input: row r reads x + (r / rpg) * xgs (the block-diagonal wo_a in one launch)
-extern "C" __global__ void gemv_q8g(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
-                                    int rows, int k, int rpg, int xgs, const __half *__restrict__ d) {
+template <bool RND>
+__device__ __forceinline__ void gemv_q8g_body(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
+                                              int rows, int k, int rpg, int xgs, const __half *__restrict__ d) {
   int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
   if (r >= rows) return;
   const int8_t *qr = qs + (size_t)r * k;
@@ -1777,7 +1778,49 @@ extern "C" __global__ void gemv_q8g(const int8_t *__restrict__ qs, const float *
                                        q[12] * e.x + q[13] * e.y + q[14] * e.z + q[15] * e.w);
   }
   acc = warp_sum(acc);
-  if (lane == 0) y[r] = acc;
+  if (lane == 0) y[r] = RND ? bf16r(acc) : acc;
+}
+extern "C" __global__ void gemv_q8g(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
+                                    int rows, int k, int rpg, int xgs, const __half *__restrict__ d) {
+  gemv_q8g_body<false>(qs, x, y, rows, k, rpg, xgs, d);
+}
+// gemv_q8g with the outputs rounded to bf16 (wo_a followed by round_bf16, in one launch)
+extern "C" __global__ void gemv_q8g_bf(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
+                                       int rows, int k, int rpg, int xgs, const __half *__restrict__ d) {
+  gemv_q8g_body<true>(qs, x, y, rows, k, rpg, xgs, d);
+}
+
+// shared expert, one token: gate and up rows r (Q8_0 repacked) and swiglu into h[r], in one launch; each dot is
+// gemv_q8r1's, the swiglu is swiglu's (w = 1): bit-identical to the three launches. grid ceil(inter / 4), block 128.
+extern "C" __global__ void gemv_q8r_gu(const int8_t *__restrict__ gq, const __half *__restrict__ gd, const int8_t *__restrict__ uq,
+                                       const __half *__restrict__ ud, const float *__restrict__ x, float *__restrict__ h,
+                                       int inter, int k, float lim) {
+  int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+  if (r >= inter) return;
+  float acc[2] = {0.f, 0.f};
+#pragma unroll
+  for (int m = 0; m < 2; m++) {
+    const int8_t *qr = (m ? uq : gq) + (size_t)r * k;
+    const __half *dr = (m ? ud : gd) + (size_t)r * (k / 32);
+    for (int i = lane * 16; i < k; i += 512) {
+      int4 raw = __ldg((const int4 *)(qr + i));
+      const int8_t *q = (const int8_t *)&raw;
+      float sc = __half2float(dr[i / 32]);
+      float w[16];
+#pragma unroll
+      for (int j = 0; j < 16; j++) w[j] = (float)q[j] * sc;
+      const float4 *xp = (const float4 *)(x + i);
+      float4 a = xp[0], b = xp[1], c = xp[2], e = xp[3];
+      acc[m] += w[0] * a.x + w[1] * a.y + w[2] * a.z + w[3] * a.w + w[4] * b.x + w[5] * b.y + w[6] * b.z + w[7] * b.w +
+                w[8] * c.x + w[9] * c.y + w[10] * c.z + w[11] * c.w + w[12] * e.x + w[13] * e.y + w[14] * e.z + w[15] * e.w;
+    }
+  }
+  float g = warp_sum(acc[0]), u = warp_sum(acc[1]);
+  if (lane == 0) {
+    float gv = fminf(g, lim);
+    float uv = fminf(fmaxf(u, -lim), lim);
+    h[r] = bf16r(gv / (1.f + expf(-gv)) * uv * 1.f);
+  }
 }
 
 // multi-block hc_pre / hc_post for one token: grid ceil(d/256)
