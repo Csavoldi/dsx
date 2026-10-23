@@ -521,7 +521,8 @@ impl GpuModel<'_> {
 
     fn hc_mixes_rows(&self, fnw: &(DMat, Buf, Buf), h: u64, out: u64, n: usize) -> Result<()> {
         let c = &self.m.cfg;
-        self.g.launch(self.k["hc_dots"], (24, n as u32, 1), 256, 0, &[Arg::P(fnw.0.buf.ptr), Arg::P(h), Arg::P(out), Arg::I((c.hc * c.dim) as i32), Arg::F(c.eps)])?;
+        // tiled: 4 rows x 4 tokens per block, the same dots as hc_dots
+        self.g.launch(self.k["hc_dots_t"], (6, (n as u32).div_ceil(4), 1), 256, 0, &[Arg::P(fnw.0.buf.ptr), Arg::P(h), Arg::P(out), Arg::I((c.hc * c.dim) as i32), Arg::F(c.eps), Arg::I(n as i32)])?;
         self.g.launch(self.k["hc_finish_w"], ((n as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(out), Arg::P(fnw.1.ptr), Arg::P(fnw.2.ptr), Arg::F(c.hc_eps), Arg::I(c.sinkhorn_iters as i32), Arg::I(n as i32)])
     }
 

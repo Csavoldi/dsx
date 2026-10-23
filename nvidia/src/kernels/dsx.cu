@@ -1374,6 +1374,41 @@ extern "C" __global__ void hc_dots(const float *fn, const float *h, float *dots,
   if (threadIdx.x == 0) dots[t * 24 + i] = acc * rsqrtf(ss / hcd + eps);
 }
 
+// hc_dots over a tile of 4 rows x 4 tokens per block: each h[t] / fn[i] slice is loaded once for the tile (one block
+// per (row, token) re-read each token's 80 KB h 24 times: 3.5 ms per 3000-token call on an RTX 3090). Every
+// (row, token) keeps hc_dots' per-thread accumulation and block_sum, so the dots are bit-identical.
+// grid (24 / 4, ceil(T / 4)), block 256
+extern "C" __global__ void hc_dots_t(const float *fn, const float *h, float *dots, int hcd, float eps, int T) {
+  __shared__ float sh[32];
+  const int i0 = blockIdx.x * 4, t0 = blockIdx.y * 4;
+  const int nt = min(4, T - t0);
+  float ss[4] = {0.f, 0.f, 0.f, 0.f}, acc[4][4];
+#pragma unroll
+  for (int r = 0; r < 4; r++)
+#pragma unroll
+    for (int q = 0; q < 4; q++) acc[r][q] = 0.f;
+  for (int j = threadIdx.x * 4; j < hcd; j += blockDim.x * 4) {
+    float4 xv[4], wv[4];
+#pragma unroll
+    for (int q = 0; q < 4; q++) xv[q] = q < nt ? *(const float4 *)(h + (size_t)(t0 + q) * hcd + j) : make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+    for (int r = 0; r < 4; r++) wv[r] = *(const float4 *)(fn + (size_t)(i0 + r) * hcd + j);
+#pragma unroll
+    for (int q = 0; q < 4; q++) {
+      ss[q] += xv[q].x * xv[q].x + xv[q].y * xv[q].y + xv[q].z * xv[q].z + xv[q].w * xv[q].w;
+#pragma unroll
+      for (int r = 0; r < 4; r++) acc[r][q] += wv[r].x * xv[q].x + wv[r].y * xv[q].y + wv[r].z * xv[q].z + wv[r].w * xv[q].w;
+    }
+  }
+  for (int q = 0; q < nt; q++) {
+    const float sq = block_sum(ss[q], sh);
+    for (int r = 0; r < 4; r++) {
+      const float a = block_sum(acc[r][q], sh);
+      if (threadIdx.x == 0) dots[(t0 + q) * 24 + i0 + r] = a * rsqrtf(sq / hcd + eps);
+    }
+  }
+}
+
 // pre/post/comb from the dots (Sinkhorn), one thread per token; in place on mixes [T][24]
 extern "C" __global__ void hc_finish(float *mixes, const float *scale, const float *base, float hc_eps, int iters, int T) {
   int t = blockIdx.x * blockDim.x + threadIdx.x;
