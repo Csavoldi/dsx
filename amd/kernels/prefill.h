@@ -6,6 +6,9 @@
 #include "gemv.h"
 
 #define MMG 8  // token groups of 16 per block (128 tokens)
+// batched-decode slot window rings: 16 spare rows, so a step may feed up to 16 consecutive positions of one slot
+// (draft verification) without overwriting rows its earlier tokens still read
+#define SRING (WIN + 16)
 
 // Graph-replayed passes (verify, draft) pass p0 = -1: the position comes from the decode state on the device
 __device__ const int* g_posp;
@@ -872,7 +875,8 @@ extern "C" __global__ void __launch_bounds__(256) mm2(const MmJob* __restrict__ 
 // Scores S[64][32] = Q . R^T on bf16 MFMA with Q split into hi + lo bf16 (f32-accurate); waves: head tile w%4,
 // row tile (w/4)%2, k half w/8 (summed through LDS). Online softmax per head; O[64][512] += P . R with P split
 // hi + lo; waves: head tile w%4, dim tiles (w/4)*8 .. +8. Writes O / L (after the sink) over the query's q row.
-// attn_core: query t (its q row), window rows lo .. lo+nwin-1 read from lin at row p - wsub or, ring, p % WIN, then nc compressed rows comp[cidx[t][..] - woff]
+// attn_core: query t (its q row), window rows lo .. lo+nwin-1 read from lin at row p - wsub or, ring (a batch slot's),
+// p % SRING, then nc compressed rows comp[cidx[t][..] - woff]
 __device__ __forceinline__ void attn_core(int t, int lo, int nwin, int wsub, bool ring, float* __restrict__ q, const uint16_t* __restrict__ lin,
                                           const uint16_t* __restrict__ comp, const int* __restrict__ cidx, int nc, int ldc,
                                           int woff, float scale, const float* sinks, bool cpk = false, int rbeg = 0,
@@ -914,7 +918,7 @@ __device__ __forceinline__ void attn_core(int t, int lo, int nwin, int wsub, boo
         if (tid < 32) {
             const int rr = r0 + tid;
             int src = -1;
-            if (rr < nwin) src = ring ? (lo + rr) % WIN : (lo + rr) - wsub;
+            if (rr < nwin) src = ring ? (lo + rr) % SRING : (lo + rr) - wsub;
             else if (rr < total) {
                 const int ci = cidx[(size_t)t * ldc + rr - nwin];
                 src = ci >= 0 ? 0x40000000 | (ci - woff) : -1;

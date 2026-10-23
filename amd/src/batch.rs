@@ -48,6 +48,11 @@ pub struct Batch {
     pub(crate) bad: Buf,
     /// split attention partials [token <= 128][10 splits][64 * 512 + 128] f32
     pub(crate) apart: Buf,
+    /// multi-token steps: batch row of each token's previous position (-1: none), and the compressor state each
+    /// token would leave, per ratio-2 KV-source layer [layer][token][2][HD] (committed for the accepted prefix)
+    pub(crate) bprev: Buf,
+    pub(crate) stage: Vec<Option<Buf>>,
+    pub(crate) multi: bool,
 }
 
 impl Batch {
@@ -58,7 +63,7 @@ impl Batch {
     pub fn state_bytes(dec: &Decoder, slots: usize, ctx: usize) -> usize {
         let mut b = 0;
         for l in &dec.layers {
-            b += slots * WIN * HD * 2;
+            b += slots * SRING * HD * 2;
             if l.kv_src {
                 let r = ctx / l.ratio.max(1) + 1;
                 b += slots * (r * (CROW_B + IROW_B) + 4 * HD * 4);
@@ -76,7 +81,7 @@ impl Decoder {
         let g = &self.g;
         let (mut rings, mut comp, mut idx, mut cst, mut rows) = (vec![], vec![], vec![], vec![], vec![]);
         for l in &self.layers {
-            rings.push(g.alloc_zeroed(slots * WIN * HD * 2)?);
+            rings.push(g.alloc_zeroed(slots * SRING * HD * 2)?);
             let r = if l.kv_src { ctx / l.ratio.max(1) + 1 } else { 0 };
             rows.push(r);
             comp.push(if l.kv_src { Some(g.alloc_zeroed(slots * r * CROW_B)?) } else { None });
@@ -112,6 +117,9 @@ impl Decoder {
             next: g.alloc_zeroed(BMAX * 4)?,
             bad: g.alloc_zeroed(4)?,
             apart: g.alloc(128 * 10 * (NH * HD + 128) * 4)?,
+            bprev: g.alloc_zeroed(BMAX * 4)?,
+            stage: self.layers.iter().map(|l| if l.kv_src && l.ratio == 2 { g.alloc_zeroed(BMAX * 2 * HD * 4).ok() } else { None }).collect(),
+            multi: false,
         })
     }
 
@@ -120,7 +128,8 @@ impl Decoder {
         anyhow::ensure!(slot < b.slots && self.pos < b.ctx, "slot {slot} / context {} of {}", self.pos, b.ctx);
         let g = &self.g;
         for (li, l) in self.layers.iter().enumerate() {
-            g.dtod(b.rings[li].at(slot * WIN * HD * 2), l.ring.ptr, WIN * HD * 2)?;
+            // lane ring rows are pos % WIN, slot ring rows pos % SRING: the last WIN positions
+            g.launch("ring_remap", (WIN as u32, 1, 1), 256, 0, &[Arg::P(l.ring.ptr), Arg::I(WIN as i32), Arg::P(b.rings[li].at(slot * SRING * HD * 2)), Arg::I(SRING as i32), Arg::I(self.pos as i32 - WIN as i32)])?;
             if l.kv_src {
                 let r = b.rows[li];
                 let used = (self.pos / l.ratio.max(1) + 1).min(r);
@@ -147,7 +156,7 @@ impl Decoder {
         anyhow::ensure!(pos < self.max_ctx, "slot {slot} context {pos} >= lane context {}", self.max_ctx);
         let g = &self.g;
         for (li, l) in self.layers.iter().enumerate() {
-            g.dtod(l.ring.ptr, b.rings[li].at(slot * WIN * HD * 2), WIN * HD * 2)?;
+            g.launch("ring_remap", (WIN as u32, 1, 1), 256, 0, &[Arg::P(b.rings[li].at(slot * SRING * HD * 2)), Arg::I(SRING as i32), Arg::P(l.ring.ptr), Arg::I(WIN as i32), Arg::I(pos as i32 - WIN as i32)])?;
             if l.kv_src {
                 let r = b.rows[li];
                 let used = (pos / l.ratio.max(1) + 1).min(r);
@@ -212,6 +221,73 @@ impl Decoder {
     /// logits of the last step's token i
     pub fn batch_logits(&self, b: &Batch, i: usize) -> Result<Vec<f32>> {
         self.g.dtoh(b.logits.at(i * VOCAB * 4), VOCAB)
+    }
+
+    /// Verify step: slot slots[i] gets the consecutive tokens toks[i] (its next token, then drafts) at its next
+    /// positions. Returns the greedy token after each fed token; nothing is committed (batch_commit).
+    pub fn batch_verify(&mut self, b: &mut Batch, slots: &[usize], toks: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
+        let t: usize = toks.iter().map(|v| v.len()).sum();
+        anyhow::ensure!(t > 0 && t <= BMAX && slots.len() == toks.len(), "verify batch of {t}");
+        for (&s, v) in slots.iter().zip(toks) {
+            anyhow::ensure!(!v.is_empty() && v.len() <= SRING - WIN && b.pos[s] + v.len() < b.ctx, "slot {s}: {} tokens at {}", v.len(), b.pos[s]);
+        }
+        if self.pf.is_none() {
+            self.prefill(&[])?;
+        }
+        let n = self.cfg.engram_ngram;
+        let (mut bp, mut bs, mut prev, mut tails, mut flat) = (vec![], vec![], vec![], vec![], vec![]);
+        for (&s, v) in slots.iter().zip(toks) {
+            let mut h = b.hist[s].clone();
+            for (j, &tk) in v.iter().enumerate() {
+                bp.push((b.pos[s] + j) as i32);
+                bs.push(s as i32);
+                prev.push(if j == 0 { -1 } else { flat.len() as i32 - 1 });
+                h.push(self.cfg.engram_token_map[tk as usize] as i64);
+                tails.push(h[h.len().saturating_sub(n)..].to_vec());
+                flat.push(tk);
+            }
+        }
+        b.erows = vec![0u8; t * 2 * ENG_ROW_BYTES];
+        b.engtabs.fetch(&tails, 0, &mut b.erows[..t * ENG_ROW_BYTES]);
+        let et = b.engtabs.clone();
+        *b.eng1.borrow_mut() = Some(std::thread::spawn(move || {
+            let mut v = vec![0u8; tails.len() * ENG_ROW_BYTES];
+            et.fetch(&tails, 1, &mut v);
+            v
+        }));
+        b.step_pos = bp.iter().map(|&p| p as usize).collect();
+        self.g.htod(b.bpos.ptr, &bp)?;
+        self.g.htod(b.bslot.ptr, &bs)?;
+        self.g.htod(b.bprev.ptr, &prev)?;
+        b.multi = true;
+        let r = self.run_chunk_b(&flat, b);
+        b.multi = false;
+        let out = r?;
+        let mut res = vec![];
+        let mut k = 0;
+        for v in toks {
+            res.push(out[k..k + v.len()].to_vec());
+            k += v.len();
+        }
+        Ok(res)
+    }
+
+    /// After batch_verify: slot `slot` keeps its first `keep` fed tokens `toks[..keep]` (batch rows row0..).
+    pub fn batch_commit(&mut self, b: &mut Batch, slot: usize, row0: usize, toks: &[u32], keep: usize) -> Result<()> {
+        let p_last = b.pos[slot] + keep - 1;
+        // ratio-2 compressor state: the newest kept position, if even, is pending its pair
+        if (p_last + 1) % 2 != 0 {
+            for (li, st) in b.stage.iter().enumerate() {
+                if let Some(st) = st {
+                    self.g.dtod(b.cst[li].as_ref().unwrap().at(slot * 4 * HD * 4), st.at((row0 + keep - 1) * 2 * HD * 4), 2 * HD * 4)?;
+                }
+            }
+        }
+        for &tk in &toks[..keep] {
+            b.hist[slot].push(self.cfg.engram_token_map[tk as usize] as i64);
+        }
+        b.pos[slot] += keep;
+        Ok(())
     }
 
     /// head over the batch's final-norm rows (bf16 hi + lo), argmax per token into b.next

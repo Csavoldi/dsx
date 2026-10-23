@@ -1004,7 +1004,7 @@ impl Decoder {
         let pf = self.pf.as_ref().unwrap();
         let l = &self.layers[li];
         let (bp, bs) = (b.bpos.ptr, b.bslot.ptr);
-        let ring_stride = (WIN * HD) as i64;
+        let ring_stride = (SRING * HD) as i64;
         g.launch("kv_b", (t as u32, 1, 1), 512, 0, &[Arg::P(pf.kvraw.ptr), Arg::P(l.kv_norm.ptr), Arg::P(rf), Arg::P(bp), Arg::P(bs), Arg::P(b.rings[li].ptr), Arg::P((ring_stride) as u64)])?;
         if l.kv_src {
             let r = b.rows[li] as i64;
@@ -1013,7 +1013,7 @@ impl Decoder {
                 (t as u32, 1, 1),
                 512,
                 0,
-                &[Arg::P(bp), Arg::P(bs), Arg::I(l.ratio as i32), Arg::P(pf.ckv.ptr), Arg::P(pf.cg.ptr), Arg::P(b.cst[li].as_ref().unwrap().ptr), Arg::P((4 * HD as i64) as u64), Arg::P(l.comp_norm.as_ref().unwrap().ptr), Arg::P(l.idx_wk.as_ref().unwrap().ptr), Arg::P(l.idx_knorm.as_ref().unwrap().ptr), Arg::P(b.comp[li].as_ref().unwrap().ptr), Arg::P((r * CROW_B as i64) as u64), Arg::P(b.idx[li].as_ref().unwrap().ptr), Arg::P((r * IROW_B as i64) as u64), Arg::P(self.rope_fc.ptr), Arg::F(c.eps)],
+                &[Arg::P(bp), Arg::P(bs), Arg::I(l.ratio as i32), Arg::P(pf.ckv.ptr), Arg::P(pf.cg.ptr), Arg::P(b.cst[li].as_ref().unwrap().ptr), Arg::P((4 * HD as i64) as u64), Arg::P(l.comp_norm.as_ref().unwrap().ptr), Arg::P(l.idx_wk.as_ref().unwrap().ptr), Arg::P(l.idx_knorm.as_ref().unwrap().ptr), Arg::P(b.comp[li].as_ref().unwrap().ptr), Arg::P((r * CROW_B as i64) as u64), Arg::P(b.idx[li].as_ref().unwrap().ptr), Arg::P((r * IROW_B as i64) as u64), Arg::P(self.rope_fc.ptr), Arg::F(c.eps), Arg::P(if b.multi { b.bprev.ptr } else { 0 }), Arg::P(if b.multi { b.stage[li].as_ref().map(|x| x.ptr).unwrap_or(0) } else { 0 })],
             )?;
         }
         let maxp = b.step_pos.iter().copied().max().unwrap_or(0) + 1;

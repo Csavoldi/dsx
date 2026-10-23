@@ -302,6 +302,43 @@ fn beval_run(dec: &mut Decoder, eval: &Path, seqs: usize, rep: usize, len: usize
     Ok(format!("{{\"batch\": {bsz}, \"tokens\": {cnt}, \"ms_per_step\": {:.2}, \"replicas\": [{}]}}", tstep * 1e3 / (len - 1) as f64, per.join(", ")))
 }
 
+/// beval through multi-token verify steps: K teacher tokens per slot per step (batch_verify + batch_commit of all K)
+fn bveval_run(dec: &mut Decoder, eval: &Path, seqs: usize, k: usize, len: usize) -> Result<String> {
+    let rd = |f: &str| std::fs::read(eval.join(f));
+    let toks: Vec<u32> = rd("heldout.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
+    let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
+    let tlp: Vec<f32> = rd("teacher_lp.f32")?.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+    let topk = 256;
+    let mut b = dec.new_batch(seqs, len + 16)?;
+    let slots: Vec<usize> = (0..seqs).collect();
+    let (mut nll, mut kl, mut agree, mut cnt) = (0f64, 0f64, 0usize, 0usize);
+    let t0 = Instant::now();
+    let mut p = 0;
+    while p < len - 1 {
+        let kk = k.min(len - 1 - p);
+        let feeds: Vec<Vec<u32>> = (0..seqs).map(|s| toks[s * len + p..s * len + p + kk].to_vec()).collect();
+        dec.batch_verify(&mut b, &slots, &feeds)?;
+        let mut row = 0;
+        for s in 0..seqs {
+            for j in 0..kk {
+                let l = dec.batch_logits(&b, row + j)?;
+                let lq = log_softmax(&l);
+                nll -= lq[toks[s * len + p + j + 1] as usize];
+                let r = s * (len - 1) + p + j;
+                let (ti, tl) = (&tidx[r * topk..(r + 1) * topk], &tlp[r * topk..(r + 1) * topk]);
+                kl += ti.iter().zip(tl).map(|(&i, &lt)| (lt as f64).exp() * (lt as f64 - lq[i as usize])).sum::<f64>();
+                let am = l.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |a, (i, &v)| if v > a.1 { (i, v) } else { a }).0;
+                agree += (am as i32 == ti[0]) as usize;
+                cnt += 1;
+            }
+            dec.batch_commit(&mut b, s, row, &feeds[s], kk)?;
+            row += kk;
+        }
+        p += kk;
+    }
+    Ok(format!("{{\"k\": {k}, \"tokens\": {cnt}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}, \"s\": {:.1}}}", (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64, t0.elapsed().as_secs_f64()))
+}
+
 fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<()> {
     let nl = std::env::var("DSXA_LAYERS").ok().and_then(|v| v.parse().ok());
     let mut dec = Decoder::load(model, ctx, rank, &[], nl)?;
@@ -572,6 +609,55 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                             }
                         }
                     }
+                    "vbtest" => {
+                        // vbtest B K PLEN: B distinct prompts; batch A decodes K tokens one step at a time, batch B verifies A's
+                        // greedy continuation in one multi-token step, commits it, then both take one more step
+                        let bsz: usize = w[1].parse()?;
+                        let k: usize = w[2].parse()?;
+                        let plen: usize = w[3].parse()?;
+                        let ev: Vec<u32> = std::fs::read("/data/models/lucebox/eval/heldout.i32")?.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as u32).collect();
+                        let mut a = dec.new_batch(bsz, plen + 64)?;
+                        let mut bb = dec.new_batch(bsz, plen + 64)?;
+                        let mut first = vec![];
+                        for s in 0..bsz {
+                            dec.reset()?;
+                            let pr: Vec<u32> = (0..plen).map(|i| ev[(s * 997 + i) % ev.len()]).collect();
+                            first.push(dec.prefill(&pr)?);
+                            dec.load_slot(&mut a, s)?;
+                            dec.load_slot(&mut bb, s)?;
+                        }
+                        let slots: Vec<usize> = (0..bsz).collect();
+                        let mut seq: Vec<Vec<u32>> = first.iter().map(|&f| vec![f]).collect();
+                        let mut cur = first.clone();
+                        let mut seql: Vec<Vec<Vec<f32>>> = vec![vec![]; bsz];
+                        for _ in 0..k {
+                            cur = dec.batch_step(&mut a, &slots, &cur)?;
+                            for s in 0..bsz { seq[s].push(cur[s]); seql[s].push(dec.batch_logits(&a, s)?); }
+                        }
+                        // B: feed first + A's next k-1 tokens; outputs should be A's tokens 1..=k
+                        let feeds: Vec<Vec<u32>> = seq.iter().map(|v| v[..k].to_vec()).collect();
+                        let outs = dec.batch_verify(&mut bb, &slots, &feeds)?;
+                        let mut same = 0;
+                        let mut row = 0;
+                        let (mut klmax, mut klsum) = (0f64, 0f64);
+                        for s in 0..bsz {
+                            for j in 0..k {
+                                let lv = dec.batch_logits(&bb, row + j)?;
+                                let (p, q) = (log_softmax(&seql[s][j]), log_softmax(&lv));
+                                let kl: f64 = p.iter().zip(&q).map(|(a, b)| a.exp() * (a - b)).sum();
+                                klmax = klmax.max(kl);
+                                klsum += kl;
+                            }
+                            same += outs[s].iter().zip(&seq[s][1..=k]).filter(|(x, y)| x == y).count();
+                            dec.batch_commit(&mut bb, s, row, &feeds[s], k)?;
+                            row += k;
+                        }
+                        let na = dec.batch_step(&mut a, &slots, &cur)?;
+                        let nb = dec.batch_step(&mut bb, &slots, &cur)?;
+                        let after = na.iter().zip(&nb).filter(|(x, y)| x == y).count();
+                        println!("vbtest {bsz} x {k}: verify matched {same} / {} sequential tokens (logit KL mean {:.2e}, max {:.2e}); next step after commit {after} / {bsz} equal", bsz * k, klsum / (bsz * k) as f64, klmax);
+                        println!("  slot 0 sequential {:?}\n  slot 0 verify     {:?}", &seq[0][1..=k], &outs[0]);
+                    }
                     "rbench" => {
                         // rbench SLOTS CTX N PROMPT GEN [TURNS]: N requests of PROMPT synthetic tokens (distinct per request),
                         // GEN greedy tokens each, through the batched runner; TURNS > 1 sends each conversation's
@@ -769,6 +855,10 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                     }
                     "peval" => {
                         let r = eval_run_m(&mut dec, Path::new(w[1]), w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(8), 1024, true)?;
+                        println!("{r}");
+                    }
+                    "bveval" => {
+                        let r = bveval_run(&mut dec, Path::new(w[1]), w[2].parse()?, w[3].parse()?, 1024)?;
                         println!("{r}");
                     }
                     "beval" => {

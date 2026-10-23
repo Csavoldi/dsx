@@ -16,6 +16,8 @@ pub const QL: usize = 1280;
 pub const NE: usize = 384;
 pub const INTER: usize = 2304;
 pub const WIN: usize = 128;
+/// batched-decode slot window rings (kernels/prefill.h SRING): 16 spare rows for multi-token verify steps
+pub const SRING: usize = WIN + 16;
 pub const IH: usize = 32;
 pub const ID: usize = 128;
 pub const VOCAB: usize = 129280;

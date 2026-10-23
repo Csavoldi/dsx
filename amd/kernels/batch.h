@@ -17,7 +17,7 @@ extern "C" __global__ void rope_b(float* x, int heads, int hd, const float* freq
     v[2 * i + 1] = a * sn + b * cs;
 }
 
-// window kv row of each token: rmsnorm, rope(pos), fake_fp8 -> its slot's ring at pos % WIN (bf16)
+// window kv row of each token: rmsnorm, rope(pos), fake_fp8 -> its slot's ring at pos % SRING (bf16)
 extern "C" __global__ void __launch_bounds__(512) kv_b(const float* kv_raw, const float* kv_norm, const float* rf, const int* bpos,
                                                        const int* bslot, uint16_t* rings, long long ring_stride) {
     __shared__ float red[16];
@@ -33,7 +33,7 @@ extern "C" __global__ void __launch_bounds__(512) kv_b(const float* kv_raw, cons
         v = (i & 1) ? other * sn + v * cs : v * cs - other * sn;
     }
     v = fake_fp8_lane(v);
-    rings[(size_t)bslot[t] * ring_stride + (size_t)(pos % WIN) * HD + i] = (uint16_t)bf16_bits(v);
+    rings[(size_t)bslot[t] * ring_stride + (size_t)(pos % SRING) * HD + i] = (uint16_t)bf16_bits(v);
 }
 
 // Compressor + indexer keys, one token of its own sequence per block (comp_t with T = 1): the previous position's
@@ -42,22 +42,28 @@ extern "C" __global__ void __launch_bounds__(512) kv_b(const float* kv_raw, cons
 extern "C" __global__ void __launch_bounds__(512) comp_b(const int* bpos, const int* bslot, int ratio, const float* ckv, const float* cgate,
                                                          float* cstate, long long cs_stride, const float* comp_norm, const uint16_t* wk,
                                                          const float* knorm, uint8_t* comp_cache, long long comp_stride, uint8_t* idx_cache,
-                                                         long long idx_stride, const float* rope_fc, float eps) {
+                                                         long long idx_stride, const float* rope_fc, float eps, const int* bprev,
+                                                         float* stage) {
     __shared__ float red[16];
     __shared__ float lat[HD];
     __shared__ float kk[ID];
     const int t = blockIdx.x, i = threadIdx.x, p = bpos[t], s = bslot[t];
     float* cst = cstate + (size_t)s * cs_stride;
+    // several consecutive tokens of a slot in one step (bprev: the batch row of the token's previous position, -1 if
+    // none): pooling takes the previous position from the batch, and the compressor state is staged per token
+    // ([t][2][HD], committed for the accepted prefix by the host) instead of written
+    const int pr = bprev ? bprev[t] : -1;
     if (ratio == 2 && (p + 1) % 2 != 0) {
-        cst[i] = ckv[(size_t)t * HD + i];
-        cst[HD + i] = cgate[(size_t)t * HD + i];
+        float* dst = stage ? stage + (size_t)t * 2 * HD : cst;
+        dst[i] = ckv[(size_t)t * HD + i];
+        dst[HD + i] = cgate[(size_t)t * HD + i];
     }
     if ((p + 1) % ratio != 0) return;
     float v;
     if (ratio == 1) {
         v = ckv[(size_t)t * HD + i];
     } else {
-        const float k0 = cst[i], s0 = cst[HD + i];
+        const float k0 = pr >= 0 ? ckv[(size_t)pr * HD + i] : cst[i], s0 = pr >= 0 ? cgate[(size_t)pr * HD + i] : cst[HD + i];
         const float k1 = ckv[(size_t)t * HD + i], s1 = cgate[(size_t)t * HD + i];
         const float mx = fmaxf(s0, s1);
         const float e0 = expf(s0 - mx), e1 = expf(s1 - mx);
@@ -350,4 +356,13 @@ extern "C" __global__ void unpack_fp4_rows(const uint8_t* src, int nrows, int n,
         const uint32_t c = (row[(g * G + k) / 2] >> (4 * (k & 1))) & 0xF;
         d[k] = (uint16_t)(__float_as_uint(e2m1_val(c) * s) >> 16);
     }
+}
+
+// lane ring (row = pos % WIN) <-> slot ring (row = pos % SRING): positions p0 .. p0+n-1, block per position
+extern "C" __global__ void ring_remap(const uint16_t* src, int smod, uint16_t* dst, int dmod, int p0) {
+    const int p = p0 + blockIdx.x;
+    if (p < 0) return;
+    const uint16_t* s = src + (size_t)(p % smod) * HD;
+    uint16_t* d = dst + (size_t)(p % dmod) * HD;
+    for (int i = threadIdx.x; i < HD; i += blockDim.x) d[i] = s[i];
 }
