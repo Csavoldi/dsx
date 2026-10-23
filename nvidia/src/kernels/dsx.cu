@@ -140,12 +140,12 @@ extern "C" __global__ void round_bf16(float *x, int n) {
 }
 
 // RoPE on the last `rd` dims of each of `heads` vectors of length `hd`, token t at position pos0 + t*pos_step.
-// freqs: [rd/2] f32. Grid (T), block 256.
+// freqs: [rd/2] f32. Grid (T, any: splits the heads), block 256.
 extern "C" __global__ void rope(float *x, const float *freqs, int heads, int hd, int rd, int ld, int pos0, int inverse) {
   int t = blockIdx.x;
   float pos = (float)(pos0 + t);
   int half = rd / 2;
-  for (int i = threadIdx.x; i < heads * half; i += blockDim.x) {
+  for (int i = blockIdx.y * blockDim.x + threadIdx.x; i < heads * half; i += gridDim.y * blockDim.x) {
     int h = i / half, p = i % half;
     float ang = pos * freqs[p];
     float s, c;
@@ -1639,6 +1639,36 @@ extern "C" __global__ void hc_post_mb(float *h, const float *x, const float *mix
   float r0 = h[i], r1 = h[d + i], r2 = h[2 * d + i], r3 = h[3 * d + i], xv = x[i];
 #pragma unroll
   for (int k = 0; k < 4; k++) h[k * d + i] = bf16r(m[4 + k] * xv + m[8 + k] * r0 + m[12 + k] * r1 + m[16 + k] * r2 + m[20 + k] * r3);
+}
+
+// One token: hc_pre_mb + rmsnorm(x, w) in one launch, bit-identical to the two: the same per-element expressions, and
+// the sum of squares in rmsnorm's thread order (i += 1024). mixes: pre weights at 0..4. d <= 8192. Grid ceil(d / 1024),
+// block 1024: every block computes the whole vector (one SM alone is slower) and writes its own 1024 elements of y.
+extern "C" __global__ void __launch_bounds__(1024) hc_pre_norm(const float *h, const float *mixes, float *y, const float *w,
+                                                               int d, float eps, int round) {
+  __shared__ float sh[32];
+  const float *m = mixes;
+  float yv[8];
+  float s = 0.f;
+#pragma unroll
+  for (int j = 0; j < 8; j++) {
+    int i = threadIdx.x + j * 1024;
+    if (i < d) {
+      float v = bf16r(m[0] * h[i] + m[1] * h[d + i] + m[2] * h[2 * d + i] + m[3] * h[3 * d + i]);
+      yv[j] = v;
+      s += v * v;
+    }
+  }
+  s = block_sum(s, sh);
+  float r = rsqrtf(s / d + eps);
+#pragma unroll
+  for (int j = 0; j < 8; j++) {
+    int i = threadIdx.x + j * 1024;
+    if (i < d && j == (int)blockIdx.x) {
+      float v = w[i] * (yv[j] * r);
+      y[i] = round ? bf16r(v) : v;
+    }
+  }
 }
 
 // DSX_DEFER, residual injection: h[k][i] = bf16(h[k][i] + post[k] * y[i]) for the 4 streams (a deferred expert sum entering

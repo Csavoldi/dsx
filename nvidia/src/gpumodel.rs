@@ -162,6 +162,8 @@ pub struct GpuModel<'m> {
     adapt: usize,
     pub adapt_swaps: usize,
     pub adapt_s: f64,
+    /// on_cpu flag changes from adapt_step, applied after the token's sync (the CPU worker may still be running the token)
+    adapt_flags: Vec<(usize, bool)>,
     warned_nan: bool,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
@@ -266,7 +268,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -434,6 +436,7 @@ impl<'m> GpuModel<'m> {
             adapt: std::env::var("DSX_ADAPT").ok().and_then(|v| v.parse().ok()).unwrap_or(8),
             adapt_swaps: 0,
             adapt_s: 0.0,
+            adapt_flags: vec![],
             warned_nan: false,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
@@ -807,14 +810,20 @@ impl<'m> GpuModel<'m> {
     /// slot of the coldest same-typed resident across the stores with room.
     /// The GPUs and the CPU worker are idle here (step downloaded the logits). An expert is computed by exactly one
     /// side in every token: the CPU stops at commit, starts again at eviction.
+    /// Runs after the token's last launch and before its sync, while GPU0 still computes the last layer and the head:
+    /// GPU work it queues follows the token, and its on_cpu changes go to `adapt_flags` for after the sync.
     fn adapt_step(&mut self) -> Result<()> {
         let ne = self.m.cfg.n_experts;
         let (Some(w), Some(arena)) = (self.worker.as_ref(), self.arena) else { return Ok(()) };
+        let flags = &mut self.adapt_flags;
         let mut stores: Vec<(&Gpu, &mut crate::experts::GpuExperts)> =
             self.exp0.as_mut().map(|s| (&self.g, s)).into_iter().chain(self.aux.iter_mut().filter(|a| a.adaptive).map(|a| (&a.g, &mut a.exp))).collect();
+        // committed now, still flagged on the CPU until the flags apply: not candidates
+        let mut committed = std::collections::HashSet::new();
         for (g, s) in stores.iter_mut() {
             for (l, e) in s.commit_ready(g, false)? {
-                w.on_cpu[l * ne + e].store(false, std::sync::atomic::Ordering::Relaxed);
+                flags.push((l * ne + e, false));
+                committed.insert((l, e));
             }
         }
         let room: usize = stores.iter().map(|(_, s)| s.swap_room()).sum();
@@ -822,7 +831,8 @@ impl<'m> GpuModel<'m> {
             return Ok(());
         }
         let sc = |l: usize, e: usize| f32::from_bits(w.score[l * ne + e].load(std::sync::atomic::Ordering::Relaxed));
-        let pending: std::collections::HashSet<(usize, usize)> = stores.iter().flat_map(|(_, s)| s.pending()).collect();
+        let mut pending: std::collections::HashSet<(usize, usize)> = stores.iter().flat_map(|(_, s)| s.pending()).collect();
+        pending.extend(committed);
         let mut cand: Vec<(f32, usize, usize)> = (0..w.score.len())
             .filter_map(|i| {
                 let (l, e) = (i / ne, i % ne);
@@ -864,12 +874,11 @@ impl<'m> GpuModel<'m> {
             }
             let (_, vl, ve) = victims[i].get_mut(&key).unwrap().pop().unwrap();
             let raw = arena.get(l, e).unwrap();
-            w.on_cpu[vl * ne + ve].store(true, std::sync::atomic::Ordering::Relaxed);
             let (g, s) = &mut stores[i];
             if !s.begin_swap(g, (vl, ve), (l, e), raw)? {
-                w.on_cpu[vl * ne + ve].store(false, std::sync::atomic::Ordering::Relaxed);
                 break;
             }
+            flags.push((vl * ne + ve, true));
             started += 1;
             self.adapt_swaps += 1;
         }
@@ -1112,12 +1121,24 @@ impl<'m> GpuModel<'m> {
         )
     }
 
+    /// One token: hc_pre with `mixes` (pre weights) into x, then rmsnorm(x, w), in one launch
+    fn hc_pre_norm(&self, mixes: &Buf, w: &Buf, round: bool) -> Result<()> {
+        let d = self.m.cfg.dim;
+        self.g.launch(
+            self.k["hc_pre_norm"],
+            ((d as u32).div_ceil(1024), 1, 1),
+            1024,
+            0,
+            &[Arg::P(self.h.ptr), Arg::P(mixes.ptr), Arg::P(self.x.ptr), Arg::P(w.ptr), Arg::I(d as i32), Arg::F(self.m.cfg.eps), Arg::I(round as i32)],
+        )
+    }
+
     fn rope(&self, x: u64, heads: usize, hd: usize, compressed: bool, pos: usize, inverse: bool) -> Result<()> {
         let c = &self.m.cfg;
         let f = if compressed { &self.freqs.1 } else { &self.freqs.0 };
         self.g.launch(
             self.k["rope"],
-            (1, 1, 1),
+            (1, ((heads * c.rope_dim / 2) as u32).div_ceil(256), 1),
             256,
             0,
             &[Arg::P(x), Arg::P(f.ptr), Arg::I(heads as i32), Arg::I(hd as i32), Arg::I(c.rope_dim as i32), Arg::I((heads * hd) as i32), Arg::I(pos as i32), Arg::I(inverse as i32)],
@@ -1492,7 +1513,20 @@ impl<'m> GpuModel<'m> {
 
     pub fn step(&mut self, token: u32) -> Result<Vec<f32>> {
         let t_step = std::time::Instant::now();
-        let r = self.step_inner(token);
+        let r = self.step_inner(token).and_then(|()| {
+            if self.adapt > 0 {
+                let t = std::time::Instant::now();
+                self.adapt_step()?;
+                self.adapt_s += t.elapsed().as_secs_f64();
+            }
+            let l = self.g.download(self.logits.ptr, self.m.cfg.vocab);
+            if let Some(w) = self.worker.as_ref() {
+                for (i, v) in self.adapt_flags.drain(..) {
+                    w.on_cpu[i].store(v, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            l
+        });
         if let Ok(l) = &r {
             if l.iter().any(|v| !v.is_finite()) && !self.warned_nan {
                 self.warned_nan = true;
@@ -1517,11 +1551,6 @@ impl<'m> GpuModel<'m> {
                     }
                 }
             }
-            if self.adapt > 0 {
-                let t = std::time::Instant::now();
-                self.adapt_step()?;
-                self.adapt_s += t.elapsed().as_secs_f64();
-            }
         }
         if let Some(p) = self.prof.as_mut() {
             *p.entry("step total").or_default() += t_step.elapsed().as_secs_f64();
@@ -1529,7 +1558,8 @@ impl<'m> GpuModel<'m> {
         r
     }
 
-    fn step_inner(&mut self, token: u32) -> Result<Vec<f32>> {
+    /// Enqueue one token through the head; `step` downloads the logits.
+    fn step_inner(&mut self, token: u32) -> Result<()> {
         let t_enq = std::time::Instant::now();
         let m = self.m;
         let c = &m.cfg;
@@ -1590,9 +1620,8 @@ impl<'m> GpuModel<'m> {
             }
             self.ev(li, 8)?;
             // attention half: mixes for this sublayer; input collapsed with the previous FFN's pre
-            self.g.launch(self.k["hc_pre_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.mix_f.ptr), Arg::I(0), Arg::P(self.x.ptr), Arg::I(d as i32)])?;
+            self.hc_pre_norm(&self.mix_f, &self.layers[li].attn_norm, true)?;
             self.hc_mixes(&self.layers[li].hc_attn, &self.mix_a)?;
-            self.rmsnorm(self.x.ptr, &self.layers[li].attn_norm, self.x.ptr, d, true)?;
             self.mark(&mut tm, "hc+norm")?;
             self.ev(li, 9)?;
             let th = std::time::Instant::now();
@@ -1609,9 +1638,8 @@ impl<'m> GpuModel<'m> {
             self.mark(&mut tm, "attention")?;
             self.g.launch(self.k["hc_post_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.a.ptr), Arg::P(self.mix_a.ptr), Arg::I(d as i32)])?;
             // ffn half
-            self.g.launch(self.k["hc_pre_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.mix_a.ptr), Arg::I(0), Arg::P(self.x.ptr), Arg::I(d as i32)])?;
+            self.hc_pre_norm(&self.mix_a, &self.layers[li].ffn_norm, true)?;
             self.hc_mixes(&self.layers[li].hc_ffn, &self.mix_f)?;
-            self.rmsnorm(self.x.ptr, &self.layers[li].ffn_norm, self.x.ptr, d, true)?;
             self.mark(&mut tm, "hc+norm")?;
             let th = std::time::Instant::now();
             if self.worker.is_some() { self.moe_fast(li)?; } else { self.moe(li)?; }
@@ -1623,15 +1651,14 @@ impl<'m> GpuModel<'m> {
                 crate::model::dump("gpu", self.pos, li, &h);
             }
         }
-        self.g.launch(self.k["hc_pre_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.mix_f.ptr), Arg::I(0), Arg::P(self.x.ptr), Arg::I(d as i32)])?;
-        self.rmsnorm(self.x.ptr, &self.out_norm, self.x.ptr, d, false)?;
+        self.hc_pre_norm(&self.mix_f, &self.out_norm, false)?;
         self.gemv(&self.head, self.x.ptr, self.logits.ptr)?;
         self.pos += 1;
         self.seq_base += c.n_layers as u32;
         if let Some(p) = self.prof.as_mut() {
             *p.entry("host: enqueue (no-prof only)").or_default() += t_enq.elapsed().as_secs_f64();
         }
-        self.g.download(self.logits.ptr, c.vocab)
+        Ok(())
     }
 }
 

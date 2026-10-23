@@ -117,6 +117,9 @@ struct Swapper {
     ring_i: usize,
     free: Vec<usize>,
     pending: Vec<Pending>,
+    /// recorded on the main stream before each replacement's copies, which the side stream waits for: a replacement
+    /// can start while the main stream still runs the current token (whose kernels may read the victim's slot)
+    after_main: Event,
 }
 
 fn gemv_name(t: GType) -> Result<&'static str> {
@@ -424,7 +427,7 @@ impl GpuExperts {
             return Ok(());
         }
         let stage = (0..n).map(|_| Ok((g.alloc(max_raw)?, g.event()?))).collect::<Result<Vec<_>>>()?;
-        self.swap = Some(Swapper { stage, ring: crate::gpu::HostBuf::new(32 * 1024)?, ring_i: 0, free: (0..n).rev().collect(), pending: vec![] });
+        self.swap = Some(Swapper { stage, ring: crate::gpu::HostBuf::new(32 * 1024)?, ring_i: 0, free: (0..n).rev().collect(), pending: vec![], after_main: g.event()? });
         Ok(())
     }
 
@@ -475,18 +478,21 @@ impl GpuExperts {
         }
     }
 
-    /// Between tokens (both streams idle on this store's experts): drop `victim` now and start loading `new`
-    /// (raw GGUF matrices `raw`, same types as the victim) into its slot. `new` is resident after commit_ready.
+    /// Drop `victim` and start loading `new` (raw GGUF matrices `raw`, same types as the victim) into its slot; `new` is
+    /// resident after commit_ready. May run while the main stream still has the current token queued: the table write
+    /// follows that work on the main stream, and the copies into the slot wait for it on the side stream.
     pub fn begin_swap(&mut self, g: &Gpu, victim: (usize, usize), new: (usize, usize), raw: [&[u8]; 3]) -> Result<bool> {
         let (Some(sw), Some(vs)) = (self.swap.as_mut(), self.slots.get(&victim)) else { return Ok(false) };
         let Some(si) = sw.free.pop() else { return Ok(false) };
-        let (stage, ev) = (sw.stage[si].0.ptr, sw.stage[si].1);
+        let (stage, ev, after_main) = (sw.stage[si].0.ptr, sw.stage[si].1, sw.after_main);
         let (gu, dn, inter, dim) = (vs.gu, vs.dn, self.inter, self.dim);
         let slot = Slot { gate: vs.gate, up: vs.up, down: vs.down, gu, dn };
         let _ = sw;
         self.slots.remove(&victim);
         self.write_entry(g, victim.0, victim.1, None)?;
         let (og, ou) = (raw[0].len() as u64, (raw[0].len() + raw[1].len()) as u64);
+        g.record(after_main, false)?;
+        g.wait(after_main, true)?;
         g.htod_side(stage, raw[0])?;
         g.htod_side(stage + og, raw[1])?;
         g.htod_side(stage + ou, raw[2])?;
