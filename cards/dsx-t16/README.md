@@ -48,7 +48,7 @@ model's top-256 log-probs).
 | Size | 252 GB in one GGUF file: the model (141 GB) and the Engram table at IQ4_NL (111 GB); tokenizer included. With a Q6_K Engram table (302 GB, slightly better): branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) |
 | Experts | T16 trellis: 1.5 / 1.5 / 2 bits (gate / up / down) in layers 0-19, 2 / 2 / 2.5 in layers 20-39; ~1.9 bpw |
 | Quality vs FP8 | KL 0.196 · top-1 80.9% · perplexity 9.54 (FP8: 8.56); with the Q6_K Engram table: 0.194 · 81.4% · 9.60 |
-| Speed, 2x RTX 3090 | 34.9 tok/s decode, 36.8 with `--defer-rank 3` · ~365 tok/s prefill (3K prompt) |
+| Speed, 2x RTX 3090 | 34.9 tok/s decode, 36.8 with `--defer-rank 3` · ~530 tok/s prefill (3K prompt) |
 | Hardware | 2x 24 GB NVIDIA GPU (RTX 3090 / 4090 / 5090), 128 GB RAM, AVX2 CPU (AVX-VNNI for the fast CPU kernel), ~305 GB NVMe ([details](#hardware)) |
 | Runtime | [dsx](https://github.com/lxe/dsx) from 2026-10-22 or later (T16 support) |
 
@@ -102,11 +102,12 @@ five languages, code, chat). A v2 on a broader 1.2M-token set is being quantized
 | Decode, the same 2,046 tokens (teacher-forced eval) | **215 s** | 253 s |
 | Decode, 3K-token prompt + 300 tokens | **34.9 tok/s** | 27.9-28.0 tok/s |
 | Decode with `--defer-rank 3` | **36.8 tok/s** | 36.1-36.2 tok/s |
-| Prefill, 3K-token prompt | 361-367 tok/s | 393-409 tok/s |
+| Prefill, 3K-token prompt | **529 tok/s** (dsx 2026-10-22; 361-367 before) | 393-409 tok/s (earlier dsx) |
 
 The free-running rows generate different text per build, which moves the share of experts the CPU computes; the
-teacher-forced row (identical tokens) is the fair comparison: 15% faster. Prefill is ~9% slower for now: T16's prefill
-path still expands weights with a first, unoptimized kernel.
+teacher-forced row (identical tokens) is the fair comparison: 15% faster. Prefill was ~9% slower at first; dsx since
+expands T16 weights 2.5-3x faster (899e6e4) and keeps the RAM arena in hugepages, which copy to the GPU at 24.6 GB/s
+instead of 13.5 (cc88c1a): 3K-token prefill 388 → 529 tok/s on the same build otherwise. dsx-ud was not re-measured.
 
 Per layer, T16's experts compute 20-34% faster than Unsloth's codebook mix on the i7-12700K (14 threads: 1.21 / 1.46 ms
 per 6-expert call vs 1.83) and 22% faster on an RTX 3090 (125 vs 161 us per layer's 6 experts).

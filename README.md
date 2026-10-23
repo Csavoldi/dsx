@@ -18,7 +18,7 @@ drive. It's an engine written in Rust and CUDA for this one model. The experts e
 the next ones in RAM where the CPU computes them, and the GPUs and CPU hand each layer back and forth without stalling
 each other.
 
-- **Fast:** ~35 tokens/s writing the answer and ~365 tokens/s reading a 3,000-token prompt on two RTX 3090s.
+- **Fast:** ~35 tokens/s writing the answer and ~530 tokens/s reading a 3,000-token prompt on two RTX 3090s.
 - **Close to the original:** the same next token as the FP8 model 81% of the time on the Lucebox eval, with dsx's own T16 experts.
 - **One download:** one 252 GB GGUF file, with the Engram table and tokenizer inside.
 - **Plugs into your tools:** OpenAI- and Anthropic-compatible API with streaming, ready for coding agents.
@@ -43,7 +43,7 @@ experts (KL 0.272), which dsx also runs.
 ## How fast is it?
 
 On two RTX 3090s (24 GB each) with an i7-12700K and 128 GB of DDR4, dsx writes **34.9 tokens/s** with T16 and 36.8 with
-`--defer-rank 3`. It reads a 3,000-token prompt at ~365 tokens/s. On the same PC, Unsloth's UD-IQ1_M runs at 12 tokens/s
+`--defer-rank 3`. It reads a 3,000-token prompt at ~530 tokens/s. On the same PC, Unsloth's UD-IQ1_M runs at 12 tokens/s
 in llama.cpp.
 
 ## Quick start
