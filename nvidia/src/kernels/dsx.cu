@@ -2098,3 +2098,10 @@ extern "C" __global__ void fwht_rows_f16(__half *w, int cols) {
   }
   w[i] = __float2half(fb[t] * 0.08838834764831845f);
 }
+
+// pointer chase (one thread): steps dependent loads through `next`, for DRAM load latency (tests/gpu_latency.rs)
+extern "C" __global__ void chase(const uint32_t *__restrict__ next, int steps, uint32_t *out) {
+  uint32_t i = 0;
+  for (int s = 0; s < steps; s++) i = __ldcg(next + i);
+  *out = i;
+}

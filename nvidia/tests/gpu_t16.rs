@@ -165,9 +165,11 @@ fn t16_decode_speed() {
     let st_t16 = GpuExperts::build(&g, c, &t16m.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.0, up: &m.1, down: &m.2, gu: tgu, dn: tdn })).collect::<Vec<_>>(), true).unwrap();
     let st_iq = GpuExperts::build(&g, c, &iqm.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.2, up: &m.3, down: &m.4, gu: m.0, dn: m.1 })).collect::<Vec<_>>(), true).unwrap();
     let calls = 400;
-    let sels: Vec<Vec<i32>> = (0..calls).map(|i| (0..6).map(|j| ((i * 7 + j * 11) % 64) as i32).collect()).collect();
-    let x: Vec<f32> = (0..c.dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
-    let wts = vec![1.0f32 / 6.0; 6];
+    // T16_SPEED_T tokens a call (6 picks each, all distinct experts while 6 T <= 64): more warps per launch
+    let tt: usize = std::env::var("T16_SPEED_T").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let sels: Vec<Vec<i32>> = (0..calls).map(|i| (0..6 * tt).map(|j| ((i * 7 + j * 11) % 64) as i32).collect()).collect();
+    let x: Vec<f32> = (0..tt * c.dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+    let wts = vec![1.0f32 / 6.0; 6 * tt];
     let mut res: Vec<(&str, f64)> = vec![];
     for name in ["T16", "IQ", "IQ", "T16", "T16", "IQ"] {
         std::thread::sleep(std::time::Duration::from_secs(3));
@@ -176,11 +178,11 @@ fn t16_decode_speed() {
         g.htod_sync(st.wts.ptr, &wts).unwrap();
         let dsel: Vec<Buf> = sels.iter().map(|s| g.upload(s).unwrap()).collect();
         let ev = (g.timed_event().unwrap(), g.timed_event().unwrap());
-        st.run_device_fast(&g, 0, dsel[0].ptr, st.wts.ptr, 6, 1, st.x.ptr, st.out.ptr).unwrap();
+        st.run_device_fast(&g, 0, dsel[0].ptr, st.wts.ptr, 6, tt, st.x.ptr, st.out.ptr).unwrap();
         g.sync().unwrap();
         g.record(ev.0, false).unwrap();
         for s in &dsel {
-            st.run_device_fast(&g, 0, s.ptr, st.wts.ptr, 6, 1, st.x.ptr, st.out.ptr).unwrap();
+            st.run_device_fast(&g, 0, s.ptr, st.wts.ptr, 6, tt, st.x.ptr, st.out.ptr).unwrap();
         }
         g.record(ev.1, false).unwrap();
         g.sync().unwrap();
