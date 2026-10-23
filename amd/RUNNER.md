@@ -167,3 +167,54 @@ Not measured (bug, fixed offline): the prep_t mode-0 wave-reduction A/B. All fou
 "pack_fp4_rows: 144 groups without an exact FP4 scale": load_slot packed pos/ratio + 1 rows, one past the rows a
 prefill writes, and the preceding `prof` runs had filled the caches with random values. It now packs pos/ratio
 rows (and skips empty packs); the change in prep_t (d20c4c1) is unmeasured.
+
+## Serving demo: API + admin dashboard + Pi gauntlets (rental 7, 2026-10-23 08:22-10:10 PT)
+
+Setup (lxe): `serve --slots 8 --batch-ctx 262144 --admin-port 8091` on the box, ssh-tunneled to local 9090 (API) and 9091
+(Volta's admin dashboard and `/stats`, ported as amd/src/telemetry.rs + dashboard.html). Gauntlets copied from Volta:
+`~/gauntlet-amd` (8 Pi agents, one task each) and `~/gauntlet-amd-braille` (4 Pi agents writing braille 3D renderers,
+each with a display pane below it). Runs, casts and stats are under each `runs/`.
+
+What changed and why (each measured):
+- **Sampled sessions speculate.** Pi sends no temperature, so the server default applies; Volta's gauntlet sampled
+  (0.6/0.95), and drafts were greedy-only. Exact speculative sampling (Sampler::accept_or_resample: accept a draft with
+  its probability, else sample the residual) keeps the distribution. Copy request, 1 session: 271 tok/s, acceptance 0.76.
+- **CPU sampling was a third of the step.** perf on the live server: per-row blocking logits copies + full-vocab
+  top-p ~11 ms of a 34 ms step. One copy per step, sessions on parallel threads, distribution over tokens within 30/T
+  logits of the max: 8 sampled rewrites 580-644 tok/s total vs 435-482, step 48-65 vs 67-78 ms, acceptance unchanged.
+  Afterwards sampling is ~2% of samples; the engine waits on the GPU.
+- **Startup 147 s -> 82 s.** RAM (157 GB) is smaller than the experts (236 GB), so the mmap load faulted through a full
+  page cache: 67% of samples in page-cache spinlocks with 20 threads. O_DIRECT pread (Ck::read) into pinned per-layer
+  staging, one DMA per layer: experts 67 s vs 130 s. Pinned staging alone did nothing. Next: tile_fp4 (MXFP4 tile
+  reorder on the CPU) is now the top symbol; tile on the GPU or store tiled in the export.
+- **Prefill chunk 2048 -> 256 for agent serving (DSXR_CHUNK=256).** A prompt chunk runs between decode steps; at ~3K
+  tok/s a 2048 chunk stalls every session ~0.7 s each time an agent sends a turn. Volta's best braille run used 64.
+
+Agent loops are thinking-off behavior, not the server. 01-tetris (thinking off) repeated two byte-identical tool calls
+215 times; Volta's runs showed the same. core/examples/render_chat confirms the tool results reach the prompt. Resampling
+the conversation's next turn (8 samples per config): at the loop onset (turn 17) off/0.6 0 repeats, off/1.0 2, high 0
+(all name the real bug); deep in the loop (turn 230) off/0.6 8/8, off/1.0 8/8, high 2/8 ("I was stuck repeating a
+flawed test"). The Pi provider `dsx-amd` now follows Pi's built-in DeepSeek V4.1 Flash entry (thinkingFormat deepseek,
+reasoning replayed on assistant turns, maxTokens 262144; the server clamps to the room left) and the model card
+(temperature 1.0, top_p 1.0, max_tokens >= 256K). Backup: ~/.pi/agent/models.json.bak-2026-10-23-0935.
+
+Runs (stats.jsonl every 5 s; out tok/s is the server's total output rate):
+| run | agents | thinking | wall | tokens out | out tok/s median / peak / mean | per-session median | step ms |
+|---|---|---|---|---|---|---|---|
+| gauntlet try2 (8 tasks, sampled 0.6/0.95) | 8 | off | 1303 s | 210.7K | 236 / 388 / 162 | 43 | 35 |
+| braille t1 (stopped after 93 s) | 4 | low | 93 s | 19.4K | 218 / 221 / 208 | 54 | 19 |
+| braille t2 (DSXR_CHUNK=256, T 1.0) | 4 | off | 659 s | 94.0K | 174 / 291 / 143 | 70 | 27 |
+| Volta braille t3 (greedy, chunk 64; for scale) | 4 | off | 379 s | 57.6K | 148 / 459 / 152 | 106 (decode/request) | 41 |
+
+Choppiness seen in the demo is mostly distance: the box is in nyc2, 130 ms RTT from here. On the box `/stats` answers
+in 0.2 ms and a streamed answer's chunk gaps are p50 25 / p99 140 / max 158 ms; through the tunnel p99 150-380, max
+up to 550 ms (chunks bunch). A lowdelay/no-compression tunnel was no better (2 interleaved tries). Box load during the
+run was 1.8 of 20 cores, local 5-7 of 24: neither CPU is saturated.
+
+Next for the demo, by expected effect:
+1. Run Pi and the panes on the box (lxe watches one ssh session): agents at 0 ms from the server.
+2. Pace streamed tokens: a step's accepted drafts go out as one burst; spreading them over the step looks steady at no
+   throughput cost.
+3. Drafts only while they pay: at acceptance 0.26-0.3 (fresh code, reasoning) the verify of rejected drafts costs GPU
+   time; measure 4 sessions with and without drafts, interleaved, then gate on recent acceptance.
+4. Startup: GPU-side FP4 tiling (above).

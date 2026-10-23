@@ -1,0 +1,1 @@
+Write a small ray tracer in C (single file, no dependencies) that renders spheres and a plane with diffuse and mirror materials, shadows and antialiasing, and writes a 640x360 PPM image. Add a Makefile, build it, and render out.ppm.

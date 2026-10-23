@@ -1,0 +1,1 @@
+Write a REST API in Go (standard library only) for a URL shortener: POST /shorten, GET /{code} redirect, GET /stats/{code}, with an in-memory store guarded by a mutex and JSON responses. Include tests using net/http/httptest and run `go test`.

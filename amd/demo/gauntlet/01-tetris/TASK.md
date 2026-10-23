@@ -1,0 +1,1 @@
+Write a playable Tetris game for the terminal in Python using curses: the 7 tetrominoes with rotation, line clears, scoring, levels that speed up, a next-piece preview and game over. Put it in tetris.py with a README explaining the controls.

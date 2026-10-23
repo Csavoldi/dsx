@@ -1,0 +1,34 @@
+[
+ [
+  "01-tetris",
+  "Write a playable Tetris game for the terminal in Python using curses: the 7 tetrominoes with rotation, line clears, scoring, levels that speed up, a next-piece preview and game over. Put it in tetris.py with a README explaining the controls."
+ ],
+ [
+  "02-website",
+  "Build a polished static marketing website for a fictional coffee roaster called Ember & Oak: index.html with a hero, product cards, an about section and a contact form, plus styles.css (responsive, dark and light themes) and a small script.js. No frameworks, no external assets."
+ ],
+ [
+  "03-rust-todo",
+  "Write a Rust command-line todo manager (cargo project) that stores tasks in a JSON file: add, list, done, remove, and filter by tag. Use only the standard library plus serde and serde_json. Include unit tests and make sure `cargo test` passes."
+ ],
+ [
+  "04-raytracer",
+  "Write a small ray tracer in C (single file, no dependencies) that renders spheres and a plane with diffuse and mirror materials, shadows and antialiasing, and writes a 640x360 PPM image. Add a Makefile, build it, and render out.ppm."
+ ],
+ [
+  "05-markdown",
+  "Write a Markdown to HTML converter in Python (no third-party libraries) that handles headings, emphasis, inline code, fenced code blocks, links, images, block quotes, ordered and unordered lists, and paragraphs. Add a pytest-style test file and run the tests."
+ ],
+ [
+  "06-go-api",
+  "Write a REST API in Go (standard library only) for a URL shortener: POST /shorten, GET /{code} redirect, GET /stats/{code}, with an in-memory store guarded by a mutex and JSON responses. Include tests using net/http/httptest and run `go test`."
+ ],
+ [
+  "07-snake",
+  "Write a Snake game that runs in the browser as a single index.html file with inline JavaScript and canvas: arrow-key controls, growing snake, food, score and high score in localStorage, pause on space, and increasing speed. Do not open a browser; just write the file."
+ ],
+ [
+  "08-chess",
+  "Write a chess move generator in TypeScript-free modern JavaScript (Node, no dependencies): board representation, legal move generation including castling, en passant and promotion, check and checkmate detection, and a perft function. Verify perft(3) from the starting position equals 8902 and print the result."
+ ]
+]
