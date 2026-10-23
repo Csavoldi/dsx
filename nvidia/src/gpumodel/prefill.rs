@@ -27,7 +27,7 @@ pub(crate) fn t16_linear(g: &crate::gpu::Gpu, k: &std::collections::HashMap<&'st
     let k2 = crate::t16::k2(gt).unwrap();
     let tb = crate::t16::trellis_bytes(k2, kin, nout) as u64;
     g.launch(k["t16_pre"], ((kin / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(x16), Arg::P(tx16), Arg::P(w + tb), Arg::I(kin as i32)])?;
-    g.launch(k["dequant_t16_f16"], ((kin as u32).div_ceil(256), nout as u32, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(w), Arg::P(w16), Arg::I(nout as i32), Arg::I(kin as i32), Arg::I(repacked)])?;
+    g.launch(k["dequant_t16_f16"], ((kin as u32).div_ceil(512), (nout / 16) as u32, 1), 512, 0, &[Arg::I(k2 as i32), Arg::P(w), Arg::P(w16), Arg::I(nout as i32), Arg::I(kin as i32), Arg::I(repacked)])?;
     g.gemm_f16(tx16, w16, y, nt, kin, nout, nout)?;
     g.launch(k["t16_post"], ((nout / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(y), Arg::P(w + tb + 2 * kin as u64), Arg::I(nout as i32), Arg::F(t16_gain(nout < kin, k2))])?;
     Ok(())

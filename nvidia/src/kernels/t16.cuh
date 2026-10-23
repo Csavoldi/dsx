@@ -38,16 +38,42 @@ __device__ __forceinline__ uint32_t t16_state_stored(const unsigned char *tb, in
   return (v >> (8 - (b0 & 7))) & 0xFFFFu;
 }
 
-// W_inner^T as f16 [n][k] (row = output) for cuBLAS; repacked = 0 stored layout, 1 GPU layout; grid (k / 256, n),
-// block 256
+// W_inner^T as f16 [n][k] (row = output) for cuBLAS; repacked = 0 stored layout, 1 GPU layout. One thread per tile
+// row: 16 consecutive stream positions t = c * 16 + r (output c of the tile, inputs r = 0..15), whose 16-bit windows
+// all lie in 64 bits of the stream (16 + 16 * 2.5 bits at most), so three u32 loads give all 16 states and the thread
+// writes its 16 halves (32 bytes, contiguous in the output row) as two 16-byte stores; a warp covers 32 consecutive
+// tiles of one output row. grid (ceil(k / 512), n / 16), block 512 (tile ti = lane, output c = warp). (One thread per weight with a runtime-modulo
+// window each wrote ~130 GB/s on an RTX 3090.)
 extern "C" __global__ void dequant_t16_f16(int k2, const unsigned char *w, __half *out, int n, int k, int repacked) {
-  const int i = blockIdx.x * blockDim.x + threadIdx.x, j = blockIdx.y;
-  if (i >= k) return;
-  const int ti = i >> 4, tj = j >> 4, t = (j & 15) * 16 + (i & 15);
-  uint32_t st;
-  if (repacked) st = t16_state((const uint32_t *)(w + ((size_t)ti * (n / 16) + tj) * 16 * k2), k2, t);
-  else st = t16_state_stored(w + ((size_t)tj * (k / 16) + ti) * 16 * k2, k2, t);
-  out[(size_t)j * k + i] = t16_value(st);
+  const int kt = k >> 4, nt = n >> 4;
+  const int ti = blockIdx.x * 32 + (threadIdx.x & 31), c = threadIdx.x >> 5, tj = blockIdx.y;
+  if (ti >= kt) return;
+  const int nw = 4 * k2, nb = 32 * nw;
+  // the tile as u32 words (every layout's tiles are 16 * k2 bytes, and matrices start 4-byte aligned)
+  const uint32_t *tw = (const uint32_t *)(w + (repacked ? (size_t)ti * nt + tj : (size_t)tj * kt + ti) * 4 * nw);
+  const int t0 = c * 16;
+  const int s0 = t16_bit_end(k2, t0) - 16 + nb;  // unwrapped start of position t0's window (t0 = 0 wraps)
+  int i0 = (s0 >> 5) % nw;
+  const int i1 = i0 + 1 == nw ? 0 : i0 + 1, i2 = i1 + 1 == nw ? 0 : i1 + 1;
+  uint32_t w0 = tw[i0], w1 = tw[i1], w2 = tw[i2];
+  if (!repacked) {  // stored: stream-order bytes; GPU layout: little-endian words already MSB-first
+    w0 = __byte_perm(w0, 0, 0x0123), w1 = __byte_perm(w1, 0, 0x0123), w2 = __byte_perm(w2, 0, 0x0123);
+  }
+  const int sh = s0 & 31;
+  const uint64_t hi = (uint64_t)w0 << 32 | w1;
+  const uint64_t win = sh ? (hi << sh) | (w2 >> (32 - sh)) : hi;  // stream bits s0 .. s0 + 63, MSB first
+  const int base = nb - s0;
+  uint32_t h[8];
+#pragma unroll
+  for (int r = 0; r < 16; r += 2) {
+    const int e0 = t16_bit_end(k2, t0 + r) + base, e1 = t16_bit_end(k2, t0 + r + 1) + base;
+    const __half v0 = t16_value((uint32_t)(win >> (64 - e0)) & 0xFFFFu);
+    const __half v1 = t16_value((uint32_t)(win >> (64 - e1)) & 0xFFFFu);
+    h[r >> 1] = (uint32_t)__half_as_ushort(v0) | (uint32_t)__half_as_ushort(v1) << 16;
+  }
+  uint4 *o = (uint4 *)(out + (size_t)(tj * 16 + c) * k + ti * 16);
+  o[0] = make_uint4(h[0], h[1], h[2], h[3]);
+  o[1] = make_uint4(h[4], h[5], h[6], h[7]);
 }
 
 // stored layout -> GPU layout (exllamav3's tile order, little-endian u32 words); suh / svh copied. One thread per

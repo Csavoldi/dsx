@@ -51,7 +51,7 @@ fn t16_prefill_matches_reference() {
         let rp = g.alloc(w.len()).unwrap();
         g.launch(kern("repack_t16"), (((w.len() / 4) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(wb.ptr), Arg::P(rp.ptr), Arg::I(k as i32), Arg::I(n as i32)]).unwrap();
         for (src, repacked) in [(wb.ptr, 0), (rp.ptr, 1)] {
-            g.launch(kern("dequant_t16_f16"), ((k as u32).div_ceil(256), n as u32, 1), 256, 0, &[Arg::I(k2 as i32), Arg::P(src), Arg::P(w16.ptr), Arg::I(n as i32), Arg::I(k as i32), Arg::I(repacked)]).unwrap();
+            g.launch(kern("dequant_t16_f16"), ((k as u32).div_ceil(512), (n / 16) as u32, 1), 512, 0, &[Arg::I(k2 as i32), Arg::P(src), Arg::P(w16.ptr), Arg::I(n as i32), Arg::I(k as i32), Arg::I(repacked)]).unwrap();
             let mut wh = vec![0u16; n * k];
             g.dtoh(&mut wh, w16.ptr).unwrap();
             g.sync().unwrap();
