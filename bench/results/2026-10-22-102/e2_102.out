@@ -1,0 +1,75 @@
+serve running: 1;  02:58:47 up 16:01,  4 users,  load average: 6.93, 7.56, 7.20; arms: f16 fp8 fp8e2; production CPU threads
+    Finished `release` profile [optimized + debuginfo] target(s) in 27.08s
+build 27 s
+== kernel (GPU0)
+  02:59:14 Package id 0:  +42.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 53,28.49,230.00 42,35.91,230.00 
+test fp8_gemv_matches_f16 ... engram wkv GEMV: max |fp8 - f16| 7.153e-7, max |y| 4.097e0
+test fp8_gemv_speed ... gemv_f16: 359.4 us median (358.4..398.3), 875 GB/s
+gemv_fp8b32: 187.4 us median (186.4..204.8), 840 GB/s
+test fp8_gemv_tail_and_tokens ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.14s
+  03:00:33 Package id 0:  +36.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 51,27.78,230.00 41,35.46,230.00 
+== round 1, f16 (DSX_ENGRAM_FP8=0  --main-gb -1.5)
+experts resident: GPU0 1568 (13.3 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 35.33 s (28.96 tok/s)
+{"tokens": 1023, "nll": 2.296018, "ppl": 9.9345, "kl_top256": 0.139519, "top1_agree": 0.840665}
+  03:03:34 Package id 0:  +36.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 52,28.09,230.00 41,36.40,230.00 
+== round 1, fp8 (DSX_ENGRAM_FP8=1  --main-gb -1.5)
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1605 (13.6 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 34.73 s (29.45 tok/s)
+{"tokens": 1023, "nll": 2.301264, "ppl": 9.9868, "kl_top256": 0.141207, "top1_agree": 0.835777}
+  03:06:36 Package id 0:  +36.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 52,28.18,230.00 41,35.62,230.00 
+== round 1, fp8e2 (DSX_ENGRAM_FP8=1 DSX_ENGRAM_PERSIST=1  --main-gb -1.5)
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+engram: rows gathered by persistent threads (layer 1's first)
+experts resident: GPU0 1605 (13.6 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 34.54 s (29.62 tok/s)
+{"tokens": 1023, "nll": 2.301264, "ppl": 9.9868, "kl_top256": 0.141207, "top1_agree": 0.835777}
+  03:09:42 Package id 0:  +36.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 52,28.17,230.00 41,35.36,230.00 
+== round 2, f16 (DSX_ENGRAM_FP8=0  --main-gb -1.5)
+experts resident: GPU0 1568 (13.3 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 35.26 s (29.01 tok/s)
+{"tokens": 1023, "nll": 2.296018, "ppl": 9.9345, "kl_top256": 0.139519, "top1_agree": 0.840665}
+  03:12:49 Package id 0:  +36.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 52,28.16,230.00 41,35.57,230.00 
+== round 2, fp8 (DSX_ENGRAM_FP8=1  --main-gb -1.5)
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+experts resident: GPU0 1605 (13.6 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 34.68 s (29.50 tok/s)
+{"tokens": 1023, "nll": 2.301264, "ppl": 9.9868, "kl_top256": 0.141207, "top1_agree": 0.835777}
+  03:15:52 Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 52,28.28,230.00 41,36.12,230.00 
+== round 2, fp8e2 (DSX_ENGRAM_FP8=1 DSX_ENGRAM_PERSIST=1  --main-gb -1.5)
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+engram: rows gathered by persistent threads (layer 1's first)
+experts resident: GPU0 1605 (13.6 GB), GPU1 2794 (23.7 GB, static, 3.3 GB/s link)
+teacher-forced decode 1023 steps in 34.54 s (29.62 tok/s)
+{"tokens": 1023, "nll": 2.301264, "ppl": 9.9868, "kl_top256": 0.141207, "top1_agree": 0.835777}
+  03:18:57 Package id 0:  +36.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 52,28.21,230.00 41,35.58,230.00 
+== DSX_PROF=1, f16
+teacher-forced decode 1023 steps in 36.05 s (28.37 tok/s)
+  engram                       1.58 ms/token
+  host: engram join wait       0.77 ms/token
+  03:22:03 Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 52,28.20,230.00 41,35.76,230.00 
+== DSX_PROF=1, fp8
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+teacher-forced decode 1023 steps in 35.48 s (28.83 tok/s)
+  engram                       1.21 ms/token
+  host: engram join wait       0.75 ms/token
+  03:25:10 Package id 0:  +37.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 52,28.16,230.00 41,35.56,230.00 
+== DSX_PROF=1, fp8e2
+engram: blk.1.engram_kv.weight as FP8 (exact), 157 MB
+engram: blk.14.engram_kv.weight as FP8 (exact), 157 MB
+engram: rows gathered by persistent threads (layer 1's first)
+teacher-forced decode 1023 steps in 34.96 s (29.26 tok/s)
+  engram                       0.61 ms/token
+  engram rows not cached (n)   43.82 ms/token
+  host: engram gather, 1st layer 0.31 ms/token
+  host: engram gather, later   0.36 ms/token
+  host: engram join wait       0.01 ms/token
+  03:27:13 Package id 0:  +49.0°C  (high = +80.0°C, crit = +100.0°C) GPU C,W,cap 65,156.97,230.00 49,147.51,230.00 
+done Fri Oct 23 03:27:13 AM PDT 2026

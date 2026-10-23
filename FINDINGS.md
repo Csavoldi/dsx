@@ -388,6 +388,14 @@ copies per token, half or more wasted).
   (DDR4-3200 Gear 1, but 4 dual-rank DIMMs run 2N command rate and slow refresh); the v5-era benchmarks also lost a few
   GB/s to a concurrent job. Pinning the expert pool to one thread per physical P-core (`DSX_CPU_LIST`) was 1-2% slower
   than the default 14 threads on 7 P-cores with their hyperthreads.
+- **FP8 engram rows and persistent gather threads** (`DSX_ENGRAM_FP8`, `DSX_ENGRAM_PERSIST`, Dev 4, measured
+  2026-10-23 03:00-03:27 PT on .102 with teacher-forced `eval --decode`, 1023 steps, defer 3, logs in
+  bench/results/2026-10-22-102/e2_102.out). The FP8 GEMV runs at 840 GB/s (187 µs, against 359 µs for f16), and the
+  engram stage drops from 1.58 to 1.21 ms per token (0.61 ms with the persistent gather, which removes the 0.75 ms
+  join wait). Decode speeds up from 28.99 to 29.48 tok/s (+1.6%) with FP8, and to 29.62 with both. KL rises
+  0.1395 → 0.1412 and top-1 falls 0.841 → 0.836. Both values repeated exactly in a second round, so the change is real.
+  It misses the bar (KL change ≤ 0.001), so neither flag ships. The persistent gather alone gains 0.4-0.6%, at its kill line.
+  The loader reports the FP8 conversion as exact, so the KL change likely comes from the kernel's arithmetic, which is still to be checked.
 
 ## 10. Open problems
 

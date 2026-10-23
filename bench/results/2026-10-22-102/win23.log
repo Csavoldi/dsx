@@ -7,3 +7,9 @@ r2 defer=1: prefill 3000 tokens in 5.70 s (527 tok/s) decode 400 tokens in 10.45
 r2 defer=2: prefill 3000 tokens in 5.70 s (526 tok/s) decode 400 tokens in 10.64 s (37.60 tok/s); CPU experts busy 13.3 ms/token, 22.6% of picks on the CPU;   | GPU0 busy sm 1635 MHz pw 229 W; GPU1 busy sm 1800 MHz pw 157 W;  cpu +41.0°C
 eval --decode defer=3: seq 1: running ppl 8.626 kl 0.2205 top1 0.8270 (60 s) {"tokens": 2046, "nll": 2.154817, "ppl": 8.6263, "kl_top256": 0.220488, "top1_agree": 0.826979} cpu +46.0°C
 eval --decode defer=1: seq 1: running ppl 8.559 kl 0.2502 top1 0.8040 (58 s) {"tokens": 2046, "nll": 2.146973, "ppl": 8.5589, "kl_top256": 0.250246, "top1_agree": 0.804008} cpu +44.0°C
+eval --decode defer=1: seq 1: running ppl 8.559 kl 0.2502 top1 0.8040 (58 s) {"tokens": 2046, "nll": 2.146973, "ppl": 8.5589, "kl_top256": 0.250246, "top1_agree": 0.804008} cpu +47.0°C
+eval --decode defer=3: seq 1: running ppl 8.499 kl 0.2151 top1 0.8294 (60 s) {"tokens": 2046, "nll": 2.139900, "ppl": 8.4986, "kl_top256": 0.215072, "top1_agree": 0.829423} cpu +48.0°C
+2026-10-23 01:48:14 STOP: CPU 96C
+2026-10-23 01:50:31 STOP: CPU 97C
+prefill 300: prefill 300 tokens in 2.12 s (142 tok/s)
+WIN23-DONE Fri Oct 23 02:58:30 AM PDT 2026
