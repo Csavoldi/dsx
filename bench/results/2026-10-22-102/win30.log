@@ -1,0 +1,40 @@
+  06:27:42 +31.0°C GPU 46, 26.39 W 40, 35.47 W 
+== round 1 base
+teacher-forced decode 1023 steps in 30.17 s (33.91 tok/s)
+{"tokens": 1023, "nll": 2.310422, "ppl": 10.0787, "kl_top256": 0.150910, "top1_agree": 0.839687}
+  06:30:26 +32.0°C GPU 50, 27.56 W 40, 35.55 W 
+== round 1 K
+teacher-forced decode 1023 steps in 29.18 s (35.06 tok/s)
+{"tokens": 1023, "nll": 2.310062, "ppl": 10.0750, "kl_top256": 0.151646, "top1_agree": 0.843597}
+  06:33:06 +33.0°C GPU 51, 28.06 W 41, 35.64 W 
+== round 1 F
+teacher-forced decode 1023 steps in 29.35 s (34.85 tok/s)
+{"tokens": 1023, "nll": 2.311332, "ppl": 10.0879, "kl_top256": 0.158966, "top1_agree": 0.826979}
+  06:35:46 +36.0°C GPU 52, 28.15 W 41, 35.54 W 
+== round 2 base
+teacher-forced decode 1023 steps in 30.20 s (33.88 tok/s)
+{"tokens": 1023, "nll": 2.310422, "ppl": 10.0787, "kl_top256": 0.150910, "top1_agree": 0.839687}
+  06:38:28 +36.0°C GPU 52, 28.06 W 41, 36.11 W 
+== round 2 K
+teacher-forced decode 1023 steps in 29.19 s (35.05 tok/s)
+{"tokens": 1023, "nll": 2.310062, "ppl": 10.0750, "kl_top256": 0.151646, "top1_agree": 0.843597}
+  06:41:14 +36.0°C GPU 52, 28.24 W 41, 37.01 W 
+== round 2 F
+teacher-forced decode 1023 steps in 29.38 s (34.82 tok/s)
+{"tokens": 1023, "nll": 2.311332, "ppl": 10.0879, "kl_top256": 0.158966, "top1_agree": 0.826979}
+  06:43:56 +36.0°C GPU 52, 28.10 W 41, 36.25 W 
+== adapt 0 base
+teacher-forced decode 1023 steps in 44.18 s (23.15 tok/s)
+{"tokens": 1023, "nll": 2.312076, "ppl": 10.0954, "kl_top256": 0.160876, "top1_agree": 0.832845}
+  06:46:49 +36.0°C GPU 53, 28.60 W 41, 35.72 W 
+== adapt 0 F
+teacher-forced decode 1023 steps in 43.75 s (23.38 tok/s)
+{"tokens": 1023, "nll": 2.312076, "ppl": 10.0954, "kl_top256": 0.160876, "top1_agree": 0.832845}
+gen base: decode 120 tokens in 3.28 s (36.64 tok/s); CPU experts busy 14.0 ms/token, 22.9% of picks on the CPU; GPU0 expert swaps 960 (0.26 ms/token host)
+gen head: decode 120 tokens in 3.26 s (36.83 tok/s); CPU experts busy 16.5 ms/token, 26.2% of picks on the CPU; GPU0 expert swaps 960 (0.32 ms/token host)
+gen base: decode 120 tokens in 3.27 s (36.69 tok/s); CPU experts busy 14.0 ms/token, 22.9% of picks on the CPU; GPU0 expert swaps 960 (0.26 ms/token host)
+gen head: decode 120 tokens in 3.25 s (36.95 tok/s); CPU experts busy 16.4 ms/token, 26.2% of picks on the CPU; GPU0 expert swaps 960 (0.31 ms/token host)
+traced F: decode 120 tokens in 3.19 s (37.56 tok/s); CPU experts busy 13.3 ms/token, 20.6% of picks on the CPU; GPU0 expert swaps 960 (0.37 ms/token host)
+-rw-r--r-- 1 lxe lxe 77918208 Oct 23 07:00 /tmp/dec11.sqlite
+2026-10-23 01:50:31 STOP: CPU 97C
+WIN30-DONE Fri Oct 23 07:00:05 AM PDT 2026

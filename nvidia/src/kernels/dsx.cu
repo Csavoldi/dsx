@@ -1832,22 +1832,48 @@ template <> __device__ __forceinline__ float load_w<1>(const void *w, size_t i) 
 template <> __device__ __forceinline__ float load_w<30>(const void *w, size_t i) { return __bfloat162float(((const __nv_bfloat16 *)w)[i]); }
 template <> __device__ __forceinline__ float load_w<0>(const void *w, size_t i) { return ((const float *)w)[i]; }
 
+// 4 consecutive weights as floats with one vector load (8 bytes f16 / bf16, 16 bytes f32); i is a multiple of 4
 template <int TY>
+__device__ __forceinline__ void load_w4(const void *w, size_t i, float &w0, float &w1, float &w2, float &w3);
+template <> __device__ __forceinline__ void load_w4<1>(const void *w, size_t i, float &w0, float &w1, float &w2, float &w3) {
+  uint2 v = __ldg((const uint2 *)((const __half *)w + i));
+  __half2 a = *(__half2 *)&v.x, b = *(__half2 *)&v.y;
+  w0 = __low2float(a), w1 = __high2float(a), w2 = __low2float(b), w3 = __high2float(b);
+}
+template <> __device__ __forceinline__ void load_w4<30>(const void *w, size_t i, float &w0, float &w1, float &w2, float &w3) {
+  uint2 v = __ldg((const uint2 *)((const __nv_bfloat16 *)w + i));
+  __nv_bfloat162 a = *(__nv_bfloat162 *)&v.x, b = *(__nv_bfloat162 *)&v.y;
+  w0 = __low2float(a), w1 = __high2float(a), w2 = __low2float(b), w3 = __high2float(b);
+}
+template <> __device__ __forceinline__ void load_w4<0>(const void *w, size_t i, float &w0, float &w1, float &w2, float &w3) {
+  float4 v = __ldg((const float4 *)((const float *)w + i));
+  w0 = v.x, w1 = v.y, w2 = v.z, w3 = v.w;
+}
+
+// one row per 128-thread block, the 4 warps splitting k; TT: most tokens (1 for the decode variants, fewer registers)
+template <int TY, int TT = MAXT>
 __device__ void gemv_sk_plain(const void *w, const float *x, float *y, int rows, int k, int T, int ldx, int ldy) {
-  __shared__ float red[4][MAXT];
+  __shared__ float red[4][TT];
   int r = blockIdx.x, wid = threadIdx.x >> 5, lane = threadIdx.x & 31;
-  float acc[MAXT] = {0};
+  float acc[TT] = {0};
   size_t base = (size_t)r * k;
   for (int i = threadIdx.x * 4; i < k; i += blockDim.x * 4) {
-    float w0 = load_w<TY>(w, base + i), w1 = load_w<TY>(w, base + i + 1), w2 = load_w<TY>(w, base + i + 2), w3 = load_w<TY>(w, base + i + 3);
-    for (int t = 0; t < T; t++) {
-      float4 a = *(const float4 *)(x + (size_t)t * ldx + i);
-      acc[t] += w0 * a.x + w1 * a.y + w2 * a.z + w3 * a.w;
+    float w0, w1, w2, w3;
+    load_w4<TY>(w, base + i, w0, w1, w2, w3);
+#pragma unroll
+    for (int t = 0; t < TT; t++) {
+      if (t < T) {
+        float4 a = *(const float4 *)(x + (size_t)t * ldx + i);
+        acc[t] += w0 * a.x + w1 * a.y + w2 * a.z + w3 * a.w;
+      }
     }
   }
-  for (int t = 0; t < T; t++) {
-    float s = warp_sum(acc[t]);
-    if (lane == 0) red[wid][t] = s;
+#pragma unroll
+  for (int t = 0; t < TT; t++) {
+    if (t < T) {
+      float s = warp_sum(acc[t]);
+      if (lane == 0) red[wid][t] = s;
+    }
   }
   __syncthreads();
   if (threadIdx.x < T) y[(size_t)threadIdx.x * ldy + r] = red[0][threadIdx.x] + red[1][threadIdx.x] + red[2][threadIdx.x] + red[3][threadIdx.x];
@@ -1855,31 +1881,48 @@ __device__ void gemv_sk_plain(const void *w, const float *x, float *y, int rows,
 extern "C" __global__ void gemv_f16_sk(const void *w, const float *x, float *y, int rows, int k, int T, int ldx, int ldy) { gemv_sk_plain<1>(w, x, y, rows, k, T, ldx, ldy); }
 extern "C" __global__ void gemv_bf16_sk(const void *w, const float *x, float *y, int rows, int k, int T, int ldx, int ldy) { gemv_sk_plain<30>(w, x, y, rows, k, T, ldx, ldy); }
 extern "C" __global__ void gemv_f32_sk(const void *w, const float *x, float *y, int rows, int k, int T, int ldx, int ldy) { gemv_sk_plain<0>(w, x, y, rows, k, T, ldx, ldy); }
+extern "C" __global__ void gemv_f16_sk1(const void *w, const float *x, float *y, int rows, int k, int T, int ldx, int ldy) { gemv_sk_plain<1, 1>(w, x, y, rows, k, 1, ldx, ldy); }
+extern "C" __global__ void gemv_bf16_sk1(const void *w, const float *x, float *y, int rows, int k, int T, int ldx, int ldy) { gemv_sk_plain<30, 1>(w, x, y, rows, k, 1, ldx, ldy); }
 
-extern "C" __global__ void gemv_q8r_sk(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y, int rows,
-                                       int k, int T, int ldx, int ldy, const __half *__restrict__ d) {
-  __shared__ float red[4][MAXT];
+template <int TT>
+__device__ void gemv_q8r_sk_body(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y, int rows,
+                                 int k, int T, int ldx, int ldy, const __half *__restrict__ d) {
+  __shared__ float red[4][TT];
   int r = blockIdx.x, wid = threadIdx.x >> 5, lane = threadIdx.x & 31;
   const int8_t *qr = qs + (size_t)r * k;
   const __half *dr = d + (size_t)r * (k / 32);
-  float acc[MAXT] = {0};
+  float acc[TT] = {0};
   for (int i = threadIdx.x * 16; i < k; i += blockDim.x * 16) {
     int4 raw = __ldg((const int4 *)(qr + i));
     const int8_t *q = (const int8_t *)&raw;
     float sc = __half2float(dr[i / 32]);
-    for (int t = 0; t < T; t++) {
-      const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
-      float4 a = xp[0], b = xp[1], c = xp[2], e = xp[3];
-      acc[t] += sc * (q[0] * a.x + q[1] * a.y + q[2] * a.z + q[3] * a.w + q[4] * b.x + q[5] * b.y + q[6] * b.z + q[7] * b.w +
-                      q[8] * c.x + q[9] * c.y + q[10] * c.z + q[11] * c.w + q[12] * e.x + q[13] * e.y + q[14] * e.z + q[15] * e.w);
+#pragma unroll
+    for (int t = 0; t < TT; t++) {
+      if (t < T) {
+        const float4 *xp = (const float4 *)(x + (size_t)t * ldx + i);
+        float4 a = xp[0], b = xp[1], c = xp[2], e = xp[3];
+        acc[t] += sc * (q[0] * a.x + q[1] * a.y + q[2] * a.z + q[3] * a.w + q[4] * b.x + q[5] * b.y + q[6] * b.z + q[7] * b.w +
+                        q[8] * c.x + q[9] * c.y + q[10] * c.z + q[11] * c.w + q[12] * e.x + q[13] * e.y + q[14] * e.z + q[15] * e.w);
+      }
     }
   }
-  for (int t = 0; t < T; t++) {
-    float s = warp_sum(acc[t]);
-    if (lane == 0) red[wid][t] = s;
+#pragma unroll
+  for (int t = 0; t < TT; t++) {
+    if (t < T) {
+      float s = warp_sum(acc[t]);
+      if (lane == 0) red[wid][t] = s;
+    }
   }
   __syncthreads();
   if (threadIdx.x < T) y[(size_t)threadIdx.x * ldy + r] = red[0][threadIdx.x] + red[1][threadIdx.x] + red[2][threadIdx.x] + red[3][threadIdx.x];
+}
+extern "C" __global__ void gemv_q8r_sk(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y, int rows,
+                                       int k, int T, int ldx, int ldy, const __half *__restrict__ d) {
+  gemv_q8r_sk_body<MAXT>(qs, x, y, rows, k, T, ldx, ldy, d);
+}
+extern "C" __global__ void gemv_q8r_sk1(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y, int rows,
+                                        int k, int T, int ldx, int ldy, const __half *__restrict__ d) {
+  gemv_q8r_sk_body<1>(qs, x, y, rows, k, 1, ldx, ldy, d);
 }
 
 // hc dots in more blocks: part[t][i][s] for rows i < 24 (dot) and i = 24 (sum of squares), S splits of hcd.
