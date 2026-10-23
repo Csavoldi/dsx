@@ -1608,10 +1608,9 @@ impl<'m> GpuModel<'m> {
         let mut pre = vec![0f32; 24];
         pre[0] = 1.0;
         self.g.htod_sync(self.mix_f.ptr, &pre)?;
-        if self.worker.is_some() && !self.skip_experts {
-            self.enqueue_aux(1)?;
-            self.g.bind();
-        }
+        // GPU1's work for the token is enqueued after GPU0's layer-0 attention (below): it cannot start before layer 0's
+        // router publishes, and enqueueing it first (~0.15 ms of host calls) kept GPU0 idle at the token's start
+        let mut aux_pending = self.worker.is_some() && !self.skip_experts;
         // Engram rows on a helper thread while layer 0 (no engram) is enqueued and runs
         let mut prefetch = {
             let ms: &'static Model = unsafe { std::mem::transmute::<&Model, &'static Model>(m) };
@@ -1652,6 +1651,11 @@ impl<'m> GpuModel<'m> {
                 self.g.launch(self.k["router_topk"], (1, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(pg.ptr + (li * 64) as u64), Arg::P(scratch + 32), Arg::I(c.n_experts as i32), Arg::I(8), Arg::F(c.route_scale), Arg::P(0)])?;
             }
             self.attention(li)?;
+            if aux_pending {
+                aux_pending = false;
+                self.enqueue_aux(1)?;
+                self.g.bind();
+            }
             self.ev(li, 10)?;
             self.hmark(th, if li < 20 { "host: attention enc" } else { "host: attention dec" });
             self.mark(&mut tm, "attention")?;
