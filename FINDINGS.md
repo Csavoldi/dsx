@@ -342,6 +342,11 @@ copies per token, half or more wasted).
 
 ## 9. Negative results
 
+- **Deferring more ranks (DSX_DEFER=2 / 1) on T16, 2026-10-23.** Free-running decode 37.4 (DEFER=3) -> 38.3 (2) ->
+  39.1 tok/s (1), teacher-forced 60 -> 58 s per 2046 tokens at DEFER=1; decode-eval KL (8 threads, DSX_ADAPT=0)
+  ~0.208 without deferral, 0.237 at 3, 0.260 at 2, 0.306 at 1 (with adaptation on, two DEFER=3 runs gave 0.2205 /
+  0.2151: the eval's spread is ~0.005). 2 and 1 fail the KL limit (+0.01) and stay off. Decision (lxe, 2026-10-23):
+  production keeps --defer-rank 3, ~+0.029 KL against no deferral for ~13% faster decode.
 - **Next-layer expert prefetch into GPU0 (DSX_PREFETCH, branch pf-prefetch, 2026-10-23).** Layer L+1's router on
   layer L's expert input picks the 1-2 best predicted CPU-resident experts; a third stream copies them from the
   mapped arena (zero-copy SM loads + repack) into slots GPU0 runs from, the CPU skipping those picks. It caught 35-54%
