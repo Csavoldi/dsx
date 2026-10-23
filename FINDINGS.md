@@ -399,8 +399,10 @@ copies per token, half or more wasted).
 
 ## 9b. Decode: small kernels, launch structure and the Dev 4 merge (2026-10-23)
 
-Branch `integrate` (github) = `small-kernels` (Dev 1) + main + Dev 4's `window-dev4` (engram FP8 E1/E2, cp.async T16
-decode GEMV) + `budget-102` docs. Not yet on main or in production. Logs and scripts: bench/results/2026-10-22-102
+Branch `integrate` = `small-kernels` (Dev 1) + main + Dev 4's `window-dev4` (engram FP8 E1/E2, cp.async T16 decode
+GEMV) + `budget-102` docs, merged to main as af2c154 (2026-10-23). **Production on .102 since 10:54 PT:** af2c154's
+dsx-server via the stock dsx-serve.sh (defer rank 3), with the GGUF's own F16 engram (FP8 engram stays opt-in,
+DSX_ENGRAM_FP8=1, at lxe's call). The previous binaries are ~/ai/ds41/dsx/target/release/{dsx,dsx-server}.bak-f1f53e4. Logs and scripts: bench/results/2026-10-22-102
 (win25-win35). Every number below is teacher-forced `eval --decode` on .102 (1 seq x 1023 steps, defer 3, adapt 8,
 2 interleaved rounds, mean tok/s) unless it says otherwise.
 
