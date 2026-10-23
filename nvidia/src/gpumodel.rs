@@ -172,6 +172,8 @@ pub struct GpuModel<'m> {
     q8r1: bool,
     /// one-token split-k GEMVs on the *_sk1 kernels (DSX_SK1=0: the generic ones, for A/Bs)
     sk1: bool,
+    /// one-token deferred decode: injection + post-weights copy inside the combine launch (DSX_COMBINE_FUSED=0: separate)
+    combine_fused: bool,
     warned_nan: bool,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
@@ -276,7 +278,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -450,6 +452,7 @@ impl<'m> GpuModel<'m> {
             adapt_flags: vec![],
             q8r1: std::env::var("DSX_Q8R1").map_or(true, |v| v != "0"),
             sk1: std::env::var("DSX_SK1").map_or(true, |v| v != "0"),
+            combine_fused: std::env::var("DSX_COMBINE_FUSED").map_or(true, |v| v != "0"),
             warned_nan: false,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
@@ -779,6 +782,9 @@ impl<'m> GpuModel<'m> {
         let last = li + 1 == c.n_layers;
         self.flag_wait(d0 + crate::handoff::CPU as u64, seq)?;
         let mut cpu_mask = 1;
+        // one token, deferred: the injection and the 16-byte post-weights copy go into the combine launch (combine_post)
+        let fuse = deferred && self.combine_fused;
+        let mut inj_off = -1i32;
         if deferred {
             // deferred slots: even layers bit 1, odd layers bit 2
             let slot = |l: usize| if l % 2 == 0 { 2 } else { 4 };
@@ -788,14 +794,20 @@ impl<'m> GpuModel<'m> {
             if inject {
                 // this layer's output weights (mix_f, from the par stream), for its own deferred experts next layer
                 self.hc_join_main()?;
-                self.g.dtod(self.dpost.ptr + ((li % 2) * 16) as u64, self.mix_f.ptr + 16, 16)?;
+                if !fuse {
+                    self.g.dtod(self.dpost.ptr + ((li % 2) * 16) as u64, self.mix_f.ptr + 16, 16)?;
+                }
             }
             if li > 0 {
                 self.flag_wait(d0 + crate::handoff::CPUD as u64, seq - 1)?;
                 if inject {
                     let off = if (li - 1) % 2 == 0 { crate::handoff::y_cpu2(d) } else { crate::handoff::y_cpu3(d) };
-                    self.hc_join_main()?;
-                    self.g.launch(self.k["hc_add_post"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(d0 + off as u64), Arg::P(self.dpost.ptr + (((li - 1) % 2) * 16) as u64), Arg::I(d as i32)])?;
+                    if fuse {
+                        inj_off = off as i32;
+                    } else {
+                        self.hc_join_main()?;
+                        self.g.launch(self.k["hc_add_post"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(d0 + off as u64), Arg::P(self.dpost.ptr + (((li - 1) % 2) * 16) as u64), Arg::I(d as i32)])?;
+                    }
                 } else {
                     cpu_mask |= slot(li - 1);
                 }
@@ -810,7 +822,18 @@ impl<'m> GpuModel<'m> {
             self.flag_wait(d0 + crate::handoff::aux_flag(i) as u64, seq)?;
         }
         self.ev(li, 6)?;
-        self.g.launch(self.k["combine_experts"], (((t * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(cpu_mask), Arg::I(self.aux.len() as i32), Arg::I(t as i32), Arg::I(crate::handoff::y_cpu2(d) as i32), Arg::I(crate::handoff::y_cpu3(d) as i32)])?;
+        if fuse {
+            let prev = self.dpost.ptr + (((li + 1) % 2) * 16) as u64; // (li - 1) % 2, li > 0 when used
+            self.g.launch(
+                self.k["combine_post"],
+                ((d as u32).div_ceil(256), 1, 1),
+                256,
+                0,
+                &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(cpu_mask), Arg::I(self.aux.len() as i32), Arg::I(crate::handoff::y_cpu2(d) as i32), Arg::I(crate::handoff::y_cpu3(d) as i32), Arg::P(self.h.ptr), Arg::I(inj_off), Arg::P(prev), Arg::P(self.dpost.ptr + ((li % 2) * 16) as u64), Arg::P(self.mix_f.ptr)],
+            )?;
+        } else {
+            self.g.launch(self.k["combine_experts"], (((t * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(cpu_mask), Arg::I(self.aux.len() as i32), Arg::I(t as i32), Arg::I(crate::handoff::y_cpu2(d) as i32), Arg::I(crate::handoff::y_cpu3(d) as i32)])?;
+        }
         self.ev(li, 7)
     }
 

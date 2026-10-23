@@ -1229,6 +1229,29 @@ extern "C" __global__ void combine_experts(float *a, const float *out0, const ui
   a[i] = bf16r(v);
 }
 
+// decode with DSX_DEFER (T = 1): combine_experts, plus the previous layer's deferred CPU experts entering the residual
+// (hc_add_post: h[k] = bf16(h[k] + post_prev[k] * y)) when inj_off >= 0, plus this layer's output weights saved for its
+// own deferred experts (post_cur[0..4] = mixes[4..8], the 16-byte copy) when post_cur is set. One launch instead of three,
+// bit-identical: the same per-element expressions. grid ceil(dim / 256), block 256.
+extern "C" __global__ void combine_post(float *a, const float *out0, const uint8_t *xch, int dim, int cpu_mask, int n_aux,
+                                        int cpu2_off, int cpu3_off, float *h, int inj_off, const float *post_prev,
+                                        float *post_cur, const float *mixes) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (post_cur && i < 4) post_cur[i] = mixes[4 + i];
+  if (i >= dim) return;
+  float v = a[i] + out0[i];
+  if (cpu_mask & 1) v += ((const volatile float *)(xch + XCH_X + 32 * dim))[i];
+  if (cpu_mask & 2) v += ((const volatile float *)(xch + cpu2_off))[i];
+  if (cpu_mask & 4) v += ((const volatile float *)(xch + cpu3_off))[i];
+  for (int j = 0; j < n_aux; j++) v += ((const volatile float *)(xch + XCH_X + (64 + 32 * j) * dim))[i];
+  if (inj_off >= 0) {
+    float y = ((const float *)(xch + inj_off))[i];
+#pragma unroll
+    for (int k = 0; k < 4; k++) h[k * dim + i] = bf16r(h[k * dim + i] + post_prev[k] * y);
+  }
+  a[i] = bf16r(v);
+}
+
 // ---------------------------------------------------------------- prefill: weights -> f16 for cuBLAS
 // out[r][c] (f16) for rows [0, rows) of a weight in type t (ggml id, or 1000 = FP8 + 32x32 E8M0 scales, scale[rows/32][k/32]).
 // grid (ceil(k/256), rows), block 256: each thread one element.
