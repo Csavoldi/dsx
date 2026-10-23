@@ -215,7 +215,103 @@ fn t16k_bench(rng: &mut Rng) {
     }
 }
 
+/// small: decode-sized T16 calls as the CPU expert worker makes them (pool on CPUs 0-13, 50 ms spin, caller on CPU 16):
+/// ne = CPUB_NE (default 1,2,3,4,6) experts per call, t = 1, distinct experts per call (weights from RAM). ms per call,
+/// GB/s, and with DSX_T16_PROF=1 the mean phase breakdown in us from pool.run: workers' start (first / last), each
+/// phase's work (mean and slowest worker), the barrier release, and pool.run's return
+fn small_bench(nexp: usize, rng: &mut Rng) {
+    use dsx::cpu::moe::t16prof::{CALL, MARKS, T, on};
+    use std::sync::atomic::Ordering::Relaxed;
+    use GType::*;
+    dsx::cpu::pool::pin_to(dsx::cpu::pool::WORKER_CPU);
+    let nes: Vec<usize> = std::env::var("CPUB_NE").unwrap_or("1,2,3,4,6".into()).split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    let calls: usize = std::env::var("CPUB_CALLS").ok().and_then(|v| v.parse().ok()).unwrap_or(600);
+    let th: usize = std::env::var("CPUB_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(14);
+    let mut moe = CpuMoe::new(Pool::new(&dsx::cpu::pool::P_CORES[..th], Duration::from_millis(50)));
+    for (name, gu, dn) in [("T16 1.5/2", T16K15, T16K2), ("T16 2/2.5", T16K2, T16K25)] {
+        let exs: Vec<Ex> = (0..nexp).map(|_| t16_ex(gu, dn, rng)).collect();
+        let ew = views(&exs);
+        let x: Vec<f32> = (0..DIM).map(|_| rng.normal()).collect();
+        let mut out = vec![0f32; DIM];
+        println!("{name}, {th} threads, t = 1, {:.1} MB per expert", ew[0].bytes() as f64 / 1e6);
+        for &ne in &nes {
+            let w = vec![1.0f32 / ne as f32; ne];
+            let groups = nexp / ne;
+            let (mut tot, mut bytes) = (0f64, 0usize);
+            let mut acc = [0f64; 10];
+            for c in 0..calls + groups {
+                let g = c % groups;
+                let sl = &ew[ne * g..ne * g + ne];
+                let t0 = Instant::now();
+                moe.forward(sl, DIM, &x, 1, &w, &mut out);
+                let dt = t0.elapsed().as_secs_f64();
+                if c < groups {
+                    continue; // warm-up pass
+                }
+                tot += dt;
+                bytes += sl.iter().map(|e| e.bytes()).sum::<usize>();
+                if on() {
+                    let r = CALL[1].load(Relaxed) as f64;
+                    let m = |i: usize, k: usize| T[i][k].load(Relaxed) as f64 - r;
+                    let col = |k: usize| (0..th).map(|i| m(i, k)).collect::<Vec<f64>>();
+                    let mx = |v: &[f64]| v.iter().cloned().fold(f64::MIN, f64::max);
+                    let mn = |v: &[f64]| v.iter().cloned().fold(f64::MAX, f64::min);
+                    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+                    let st = col(0);
+                    let w1: Vec<f64> = (0..th).map(|i| m(i, 1) - m(i, 0)).collect();
+                    let w2: Vec<f64> = (0..th).map(|i| m(i, 3) - m(i, 2)).collect();
+                    let w3: Vec<f64> = (0..th).map(|i| m(i, 5) - m(i, 4)).collect();
+                    let v = [CALL[1].load(Relaxed) as f64 - CALL[0].load(Relaxed) as f64, mn(&st), mx(&st), mean(&w1), mx(&col(2)),
+                        mean(&w2), mx(&w2), mx(&col(4)), mean(&w3), CALL[2].load(Relaxed) as f64 - r];
+                    let _ = MARKS;
+                    for (a, b) in acc.iter_mut().zip(v) {
+                        *a += b;
+                    }
+                }
+            }
+            let ms = tot / calls as f64 * 1e3;
+            println!("  ne={ne}: {ms:.3} ms per call, {:.1} GB/s", bytes as f64 / tot / 1e9);
+            if on() {
+                let a: Vec<f64> = acc.iter().map(|v| v / calls as f64 / 1e3).collect();
+                println!("    us: setup {:.1}; start {:.1}-{:.1}; prep {:.1} -> barrier {:.1}; gate/up mean {:.1} max {:.1} -> barrier {:.1}; \
+                    down mean {:.1}; return {:.1}", a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
+            }
+        }
+    }
+    // the ceiling: a pure read of 1 GB (u64 sums, 64 KB per claim) on the same threads
+    drop(moe);
+    let pool = Pool::new(&dsx::cpu::pool::P_CORES[..th], Duration::from_millis(50));
+    let buf: Vec<u64> = (0..(1usize << 27)).map(|i| i as u64).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let sink = std::sync::atomic::AtomicU64::new(0);
+    let chunk = 8192;
+    let mut best = 0f64;
+    for _ in 0..5 {
+        next.store(0, Relaxed);
+        let t0 = Instant::now();
+        pool.run(&|_c: &dsx::cpu::pool::Ctx| {
+            let mut acc = 0u64;
+            loop {
+                let i = next.fetch_add(1, Relaxed) * chunk;
+                if i >= buf.len() {
+                    break;
+                }
+                for v in &buf[i..i + chunk] {
+                    acc = acc.wrapping_add(*v);
+                }
+            }
+            sink.fetch_add(acc, Relaxed);
+        });
+        best = best.max((buf.len() * 8) as f64 / t0.elapsed().as_secs_f64() / 1e9);
+    }
+    println!("RAM read, {th} threads: {best:.1} GB/s (best of 5, 1 GB)");
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "small") {
+        small_bench(if std::env::args().any(|a| a == "quick") { 24 } else { 64 }, &mut Rng(0x2545f4914f6cdd1d));
+        return;
+    }
     if std::env::args().any(|a| a == "t16k") {
         t16k_bench(&mut Rng(0x2545f4914f6cdd1d));
         return;

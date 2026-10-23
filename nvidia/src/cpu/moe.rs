@@ -73,6 +73,65 @@ pub struct CpuMoe {
     /// the experts of this call are stored in the Hadamard-rotated basis: rotate x and h before quantizing them
     pub rot: bool,
     t16: T16Scratch,
+    /// forward_t16's schedule (T16Sched::from_env at new)
+    pub t16_sched: T16Sched,
+}
+
+/// forward_t16's work schedule (bit-exact outputs whichever it is): each expert's last gate / up columns as a guided
+/// tail of `tw`-column units, about `tper` per worker (0: none, every unit 4 columns), and down without a barrier
+/// (`pipe`: each down unit takes an expert's h blocks as they become ready). Default 2 tail units of 1 column per
+/// worker and pipe: on the i7-13700 at 14 threads, 6-7% faster for 1-expert decode calls, 4-5% for 2, 2.4% for 3,
+/// 1-2% for 6-expert calls of 1-16 tokens. From DSX_T16_TAIL=TPER[,TW] (0 = none) and DSX_T16_PIPE=0|1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct T16Sched {
+    pub tper: usize,
+    pub tw: usize,
+    pub pipe: bool,
+}
+
+impl T16Sched {
+    pub const BARRIER: T16Sched = T16Sched { tper: 0, tw: 1, pipe: false };
+    pub fn from_env() -> T16Sched {
+        let t: Vec<usize> = std::env::var("DSX_T16_TAIL").unwrap_or_default().split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        T16Sched {
+            tper: t.first().copied().unwrap_or(2),
+            tw: t.get(1).copied().unwrap_or(1).clamp(1, 2),
+            pipe: std::env::var("DSX_T16_PIPE").map_or(true, |v| v != "0"),
+        }
+    }
+}
+
+/// DSX_T16_PROF=1 (read once): forward_t16's phase boundaries per worker and around the pool run, in ns since the
+/// first mark, for cpubench's small-call breakdown. Marks per worker: 0 job start, 1 phase 1 (x prep) done, 2 barrier
+/// passed, 3 phase 2 (gate / up) done, 4 barrier passed, 5 phase 3 (down) done; CALL: 0 forward_t16 entry, 1 pool.run
+/// called, 2 pool.run returned.
+pub mod t16prof {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::time::Instant;
+    pub const MARKS: usize = 6;
+    pub static T: [[AtomicU64; MARKS]; 64] = [const { [const { AtomicU64::new(0) }; MARKS] }; 64];
+    pub static CALL: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    pub fn on() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var("DSX_T16_PROF").is_ok_and(|v| v == "1"))
+    }
+    pub fn now() -> u64 {
+        static BASE: OnceLock<Instant> = OnceLock::new();
+        BASE.get_or_init(Instant::now).elapsed().as_nanos() as u64
+    }
+    #[inline]
+    pub fn mark(id: usize, k: usize) {
+        if on() {
+            T[id][k].store(now(), Relaxed);
+        }
+    }
+    #[inline]
+    pub fn call(k: usize) {
+        if on() {
+            CALL[k].store(now(), Relaxed);
+        }
+    }
 }
 
 /// T16 calls (t16k): per (expert, token) the int8 activations of gate, up and down, the raw gate / up outputs and h
@@ -85,6 +144,8 @@ struct T16Scratch {
     u: Vec<Vec<f32>>,
     h: Vec<Vec<f32>>,
     cnt: Vec<AtomicU32>,
+    /// per (expert, 256-block of h): 1 once the block's down input is prepared (phase 3 waits on it)
+    ready: Vec<AtomicU32>,
     next: [Padded; 3],
 }
 
@@ -124,6 +185,7 @@ impl CpuMoe {
             next: Default::default(),
             rot: false,
             t16: T16Scratch::default(),
+            t16_sched: T16Sched::from_env(),
         }
     }
 
@@ -186,11 +248,12 @@ impl CpuMoe {
 
 impl CpuMoe {
     /// T16 experts (t16k): workers prepare x per (expert, token, 256-group) for gate and up; barrier; gate / up in
-    /// units of 4 tile columns, and whoever finishes a 256-block of an expert's outputs applies the output Hadamard,
-    /// svh and SwiGLU and prepares that block of h for down; barrier; down in units of 128 outputs (8 tile columns),
-    /// each worker owning its outputs.
+    /// units of 4 tile columns and a finer tail (T16Sched), and whoever finishes a 256-block of an
+    /// expert's outputs applies the output Hadamard, svh and SwiGLU and prepares that block of h for down; barrier
+    /// (none with T16Sched::pipe); down in units of 128 outputs (8 tile columns), each worker owning its outputs.
     #[allow(clippy::too_many_arguments)]
     fn forward_t16(&mut self, ex: &[ExpertW], dim: usize, inter: usize, x: &[f32], t: usize, w: &[f32], out: &mut [f32]) {
+        t16prof::call(0);
         let ne = ex.len();
         for e in ex {
             assert_eq!(e.inter(dim), inter);
@@ -223,7 +286,8 @@ impl CpuMoe {
         }
         let nb = inter / 256;
         s.cnt.resize_with(ne * nb, || AtomicU32::new(0));
-        for c in &s.cnt[..ne * nb] {
+        s.ready.resize_with(ne * nb, || AtomicU32::new(0));
+        for c in s.cnt[..ne * nb].iter().chain(&s.ready[..ne * nb]) {
             c.store(0, Relaxed);
         }
         for n in &s.next {
@@ -235,11 +299,20 @@ impl CpuMoe {
         let (ag, au, ad) = (P(s.ag.as_mut_ptr()), P(s.au.as_mut_ptr()), P(s.ad.as_mut_ptr()));
         let (gb, ub, hb) = (P(s.g.as_mut_ptr()), P(s.u.as_mut_ptr()), P(s.h.as_mut_ptr()));
         let outp = P(out.as_mut_ptr());
-        let (cnt, next) = (&s.cnt, &s.next);
+        let (cnt, ready, next) = (&s.cnt, &s.ready, &s.next);
         let groups = dim / 256;
+        // gate / up units: 4 tile columns (64 outputs), then (T16Sched) each expert's last columns in units of `tw`, about
+        // `tper` per worker: workers finish within one unit of each other, ~20 us a call with 4-column units throughout
+        let th = self.pool.threads();
+        let cols = inter / 16;
+        let T16Sched { tw, tper, pipe } = self.t16_sched;
+        let tail = if tper == 0 { 0 } else { ((tper * th * tw).div_ceil(ne).div_ceil(4) * 4).clamp(4, cols) };
+        let (big, nbig) = ((cols - tail) / 4, ne * (cols - tail) / 4);
+        let ntail = tail / tw;
         let work = |c: &Ctx| unsafe {
-            use super::t16k::{gemv_multi, post_block, prep_group, scales};
+            use super::t16k::{gemv_multi, gemv_multi_groups, mul1, post_block, prep_group, scales};
             let (ag, au, ad, gb, ub, hb, outp) = (&ag, &au, &ad, &gb, &ub, &hb, &outp);
+            t16prof::mark(c.id, 0);
             // 1. x for gate and up
             let units: Vec<(usize, usize)> = toks.iter().enumerate().flat_map(|(e, tk)| (0..tk.len()).map(move |j| (e, j))).collect();
             loop {
@@ -253,15 +326,16 @@ impl CpuMoe {
                 prep_group(xr, scales(ex[e].gate, k2, dim, inter).0, gr, &mut *ag.0.add(si));
                 prep_group(xr, scales(ex[e].up, k2, dim, inter).0, gr, &mut *au.0.add(si));
             }
+            t16prof::mark(c.id, 1);
             c.barrier();
-            // 2. gate / up, 4 tile columns (64 outputs) per unit
-            let upe = inter / 64;
+            t16prof::mark(c.id, 2);
+            // 2. gate / up: units 0..nbig of 4 tile columns, then ne * tail of 1 (column c0 .. c0 + wc)
             loop {
                 let i = next[1].0.fetch_add(1, Relaxed);
-                if i >= ne * upe {
+                if i >= nbig + ne * ntail {
                     break;
                 }
-                let (e, u0) = (i / upe, i % upe);
+                let (e, c0, wc) = if i < nbig { (i / big, 4 * (i % big), 4) } else { ((i - nbig) / ntail, cols - tail + tw * ((i - nbig) % ntail), tw) };
                 let tk = &toks[e];
                 if tk.is_empty() {
                     continue;
@@ -273,11 +347,12 @@ impl CpuMoe {
                 for (acts, outs, mat) in [(ag, gb, ex[e].gate), (au, ub, ex[e].up)] {
                     let a: [&super::t16k::Act; MAX_TOKENS] = std::array::from_fn(|j| &*acts.0.add(si(j)));
                     let mut o: [&mut [f32]; MAX_TOKENS] =
-                        std::array::from_fn(|j| if j < nt { &mut (&mut *outs.0.add(si(j)))[64 * u0..] } else { Default::default() });
-                    gemv_multi(mat, k2, dim, inter, &a[..nt], 4 * u0, 4 * u0 + 4, &mut o[..nt]);
+                        std::array::from_fn(|j| if j < nt { &mut (&mut *outs.0.add(si(j)))[16 * c0..] } else { Default::default() });
+                    gemv_multi(mat, k2, dim, inter, &a[..nt], c0, c0 + wc, &mut o[..nt]);
                 }
-                let b = u0 / 4;
-                if cnt[e * nb + b].fetch_add(1, AcqRel) == 3 {
+                // the worker completing a 256-output block's 16 columns finishes it
+                let b = c0 / 16;
+                if cnt[e * nb + b].fetch_add(wc as u32, AcqRel) == 16 - wc as u32 {
                     let (svg, svu) = (scales(ex[e].gate, k2, dim, inter).1, scales(ex[e].up, k2, dim, inter).1);
                     for (j, &tok) in tk.iter().enumerate() {
                         let si = e * MAX_TOKENS + j;
@@ -292,10 +367,18 @@ impl CpuMoe {
                         }
                         prep_group(h, scales(ex[e].down, k2d, inter, dim).0, b, &mut *ad.0.add(si));
                     }
+                    ready[e * nb + b].store(1, Release);
                 }
             }
-            c.barrier();
-            // 3. down, 128 outputs per unit
+            t16prof::mark(c.id, 3);
+            if !pipe {
+                c.barrier();
+            }
+            t16prof::mark(c.id, 4);
+            // 3. down, 128 outputs per unit. With T16Sched::pipe there is no barrier before it: a unit takes each expert's
+            // input groups (h blocks) in order as they become ready, so it overlaps the end of gate / up; every gate / up
+            // unit is claimed before any down unit, so a down unit only waits on blocks in progress
+            let rdy = |e: usize, b: usize| ready[e * nb + b].load(Acquire) == 1;
             let mut ys = [[0f32; 128]; MAX_TOKENS];
             loop {
                 let i = next[2].0.fetch_add(1, Relaxed);
@@ -315,7 +398,23 @@ impl CpuMoe {
                         for (oj, y) in o.iter_mut().zip(ys.iter_mut()).take(nt) {
                             *oj = &mut y[..];
                         }
-                        gemv_multi(ex[e].down, k2d, inter, dim, &a[..nt], 8 * i, 8 * i + 8, &mut o[..nt]);
+                        if mul1() {
+                            (0..nb).for_each(|b| while !rdy(e, b) { std::hint::spin_loop() });
+                            gemv_multi(ex[e].down, k2d, inter, dim, &a[..nt], 8 * i, 8 * i + 8, &mut o[..nt]);
+                        } else {
+                            let mut g0 = 0;
+                            while g0 < nb {
+                                while !rdy(e, g0) {
+                                    std::hint::spin_loop();
+                                }
+                                let mut g1 = g0 + 1;
+                                while g1 < nb && rdy(e, g1) {
+                                    g1 += 1;
+                                }
+                                gemv_multi_groups(ex[e].down, k2d, inter, dim, &a[..nt], 8 * i, 8 * i + 8, &mut o[..nt], g0, g1);
+                                g0 = g1;
+                            }
+                        }
                     }
                     for (j, &tok) in tk.iter().enumerate() {
                         let y = &mut ys[j];
@@ -326,8 +425,11 @@ impl CpuMoe {
                     }
                 }
             }
+            t16prof::mark(c.id, 5);
         };
+        t16prof::call(1);
         self.pool.run(&work);
+        t16prof::call(2);
     }
 }
 
@@ -778,6 +880,52 @@ mod tests {
                 let mut one = vec![0f32; dim];
                 moe.forward(&ew, dim, &x[j * dim..(j + 1) * dim], 1, &wj, &mut one);
                 assert!(one.iter().zip(&got[j * dim..(j + 1) * dim]).all(|(a, b)| a.to_bits() == b.to_bits()), "t {t} {gu:?}/{dn:?}: token {j} differs from its one-token call");
+            }
+        }
+    }
+
+    #[test]
+    fn t16_schedules_match() {
+        use crate::t16;
+        let (dim, inter) = (1024usize, 512usize);
+        let mut seed = 0x1357_9bdf_2468_ace0u64;
+        let mut r = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut mat = |ty: GType, k: usize, n: usize| -> Vec<u8> {
+            let k2 = t16::k2(ty).unwrap();
+            let tb = t16::trellis_bytes(k2, k, n);
+            let mut m: Vec<u8> = (0..t16::matrix_bytes(ty, k, n)).map(|_| r() as u8).collect();
+            for c in m[tb..].chunks_exact_mut(2) {
+                let v = 0.02 * (0.5 + (r() % 1000) as f32 / 1000.0) * if r() % 2 == 0 { 1.0 } else { -1.0 };
+                c.copy_from_slice(&half::f16::from_f32(v).to_le_bytes());
+            }
+            m
+        };
+        let mut moe = CpuMoe::new(Pool::new(&[0, 1, 2, 3, 4, 5], Duration::from_millis(1)));
+        let mut seed2 = 7u64;
+        let mut f = || {
+            seed2 = seed2.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed2 >> 33) % 2001) as f32 / 1000.0 - 1.0
+        };
+        // every schedule gives the barrier schedule's outputs bit for bit (1-6 experts of 1 token, and windows)
+        let mut base = CpuMoe::new(Pool::new(&[0, 1, 2, 3, 4, 5], Duration::from_millis(1)));
+        base.t16_sched = T16Sched::BARRIER;
+        for (t, ne, gu, dn) in [(1usize, 1usize, GType::T16K15, GType::T16K2), (1, 3, GType::T16K2, GType::T16K25), (1, 6, GType::T16K15, GType::T16K25), (5, 4, GType::T16K25, GType::T16K15)] {
+            let mats: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..ne).map(|_| (mat(gu, dim, inter), mat(gu, dim, inter), mat(dn, inter, dim))).collect();
+            let ew: Vec<ExpertW> = mats.iter().map(|m| ExpertW { gu, gate: &m.0, up: &m.1, dn, down: &m.2 }).collect();
+            let x: Vec<f32> = (0..t * dim).map(|_| f()).collect();
+            let w: Vec<f32> = (0..ne * t).map(|i| if i % 4 == 3 && t > 1 { 0.0 } else { 0.2 + 0.1 * (i % 5) as f32 }).collect();
+            let mut want = vec![0f32; t * dim];
+            base.forward(&ew, dim, &x, t, &w, &mut want);
+            for sched in [T16Sched { tper: 2, tw: 1, pipe: true }, T16Sched { tper: 1, tw: 2, pipe: false }, T16Sched { tper: 0, tw: 1, pipe: true }, T16Sched { tper: 3, tw: 1, pipe: true }] {
+                moe.t16_sched = sched;
+                let mut got = vec![0f32; t * dim];
+                moe.forward(&ew, dim, &x, t, &w, &mut got);
+                assert!(got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()), "{sched:?}, t {t} ne {ne}: differs from the barrier schedule");
             }
         }
     }

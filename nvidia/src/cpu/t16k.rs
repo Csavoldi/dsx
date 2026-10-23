@@ -106,7 +106,16 @@ fn hend(k2: usize, t: usize) -> usize {
 
 /// raw outputs of tile columns nb0..nb1 into out[(nb - nb0) * 16 ..]: per 256-group d (C_B acc - C_0 s)
 pub fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
+    gemv_groups(m, k2, k, n, a, nb0, nb1, out, 0, k / 256)
+}
+
+/// gemv over the input groups g0..g1 only, adding to out's partial sums when g0 > 0: gemv_groups(0..g) then
+/// gemv_groups(g..k/256) equals gemv bit for bit (the f32 sums go through memory unchanged); not with mul1
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_groups(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32], g0: usize, g1: usize) {
+    assert!(g0 < g1 && g1 <= k / 256);
     if mul1() {
+        assert!(g0 == 0 && g1 == k / 256, "mul1: whole matrices only");
         return match isa() {
             #[cfg(target_arch = "x86_64")]
             Isa::Vnni => unsafe { vnni::gemv_m1(m, k2, k, n, a, nb0, nb1, out) },
@@ -117,10 +126,10 @@ pub fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: u
     }
     match isa() {
         #[cfg(target_arch = "x86_64")]
-        Isa::Vnni => unsafe { vnni::gemv(m, k2, k, n, a, nb0, nb1, out) },
+        Isa::Vnni => unsafe { vnni::gemv(m, k2, k, n, a, nb0, nb1, out, g0, g1) },
         #[cfg(target_arch = "x86_64")]
-        Isa::Vnni512 => unsafe { vnni512::gemv(m, k2, k, n, a, nb0, nb1, out) },
-        _ => gemv_scalar(m, k2, k, n, a, nb0, nb1, out),
+        Isa::Vnni512 => unsafe { vnni512::gemv(m, k2, k, n, a, nb0, nb1, out, g0, g1) },
+        _ => gemv_scalar_g(m, k2, k, n, a, nb0, nb1, out, g0, g1),
     }
 }
 
@@ -128,27 +137,39 @@ pub fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: u
 /// to 8 tokens (SIMD; the scalar and mul1 paths, and DSX_T16_MULTI=0, run gemv per token)
 #[allow(clippy::too_many_arguments)]
 pub fn gemv_multi(m: &[u8], k2: usize, k: usize, n: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]]) {
+    gemv_multi_groups(m, k2, k, n, acts, nb0, nb1, outs, 0, k / 256)
+}
+
+/// gemv_multi over the input groups g0..g1 (see gemv_groups)
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_multi_groups(m: &[u8], k2: usize, k: usize, n: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]], g0: usize, g1: usize) {
+    assert!(g0 < g1 && g1 <= k / 256);
     if !mul1() && multi() {
         match isa() {
             #[cfg(target_arch = "x86_64")]
-            Isa::Vnni => return unsafe { vnni::gemv_multi(m, k2, k, n, acts, nb0, nb1, outs) },
+            Isa::Vnni => return unsafe { vnni::gemv_multi(m, k2, k, n, acts, nb0, nb1, outs, g0, g1) },
             #[cfg(target_arch = "x86_64")]
-            Isa::Vnni512 => return unsafe { vnni512::gemv_multi(m, k2, k, n, acts, nb0, nb1, outs) },
+            Isa::Vnni512 => return unsafe { vnni512::gemv_multi(m, k2, k, n, acts, nb0, nb1, outs, g0, g1) },
             _ => {}
         }
     }
     for (a, o) in acts.iter().zip(outs.iter_mut()) {
-        gemv(m, k2, k, n, a, nb0, nb1, o);
+        gemv_groups(m, k2, k, n, a, nb0, nb1, o, g0, g1);
     }
 }
 
 /// the same with the scalar decode (reference and fallback)
-pub fn gemv_scalar(m: &[u8], k2: usize, k: usize, _n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
+pub fn gemv_scalar(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
+    gemv_scalar_g(m, k2, k, n, a, nb0, nb1, out, 0, k / 256)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gemv_scalar_g(m: &[u8], k2: usize, k: usize, _n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32], g0: usize, g1: usize) {
     let (kt, tb) = (k / 16, t16::tile_bytes(k2));
     for nb in nb0..nb1 {
         for c in 0..16 {
-            let mut f = 0f32;
-            for gr in 0..k / 256 {
+            let mut f = if g0 == 0 { 0f32 } else { out[(nb - nb0) * 16 + c] };
+            for gr in g0..g1 {
                 let mut acc = 0i64;
                 for kb in 16 * gr..16 * gr + 16 {
                     let tile = &m[(nb * kt + kb) * tb..][..tb];
@@ -382,10 +403,11 @@ macro_rules! t16_kernels {
                 }
             }
 
+            #[allow(clippy::too_many_arguments)]
             #[target_feature(enable = $feat)]
-            pub(super) unsafe fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
+            pub(super) unsafe fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32], g0: usize, g1: usize) {
                 unsafe {
-                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.x4.len() >= k / 2);
+                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.x4.len() >= k / 2 && out.len() >= 16 * (nb1 - nb0));
                     let p = &plans()[k2 - 3];
                     let mut msk = [[[_mm_setzero_si128(); 2]; 2]; 4];
                     for v in 0..4 {
@@ -399,9 +421,10 @@ macro_rules! t16_kernels {
                     let mul = _mm256_set1_epi16(t16::MUL as i16);
                     let x = &a.x4[..];
                     for nb in nb0..nb1 {
-                        let (mut f0, mut f1) = (_mm256_setzero_ps(), _mm256_setzero_ps());
+                        let o = out.as_mut_ptr().add((nb - nb0) * 16);
+                        let (mut f0, mut f1) = if g0 == 0 { (_mm256_setzero_ps(), _mm256_setzero_ps()) } else { (_mm256_loadu_ps(o), _mm256_loadu_ps(o.add(8))) };
                         let col = m.as_ptr().add(nb * kt * tb);
-                        for gr in 0..k / 256 {
+                        for gr in g0..g1 {
                             let (mut a0, mut a1) = (_mm256_setzero_si256(), _mm256_setzero_si256());
                             for kb in 16 * gr..16 * gr + 16 {
                                 let t = col.add(kb * tb);
@@ -418,7 +441,6 @@ macro_rules! t16_kernels {
                             f0 = _mm256_fmadd_ps(d, _mm256_fmsub_ps(cb, _mm256_cvtepi32_ps(a0), c0), f0);
                             f1 = _mm256_fmadd_ps(d, _mm256_fmsub_ps(cb, _mm256_cvtepi32_ps(a1), c0), f1);
                         }
-                        let o = out.as_mut_ptr().add((nb - nb0) * 16);
                         _mm256_storeu_ps(o, f0);
                         _mm256_storeu_ps(o.add(8), f1);
                     }
@@ -428,7 +450,8 @@ macro_rules! t16_kernels {
             /// gemv for N tokens at once: the same integer accumulators and epilogue per token, the decode shared
             #[inline]
             #[target_feature(enable = $feat)]
-            unsafe fn gemv_n<const N: usize, const BOTH: bool>(m: &[u8], k2: usize, k: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]]) {
+            #[allow(clippy::too_many_arguments)]
+            unsafe fn gemv_n<const N: usize, const BOTH: bool>(m: &[u8], k2: usize, k: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]], g0: usize, g1: usize) {
                 unsafe {
                     let p = &plans()[k2 - 3];
                     let mut msk = [[[_mm_setzero_si128(); 2]; 2]; 4];
@@ -444,8 +467,14 @@ macro_rules! t16_kernels {
                     let x: [*const i32; N] = std::array::from_fn(|i| acts[i].x4.as_ptr());
                     for nb in nb0..nb1 {
                         let (mut f0, mut f1) = ([_mm256_setzero_ps(); N], [_mm256_setzero_ps(); N]);
+                        if g0 > 0 {
+                            for i in 0..N {
+                                let o = outs[i].as_ptr().add((nb - nb0) * 16);
+                                (f0[i], f1[i]) = (_mm256_loadu_ps(o), _mm256_loadu_ps(o.add(8)));
+                            }
+                        }
                         let col = m.as_ptr().add(nb * kt * tb);
-                        for gr in 0..k / 256 {
+                        for gr in g0..g1 {
                             let (mut a0, mut a1) = ([_mm256_setzero_si256(); N], [_mm256_setzero_si256(); N]);
                             if BOTH {
                                 for kb in 16 * gr..16 * gr + 16 {
@@ -497,7 +526,8 @@ macro_rules! t16_kernels {
             /// at once (2N accumulator chains), larger ones a group's tiles per half (N live accumulators, no spills):
             /// the faster of the two per (K, N) on Raptor Cove
             #[target_feature(enable = $feat)]
-            pub(super) unsafe fn gemv_multi(m: &[u8], k2: usize, k: usize, n: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]]) {
+            #[allow(clippy::too_many_arguments)]
+            pub(super) unsafe fn gemv_multi(m: &[u8], k2: usize, k: usize, n: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]], g0: usize, g1: usize) {
                 unsafe {
                     assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && acts.len() == outs.len());
                     for (a, o) in acts.iter().zip(outs.iter()) {
@@ -508,16 +538,16 @@ macro_rules! t16_kernels {
                         let (a, o) = (&acts[i..], &mut outs[i..]);
                         let both = |c: usize| c <= [4, 4, 2][k2 - 3];
                         i += match a.len() {
-                            1 => { gemv(m, k2, k, n, a[0], nb0, nb1, o[0]); 1 }
-                            2 => { gemv_n::<2, true>(m, k2, k, a, nb0, nb1, o); 2 }
-                            3 if both(3) => { gemv_n::<3, true>(m, k2, k, a, nb0, nb1, o); 3 }
-                            3 => { gemv_n::<3, false>(m, k2, k, a, nb0, nb1, o); 3 }
-                            4 if both(4) => { gemv_n::<4, true>(m, k2, k, a, nb0, nb1, o); 4 }
-                            4 => { gemv_n::<4, false>(m, k2, k, a, nb0, nb1, o); 4 }
-                            5 => { gemv_n::<5, false>(m, k2, k, a, nb0, nb1, o); 5 }
-                            6 => { gemv_n::<6, false>(m, k2, k, a, nb0, nb1, o); 6 }
-                            7 => { gemv_n::<7, false>(m, k2, k, a, nb0, nb1, o); 7 }
-                            _ => { gemv_n::<8, false>(m, k2, k, a, nb0, nb1, o); 8 }
+                            1 => { gemv(m, k2, k, n, a[0], nb0, nb1, o[0], g0, g1); 1 }
+                            2 => { gemv_n::<2, true>(m, k2, k, a, nb0, nb1, o, g0, g1); 2 }
+                            3 if both(3) => { gemv_n::<3, true>(m, k2, k, a, nb0, nb1, o, g0, g1); 3 }
+                            3 => { gemv_n::<3, false>(m, k2, k, a, nb0, nb1, o, g0, g1); 3 }
+                            4 if both(4) => { gemv_n::<4, true>(m, k2, k, a, nb0, nb1, o, g0, g1); 4 }
+                            4 => { gemv_n::<4, false>(m, k2, k, a, nb0, nb1, o, g0, g1); 4 }
+                            5 => { gemv_n::<5, false>(m, k2, k, a, nb0, nb1, o, g0, g1); 5 }
+                            6 => { gemv_n::<6, false>(m, k2, k, a, nb0, nb1, o, g0, g1); 6 }
+                            7 => { gemv_n::<7, false>(m, k2, k, a, nb0, nb1, o, g0, g1); 7 }
+                            _ => { gemv_n::<8, false>(m, k2, k, a, nb0, nb1, o, g0, g1); 8 }
                         };
                     }
                 }
@@ -614,7 +644,8 @@ mod tests {
         *s
     }
 
-    /// gemv_multi for 1..=17 tokens (chunks of 8 and every remainder) equals gemv per token bit for bit, on every K
+    /// gemv_multi for 1..=17 tokens (chunks of 8 and every remainder) equals gemv per token bit for bit, on every K, also
+    /// in two group ranges
     #[test]
     fn multi_matches_per_token() {
         let mut seed = 0x51d7_348f_00c4_2b77u64;
@@ -645,6 +676,16 @@ mod tests {
                     gemv_multi(&m, k2, k, n, &ar, nb0, nb1, &mut or);
                     for i in 0..nt {
                         assert!(want[i].iter().zip(&got[i]).all(|(a, b)| a.to_bits() == b.to_bits()), "k2 {k2} nt {nt} token {i} cols {nb0}..{nb1}");
+                    }
+                    // the same in two group ranges (the pipelined down phase), every split point
+                    for g in 1..k / 256 {
+                        let mut got = vec![vec![0f32; 16 * (nb1 - nb0)]; nt];
+                        let mut or: Vec<&mut [f32]> = got.iter_mut().map(|v| &mut v[..]).collect();
+                        gemv_multi_groups(&m, k2, k, n, &ar, nb0, nb1, &mut or, 0, g);
+                        gemv_multi_groups(&m, k2, k, n, &ar, nb0, nb1, &mut or, g, k / 256);
+                        for i in 0..nt {
+                            assert!(want[i].iter().zip(&got[i]).all(|(a, b)| a.to_bits() == b.to_bits()), "k2 {k2} nt {nt} token {i} split {g}");
+                        }
                     }
                 }
             }
