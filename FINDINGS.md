@@ -342,6 +342,15 @@ copies per token, half or more wasted).
 
 ## 9. Negative results
 
+- **Next-layer expert prefetch into GPU0 (DSX_PREFETCH, branch pf-prefetch, 2026-10-23).** Layer L+1's router on
+  layer L's expert input picks the 1-2 best predicted CPU-resident experts; a third stream copies them from the
+  mapped arena (zero-copy SM loads + repack) into slots GPU0 runs from, the CPU skipping those picks. It caught 35-54%
+  of the CPU's picks (CPU busy 12.2 -> 6.3-10.4 ms/token) but decode fell 33.1 -> 25.3 (m=1) / 22.2 (m=2) tok/s, and
+  37.4 -> 28.3 / 20.7 with --defer-rank 3. Budget reasons, all visible in 8d beforehand: the copies' SM loads and
+  repack grids run on GPU0 during attention (the binding resource with deferral), ~half the copies are wasted, the
+  bytes per layer exceed what the attention window moves at ~23 GB/s, and the CPU's remaining experts got ~20%
+  slower from DRAM contention. Decode KL unaffected (0.2082 off vs 0.2048 at m=2). Any revival needs copy engines,
+  confidence-thresholded copies and a budget showing GPU0's SMs are not the bottleneck.
 - **Speculative decoding (DSpark), re-measured 2026-10-22** on the T16 build with the multi-token CPU kernel: verify
   passes of 2 / 3 / 4 tokens cost 51 / 69 / 77 ms against a 33 ms decode step (1.55 / 2.08 / 2.34 steps), so a chain
   needs >55-68% acceptance per draft to break even before the draft's own cost, and loses against --defer-rank 3
