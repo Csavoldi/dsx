@@ -21,6 +21,9 @@ pub const CPU: usize = 64;
 pub const GPU1: usize = 128;
 pub const NTOK: usize = 192;
 pub const SEL: usize = 256;
+/// DSX_PREFETCH (decode): bit j set = the main GPU runs this layer's pick j from a prefetch slot; the CPU skips it
+/// (written by pf_take before publish_route, after the picks: MAXT x top_k i32 fit in SEL..TAKE)
+pub const TAKE: usize = SEL + 192;
 pub const WTS: usize = 512;
 pub const X: usize = 1024;
 /// tokens per handoff (verify batches)
@@ -61,6 +64,13 @@ pub const XACK: usize = DIAG - 64;
 pub fn defer() -> Option<usize> {
     static D: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     *D.get_or_init(|| std::env::var("DSX_DEFER").ok().and_then(|v| v.parse().ok()))
+}
+
+/// DSX_PREFETCH=m (decode, read once): next-layer expert prefetch with m copies per layer (gpumodel.rs Prefetch);
+/// 0 or unset = off
+pub fn prefetch() -> usize {
+    static P: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("DSX_PREFETCH").ok().and_then(|v| v.parse().ok()).unwrap_or(0).min(4))
 }
 
 pub struct Xch {
@@ -158,8 +168,8 @@ pub struct CpuWorker {
     pub on_cpu: Arc<Vec<AtomicBool>>,
     /// [layer * E + expert]: picks, decayed x decay() (0.97) per decode pass (f32 bits), for adaptive GPU residency
     pub score: Arc<Vec<AtomicU32>>,
-    /// [routed picks, picks computed by the CPU]
-    pub picks: Arc<[std::sync::atomic::AtomicU64; 2]>,
+    /// [routed picks, picks computed by the CPU, CPU-held picks the main GPU ran from a prefetch slot instead]
+    pub picks: Arc<[std::sync::atomic::AtomicU64; 3]>,
 }
 
 /// u64 slots next to the flags: GPU publish time (ROUTE + 8), CPU store time (CPU + 8); per-layer GPU-side
@@ -183,7 +193,8 @@ impl CpuWorker {
         let on_cpu: Arc<Vec<AtomicBool>> = Arc::new(on_cpu.iter().flatten().map(|&b| AtomicBool::new(b)).collect());
         let score: Arc<Vec<AtomicU32>> = Arc::new((0..on_cpu.len()).map(|_| AtomicU32::new(0)).collect());
         let (oc, sc) = (on_cpu.clone(), score.clone());
-        let picks: Arc<[std::sync::atomic::AtomicU64; 2]> = Arc::new(Default::default());
+        let picks: Arc<[std::sync::atomic::AtomicU64; 3]> = Arc::new(Default::default());
+        assert!(MAXT * top_k * 4 <= TAKE - SEL, "exchange: {MAXT} x {top_k} picks overlap the take mask");
         let pk = picks.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let busy_ns = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -285,6 +296,8 @@ impl CpuWorker {
                     y.resize(nt * d, 0.0);
                     x.copy_from_slice(xch.x(nt));
                     let (sel, wts) = (xch.sel(nt * top_k).to_vec(), xch.wts(nt * top_k).to_vec());
+                    // DSX_PREFETCH: picks the main GPU runs from its prefetch slots (decode only)
+                    let take = if nt == 1 && prefetch() > 0 { unsafe { std::ptr::read_volatile(xch.at::<u32>(TAKE)) } } else { 0 };
                     // inputs copied: under DSX_DEFER the main GPU may now publish the next layer over them
                     xch.flag(XACK).store(seq, Ordering::Release);
                     let defer_rank = if nt == 1 { defer() } else { None };
@@ -306,6 +319,10 @@ impl CpuWorker {
                             a.store((f32::from_bits(a.load(Ordering::Relaxed)) + 1.0).to_bits(), Ordering::Relaxed);
                             pk[0].fetch_add(1, Ordering::Relaxed);
                             if !oc[l * ne + e].load(Ordering::Relaxed) {
+                                continue;
+                            }
+                            if take >> j & 1 == 1 {
+                                pk[2].fetch_add(1, Ordering::Relaxed);
                                 continue;
                             }
                             pk[1].fetch_add(1, Ordering::Relaxed);

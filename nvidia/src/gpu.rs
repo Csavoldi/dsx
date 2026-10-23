@@ -58,6 +58,8 @@ pub struct Gpu {
     pub stream: cu::CUstream,
     /// second stream for copies that overlap the main stream (prefill expert streaming)
     pub side: cu::CUstream,
+    /// third stream: decode's next-layer expert prefetch (DSX_PREFETCH), off the side stream's between-token swaps
+    pub pf: cu::CUstream,
     module: cu::CUmodule,
     blas: Cell<cb::cublasHandle_t>,
 }
@@ -95,6 +97,8 @@ impl Gpu {
             check(cu::cuStreamCreate(&mut stream, cu::CUstream_flags::CU_STREAM_NON_BLOCKING as u32), "cuStreamCreate")?;
             let mut side = std::ptr::null_mut();
             check(cu::cuStreamCreate(&mut side, cu::CUstream_flags::CU_STREAM_NON_BLOCKING as u32), "cuStreamCreate")?;
+            let mut pf = std::ptr::null_mut();
+            check(cu::cuStreamCreate(&mut pf, cu::CUstream_flags::CU_STREAM_NON_BLOCKING as u32), "cuStreamCreate")?;
             let image = {
                 let mut v = vec![0u64; KERNEL_IMAGE.len().div_ceil(8)];
                 std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, KERNEL_IMAGE.len()).copy_from_slice(KERNEL_IMAGE);
@@ -102,7 +106,7 @@ impl Gpu {
             };
             let mut module = std::ptr::null_mut();
             check(cu::cuModuleLoadData(&mut module, image.as_ptr() as *const c_void), "cuModuleLoadData")?;
-            Ok(Gpu { ordinal, name, sms, arch: (major * 10 + minor) as u32, ctx, stream, side, module, blas: Cell::new(std::ptr::null_mut()) })
+            Ok(Gpu { ordinal, name, sms, arch: (major * 10 + minor) as u32, ctx, stream, side, pf, module, blas: Cell::new(std::ptr::null_mut()) })
         }
     }
 
@@ -455,6 +459,21 @@ impl Gpu {
         self.launch_on(self.stream, k, grid, block, smem, args)
     }
 
+    /// launch on the prefetch stream
+    pub fn launch_pf(&self, k: Kernel, grid: (u32, u32, u32), block: u32, smem: u32, args: &[Arg]) -> Result<()> {
+        self.launch_on(self.pf, k, grid, block, smem, args)
+    }
+
+    /// make the prefetch stream wait for `e`
+    pub fn wait_pf(&self, e: Event) -> Result<()> {
+        unsafe { check(cu::cuStreamWaitEvent(self.pf, e.0, 0), "cuStreamWaitEvent") }
+    }
+
+    /// the prefetch stream writes `value` to the u32 at `addr` once its prior work is done
+    pub fn write_value_pf(&self, addr: u64, value: u32) -> Result<()> {
+        unsafe { check(cu::cuStreamWriteValue32_v2(self.pf, addr, value, 0), "cuStreamWriteValue32") }
+    }
+
     /// launch on the side stream (background work that must not wait behind the main stream)
     pub fn launch_side(&self, k: Kernel, grid: (u32, u32, u32), block: u32, smem: u32, args: &[Arg]) -> Result<()> {
         self.launch_on(self.side, k, grid, block, smem, args)
@@ -569,6 +588,15 @@ impl HostBuf {
         let mut d = 0;
         unsafe { check(cu::cuMemHostGetDevicePointer_v2(&mut d, self.ptr as *mut c_void, 0), "cuMemHostGetDevicePointer")? };
         Ok(d)
+    }
+    /// The device address of byte `off` (within one registered piece) in `gpu`'s context: big buffers are registered in
+    /// pieces, each mapped on its own
+    pub fn dev_ptr_at(&self, gpu: &Gpu, off: usize) -> Result<u64> {
+        let &(p0, _) = self.regs.iter().find(|&&(o, n)| off >= o && off < o + n).ok_or_else(|| anyhow::anyhow!("dev_ptr_at: offset {off} outside the buffer"))?;
+        gpu.bind();
+        let mut d = 0;
+        unsafe { check(cu::cuMemHostGetDevicePointer_v2(&mut d, self.ptr.add(p0) as *mut c_void, 0), "cuMemHostGetDevicePointer")? };
+        Ok(d + (off - p0) as u64)
     }
     pub fn as_slice<T: Copy>(&self) -> &[T] {
         unsafe { std::slice::from_raw_parts(self.ptr as *const T, self.bytes / std::mem::size_of::<T>()) }

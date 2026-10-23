@@ -368,6 +368,7 @@ fn main() -> Result<()> {
             }
             let busy0 = gm.cpu_busy_s();
             let (p0, c0) = gm.cpu_picks();
+            let pf0 = gm.prefetched_picks();
             let ad0 = gm.adapt_s;
             let split0 = gm.cpu_split_s();
             let td = Instant::now();
@@ -382,11 +383,13 @@ fn main() -> Result<()> {
             }
             let el = td.elapsed().as_secs_f64();
             let (p1, c1) = gm.cpu_picks();
+            let pf1 = gm.prefetched_picks();
             println!(
-                "decode {n} tokens in {el:.2} s ({:.2} tok/s); CPU experts busy {:.1} ms/token, {:.1}% of picks on the CPU; GPU0 expert swaps {} ({:.2} ms/token host)",
+                "decode {n} tokens in {el:.2} s ({:.2} tok/s); CPU experts busy {:.1} ms/token, {:.1}% of picks on the CPU{}; GPU0 expert swaps {} ({:.2} ms/token host)",
                 n as f64 / el,
                 (gm.cpu_busy_s() - busy0) * 1e3 / n as f64,
                 100.0 * (c1 - c0) as f64 / (p1 - p0).max(1) as f64,
+                if pf1 > pf0 { format!(", {:.1}% prefetched to GPU0 ({:.1}% of the CPU's)", 100.0 * (pf1 - pf0) as f64 / (p1 - p0).max(1) as f64, 100.0 * (pf1 - pf0) as f64 / (pf1 - pf0 + c1 - c0).max(1) as f64) } else { String::new() },
                 gm.adapt_swaps,
                 (gm.adapt_s - ad0) * 1e3 / n as f64
             );

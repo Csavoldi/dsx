@@ -146,7 +146,7 @@ fn is_t16(t: GType) -> bool {
 
 /// Table / prefill id of a resident type: repacked for the fast kernels (2000 + id; T16: exllamav3's tile order for
 /// t16.cuh) unless the store is raw.
-fn slot_id(t: GType, fast: bool) -> u32 {
+pub fn slot_id(t: GType, fast: bool) -> u32 {
     if fast { 2000 + t as u32 } else { t as u32 }
 }
 
@@ -655,6 +655,18 @@ impl GpuExperts {
     fn run_t16(&self, g: &Gpu, l: usize, sel: u64, wts: u64, k: usize, t: usize, x: u64, out: u64, kg: usize, kd: usize) -> Result<()> {
         let b = self.t16b.as_ref().unwrap().ptrs();
         self.run_t16_on(g, l, sel, wts, k, t, x, out, kg, kd, &b)
+    }
+
+    /// the device table (ExpSlot per layer x expert) and the buffer its offsets are relative to (decode prefetch)
+    pub fn tab_ptr(&self) -> u64 {
+        self.tab.ptr
+    }
+    pub fn buf_ptr(&self) -> u64 {
+        self.buf.ptr
+    }
+    /// (gate/up K2, down K2) of layer `l`'s T16 experts here
+    pub fn t16_k2(&self, l: usize) -> Option<(usize, usize)> {
+        self.t16.get(l).copied().flatten()
     }
 
     /// whether layer `l`'s experts here are T16 (run_t16_ext applies)

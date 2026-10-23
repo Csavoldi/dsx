@@ -78,9 +78,8 @@ extern "C" __global__ void dequant_t16_f16(int k2, const unsigned char *w, __hal
 
 // stored layout -> GPU layout (exllamav3's tile order, little-endian u32 words); suh / svh copied. One thread per
 // 4 bytes of the matrix (trellis | suh | svh, the same size).
-extern "C" __global__ void repack_t16(int k2, const unsigned char *src, unsigned char *dst, int k, int n) {
+__device__ __forceinline__ void repack_t16_word(int k2, const unsigned char *src, unsigned char *dst, int k, int n, size_t o) {
   const size_t tbytes = t16_trellis_bytes(k2, k, n), total = tbytes + 2 * (size_t)k + 2 * (size_t)n;
-  const size_t o = 4 * ((size_t)blockIdx.x * blockDim.x + threadIdx.x);
   if (o >= total) return;
   if (o >= tbytes) {
     *(uint32_t *)(dst + o) = *(const uint32_t *)(src + o);
@@ -91,6 +90,96 @@ extern "C" __global__ void repack_t16(int k2, const unsigned char *src, unsigned
   const int kb = (int)(tile / nt), nb = (int)(tile % nt);
   const unsigned char *s = src + ((size_t)nb * kt + kb) * tb + in;
   *(uint32_t *)(dst + o) = (uint32_t)s[0] << 24 | (uint32_t)s[1] << 16 | (uint32_t)s[2] << 8 | s[3];
+}
+
+extern "C" __global__ void repack_t16(int k2, const unsigned char *src, unsigned char *dst, int k, int n) {
+  repack_t16_word(k2, src, dst, k, n, 4 * ((size_t)blockIdx.x * blockDim.x + threadIdx.x));
+}
+
+// ---------------------------------------------------------------- decode next-layer prefetch (DSX_PREFETCH)
+// gpumodel.rs Prefetch. A slot descriptor is [4] i64: the expert (-1 = none), then the device addresses of its gate,
+// up and down matrices in the mapped host arena.
+
+// one thread: the first m of the 8 predicted experts (score order) that only the CPU computes and the arena holds
+extern "C" __global__ void pf_pick(const int *pred, const unsigned char *cpu_only, const unsigned long long *src, int E, int m, long long *desc) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  int n = 0;
+  for (int i = 0; i < 8 && n < m; i++) {
+    const int e = pred[i];
+    if (e < 0 || e >= E || !cpu_only[e] || src[3 * e] == 0) continue;
+    desc[4 * n] = e;
+    desc[4 * n + 1] = (long long)src[3 * e];
+    desc[4 * n + 2] = (long long)src[3 * e + 1];
+    desc[4 * n + 3] = (long long)src[3 * e + 2];
+    n++;
+  }
+  for (; n < m; n++) desc[4 * n] = -1;
+}
+
+// a slot's three raw matrices from the mapped arena into device memory (zero-copy reads over the link, 16 bytes a
+// thread, four in flight); grid (blocks, 3): y = gate, up, down. Sizes are multiples of 64 bytes.
+extern "C" __global__ void pf_copy(const long long *desc, uint4 *dg, uint4 *du, uint4 *dd, int ng, int nu, int nd) {
+  if (desc[0] < 0) return;
+  const int r = blockIdx.y;
+  const uint4 *s = (const uint4 *)desc[1 + r];
+  uint4 *d = r == 0 ? dg : r == 1 ? du : dd;
+  const long long n = (r == 0 ? ng : r == 1 ? nu : nd) / 64;  // groups of 4 uint4
+  const long long step = (long long)gridDim.x * blockDim.x;
+  for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += step) {
+    const long long b = 4 * i;
+    const uint4 a0 = s[b], a1 = s[b + 1], a2 = s[b + 2], a3 = s[b + 3];
+    d[b] = a0, d[b + 1] = a1, d[b + 2] = a2, d[b + 3] = a3;
+  }
+}
+
+// repack_t16 of a slot's three matrices (grid y = gate, up, down) from the stage, if the slot has an expert:
+// gate / up are inter x dim with K2 k2g, down dim x inter with K2 k2d; gb / db their bytes in the stage
+extern "C" __global__ void repack_t16_if(const long long *desc, int k2g, int k2d, const unsigned char *stage, unsigned char *dg, unsigned char *du,
+                                         unsigned char *dd, int dim, int inter, int gb) {
+  if (desc[0] < 0) return;
+  const int r = blockIdx.y;
+  const size_t o = 4 * ((size_t)blockIdx.x * blockDim.x + threadIdx.x);
+  if (r < 2) repack_t16_word(k2g, stage + (size_t)r * gb, r == 0 ? dg : du, dim, inter, o);
+  else repack_t16_word(k2d, stage + 2 * (size_t)gb, dd, inter, dim, o);
+}
+
+// one thread, at layer L before publish_route: each of L's m slots whose copy has landed (ready >= want) and whose
+// expert L picked and this store does not hold runs here this layer: its table entry points at the slot (rel: the
+// matrices' addresses relative to the store's buffer), and its pick's bit goes into the take mask the CPU worker reads
+// (it skips those picks). taken[i] = the expert or -1, for pf_reset.
+extern "C" __global__ void pf_take(const int *sel, int K, const long long *desc, const unsigned int *ready, unsigned int want, int m,
+                                   ExpSlot *tab_row, const unsigned long long *rel, int gu, int dn, unsigned int *mask, int *taken) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  unsigned int bits = 0;
+  for (int i = 0; i < m; i++) {
+    taken[i] = -1;
+    const int e = (int)desc[4 * i];
+    if (e < 0 || *(volatile const unsigned int *)&ready[i] < want || tab_row[e].gate != ~0ull) continue;
+    for (int j = 0; j < K; j++) {
+      if (sel[j] == e && !(bits >> j & 1)) {
+        ExpSlot s;
+        s.gate = rel[3 * i], s.up = rel[3 * i + 1], s.down = rel[3 * i + 2], s.gu = gu, s.dn = dn;
+        tab_row[e] = s;
+        bits |= 1u << j;
+        taken[i] = e;
+        break;
+      }
+    }
+  }
+  *(volatile unsigned int *)mask = bits;
+  __threadfence_system();
+}
+
+// one thread, after the layer's resident experts ran: the taken entries are not resident again
+extern "C" __global__ void pf_reset(const int *taken, int m, ExpSlot *tab_row) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  for (int i = 0; i < m; i++) {
+    const int e = taken[i];
+    if (e < 0) continue;
+    ExpSlot s;
+    s.gate = ~0ull, s.up = 0, s.down = 0, s.gu = 0, s.dn = 0;
+    tab_row[e] = s;
+  }
 }
 
 // dst = had128(src * suh) per row, f16; grid (cols / 128, rows), block 128 (dst may be src)

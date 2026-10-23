@@ -184,6 +184,8 @@ pub struct GpuModel<'m> {
     /// | actual 6 in rank order | where each of those 14 is" (c = CPU worker, 0 = GPU0, 1 = an aux GPU, ? = none of
     /// them, e.g. a swap in flight), for prefetch studies
     pregate_dump: Option<std::io::BufWriter<std::fs::File>>,
+    /// DSX_PREFETCH=m: next-layer expert prefetch into GPU0 (Prefetch)
+    pf: Option<Prefetch>,
     /// DSX_DEFER: each layer's ffn output mix (post, 4 f32) by layer parity, so its deferred experts can enter the
     /// residual with their own layer's weights one layer later
     dpost: Buf,
@@ -220,6 +222,43 @@ struct Aux {
     adaptive: bool,
     /// DSX_EVPROF: [layer][4] timed events
     ev: Vec<crate::gpu::Event>,
+}
+
+/// DSX_PREFETCH=m (decode): at layer L, layer L+1's router on L's expert input predicts L+1's picks (73% of all picks
+/// and 66% of the CPU's are in its top 8, T16 build); the first m predicted experts that only the CPU computes are copied
+/// from the mapped arena into GPU0 on the pf stream (pf_copy, zero-copy reads during L's experts and L+1's attention,
+/// then repack_t16_if into a slot). At L+1, pf_take hands every landed slot whose expert L+1 picked to GPU0's store for
+/// that layer (its table entry points at the slot; pf_reset clears it after the layer) and sets its pick's bit in the
+/// exchange's take mask, so the CPU worker skips exactly those. Slots alternate by layer parity (2m in all). Routing is
+/// unchanged; a prefetched expert's output rounds like GPU0's kernels instead of the CPU's. T16 layers only.
+struct Prefetch {
+    m: usize,
+    /// [layer][expert] u8: 1 = only the CPU computes it (the worker's on_cpu), uploaded before every decode token
+    bits: Buf,
+    bits_host: crate::gpu::HostBuf,
+    /// [layer][expert][3] u64: device addresses of gate / up / down in the mapped arena (0 = not prefetchable)
+    src: Buf,
+    /// router_topk out: [8] i32 then [8] f32
+    pred: Buf,
+    /// [2 m][4] i64 slot descriptors, [2 m] u32 ready (the layer's sequence number once a slot's copy landed), [2 m]
+    /// i32 taken (pf_take -> pf_reset)
+    desc: Buf,
+    ready: Buf,
+    taken: Buf,
+    /// one expert's raw matrices (the pf stream copies and repacks one slot at a time)
+    stage: Buf,
+    /// [2 m] slots' repacked gate / up / down
+    slots: Vec<[u64; 3]>,
+    _slot_buf: Buf,
+    /// [2 m][3] u64: the slots' addresses relative to GPU0's store buffer (ExpSlot offsets)
+    rel: Buf,
+    ev: crate::gpu::Event,
+    /// pf_pick, pf_copy, repack_t16_if, pf_take, pf_reset
+    kern: [Kernel; 5],
+    /// per layer: (gate/up K2, down K2, gate/up and down ExpSlot type ids, gate/up and down matrix bytes) for T16
+    /// layers GPU0's store runs; None = not prefetched
+    lay: Vec<Option<(usize, usize, i32, i32, usize, usize)>>,
+    blocks: u32,
 }
 
 /// A visible GPU as placement sees it.
@@ -448,6 +487,7 @@ impl<'m> GpuModel<'m> {
             vpass: None,
             pregate: if std::env::var_os("DSX_PREGATE").is_some() { Some(g.alloc_zeroed(c.n_layers * 16 * 4 + 4096)?) } else { None },
             pregate_stats: [0; 5],
+            pf: None,
             pregate_dump: match (std::env::var("DSX_PREGATE").is_ok_and(|v| v == "1"), std::env::var_os("DSX_PREGATE_DUMP")) {
                 (true, Some(p)) => Some(std::io::BufWriter::new(anyhow::Context::with_context(std::fs::File::create(&p), || format!("DSX_PREGATE_DUMP {}", p.to_string_lossy()))?)),
                 _ => None,
@@ -651,6 +691,16 @@ impl<'m> GpuModel<'m> {
             }
             gm.g.bind();
             gm.xch = Some(xch);
+            if crate::handoff::prefetch() > 0 {
+                match gm.prefetch_setup(crate::handoff::prefetch()) {
+                    Ok(Some(p)) => {
+                        eprintln!("prefetch: {} experts per layer into GPU0 ({} layers, {:.0} MB of slots)", p.m, p.lay.iter().flatten().count(), (2 * p.m * p.lay.iter().flatten().map(|l| 2 * l.4 + l.5).max().unwrap_or(0)) as f64 / 1e6);
+                        gm.pf = Some(p);
+                    }
+                    Ok(None) => {}
+                    Err(e) => eprintln!("prefetch off: {e:#}"),
+                }
+            }
         }
         if std::env::var_os("DSX_EVPROF").is_some() {
             for _ in 0..c.n_layers * EV_N {
@@ -725,6 +775,9 @@ impl<'m> GpuModel<'m> {
                 self.g.launch(self.k["router_topk"], (1, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(ln.gate_bias.ptr), Arg::P(pg.ptr + ((li + 1) * 64) as u64), Arg::P(scratch + 32), Arg::I(c.n_experts as i32), Arg::I(8), Arg::F(c.route_scale), Arg::P(0)])?;
             }
         }
+        if t == 1 {
+            self.pf_issue(li, x, seq)?;
+        }
         self.ev(li, 2)?;
         let d0 = self.xch_dev;
         if self.skip_experts {
@@ -742,11 +795,15 @@ impl<'m> GpuModel<'m> {
         if deferred && li > 0 {
             self.flag_wait(d0 + crate::handoff::XACK as u64, seq - 1)?;
         }
+        let took = t == 1 && self.pf_take(li, idx_buf, seq)?;
         self.g.launch(self.k["publish_route"], (1, 1, 1), 1024, 0, &[Arg::P(idx_buf), Arg::P(idx_buf + 256), Arg::I(c.top_k as i32), Arg::P(x), Arg::I(d as i32), Arg::P(d0), Arg::I(seq as i32), Arg::I(t as i32)])?;
         match self.exp0.as_ref() {
             Some(s0) if t == 1 => s0.run_device(&self.g, li, idx_buf, idx_buf + 256, c.top_k, x, self.out0.ptr)?,
             Some(s0) => s0.run_device_fast(&self.g, li, idx_buf, idx_buf + 256, c.top_k, t, x, self.out0.ptr)?,
             None => self.g.memset(self.out0.ptr, t * d * 4)?,
+        }
+        if took {
+            self.pf_reset(li)?;
         }
         self.ev(li, 3)?;
         let inter = c.inter;
@@ -1010,6 +1067,11 @@ impl<'m> GpuModel<'m> {
             .collect()
     }
 
+    /// DSX_PREFETCH: CPU-held picks GPU0 ran from a prefetch slot so far
+    pub fn prefetched_picks(&self) -> u64 {
+        self.worker.as_ref().map_or(0, |w| w.picks[2].load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     /// routed picks so far and how many the CPU computed
     pub fn cpu_picks(&self) -> (u64, u64) {
         self.worker.as_ref().map_or((0, 0), |w| (w.picks[0].load(std::sync::atomic::Ordering::Relaxed), w.picks[1].load(std::sync::atomic::Ordering::Relaxed)))
@@ -1018,6 +1080,147 @@ impl<'m> GpuModel<'m> {
     /// CPU worker [idle, prep, forward] seconds
     pub fn cpu_split_s(&self) -> [f64; 3] {
         self.worker.as_ref().map_or([0.0; 3], |w| std::array::from_fn(|i| w.split_ns[i].load(std::sync::atomic::Ordering::Relaxed) as f64 * 1e-9))
+    }
+
+    /// DSX_PREFETCH: the slots, tables and kernels (Prefetch). None when GPU0's store holds no T16 layer.
+    fn prefetch_setup(&mut self, m: usize) -> Result<Option<Prefetch>> {
+        let c = &self.m.cfg;
+        let (nl, ne) = (c.n_layers, c.n_experts);
+        let (Some(s0), Some(arena), Some(_)) = (self.exp0.as_ref(), self.arena, self.worker.as_ref()) else {
+            bail!("it needs GPU0's expert store, the arena and the CPU worker")
+        };
+        anyhow::ensure!(s0.is_fast(), "GPU0's store is not repacked (DSX_OLD_MOE)");
+        let lay: Vec<Option<(usize, usize, i32, i32, usize, usize)>> = (0..nl)
+            .map(|l| {
+                s0.t16_k2(l).map(|(kg, kd)| {
+                    let x = &self.m.layers[l].experts[0];
+                    let id = |t: GType| crate::experts::slot_id(t, true) as i32;
+                    (kg, kd, id(x.gate.ty), id(x.down.ty), x.gate.bytes().len(), x.down.bytes().len())
+                })
+            })
+            .collect();
+        if lay.iter().all(|v| v.is_none()) {
+            return Ok(None);
+        }
+        // arena addresses of every expert of a prefetched layer with its layer's types and sizes (16-byte aligned,
+        // sizes in multiples of 64 bytes for pf_copy)
+        let mut src = vec![0u64; nl * ne * 3];
+        for (&(l, e), r) in &arena.slots {
+            let Some((kg, kd, _, _, gb, db)) = lay[l] else { continue };
+            let x = &self.m.layers[l].experts[e];
+            if crate::t16::k2(x.gate.ty) != Some(kg) || crate::t16::k2(x.down.ty) != Some(kd) || r[0].1 != gb || r[1].1 != gb || r[2].1 != db {
+                continue;
+            }
+            let mut p = [0u64; 3];
+            let mut ok = true;
+            for i in 0..3 {
+                p[i] = arena.buf.dev_ptr_at(&self.g, r[i].0)?;
+                ok &= p[i] % 16 == 0 && r[i].1 % 64 == 0;
+            }
+            if ok {
+                src[(l * ne + e) * 3..(l * ne + e) * 3 + 3].copy_from_slice(&p);
+            }
+        }
+        let (gb, db) = (lay.iter().flatten().map(|v| v.4).max().unwrap(), lay.iter().flatten().map(|v| v.5).max().unwrap());
+        let per = 2 * gb + db;
+        let slot_buf = self.g.alloc(2 * m * per)?;
+        let slots: Vec<[u64; 3]> = (0..2 * m).map(|i| {
+            let b = slot_buf.ptr + (i * per) as u64;
+            [b, b + gb as u64, b + 2 * gb as u64]
+        }).collect();
+        let base = s0.buf_ptr();
+        let rel: Vec<u64> = slots.iter().flat_map(|s| s.map(|p| p.wrapping_sub(base))).collect();
+        let k = |n: &str| self.g.kernel(n);
+        let p = Prefetch {
+            m,
+            bits: self.g.alloc_zeroed(nl * ne)?,
+            bits_host: crate::gpu::HostBuf::new(nl * ne)?,
+            src: self.g.upload(&src)?,
+            pred: self.g.alloc_zeroed(64)?,
+            desc: self.g.upload(&vec![-1i64; 2 * m * 4])?,
+            ready: self.g.alloc_zeroed(2 * m * 4)?,
+            taken: self.g.upload(&vec![-1i32; 2 * m])?,
+            stage: self.g.alloc(per)?,
+            slots,
+            _slot_buf: slot_buf,
+            rel: self.g.upload(&rel)?,
+            ev: self.g.event()?,
+            kern: [k("pf_pick")?, k("pf_copy")?, k("repack_t16_if")?, k("pf_take")?, k("pf_reset")?],
+            lay,
+            // per matrix: zero-copy reads saturate the link with few blocks (RTX 5090, Gen5: 45 GB/s at 4-16 x 3 against 48.6
+            // by DMA; 64 x 3 dropped to 24.7), and few blocks leave the SMs to attention
+            blocks: std::env::var("DSX_PREFETCH_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(8),
+        };
+        Ok(Some(p))
+    }
+
+    /// DSX_PREFETCH, before a decode token: which experts only the CPU computes (the worker's on_cpu) to GPU0
+    fn pf_bits(&mut self) -> Result<()> {
+        let (Some(pf), Some(w)) = (self.pf.as_mut(), self.worker.as_ref()) else { return Ok(()) };
+        let b = pf.bits_host.as_mut_slice::<u8>();
+        for (i, f) in w.on_cpu.iter().enumerate() {
+            b[i] = f.load(std::sync::atomic::Ordering::Relaxed) as u8;
+        }
+        let n = w.on_cpu.len();
+        self.g.htod(pf.bits.ptr, &pf.bits_host.as_slice::<u8>()[..n])
+    }
+
+    /// DSX_PREFETCH, at layer `li` (decode) once its picks are in: predict layer li + 1's picks from `x` (li's expert
+    /// input) and queue the copies of its first m CPU-only experts on the pf stream, into the slots of li + 1's parity
+    fn pf_issue(&self, li: usize, x: u64, seq: u32) -> Result<()> {
+        let Some(pf) = self.pf.as_ref() else { return Ok(()) };
+        let c = &self.m.cfg;
+        let (ne, ln) = (c.n_experts, li + 1);
+        if ln >= c.n_layers {
+            return Ok(());
+        }
+        let Some((kg, kd, _, _, gb, db)) = pf.lay[ln] else { return Ok(()) };
+        let l = &self.layers[ln];
+        self.gemv_t(&l.gate_w, x, self.tmp.ptr, 1)?;
+        self.g.launch(self.k["router_topk"], (1, 1, 1), 32, 0, &[Arg::P(self.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(pf.pred.ptr), Arg::P(pf.pred.ptr + 32), Arg::I(ne as i32), Arg::I(8), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(ln))])?;
+        let p = ln % 2;
+        let desc = pf.desc.ptr + (p * pf.m * 32) as u64;
+        self.g.launch(pf.kern[0], (1, 1, 1), 32, 0, &[Arg::P(pf.pred.ptr), Arg::P(pf.bits.ptr + (ln * ne) as u64), Arg::P(pf.src.ptr + (ln * ne * 24) as u64), Arg::I(ne as i32), Arg::I(pf.m as i32), Arg::P(desc)])?;
+        // the slots of this parity were last read by layer li - 1's experts, which the main stream finished before here
+        self.g.record(pf.ev, false)?;
+        self.g.wait_pf(pf.ev)?;
+        let (dim, inter, st) = (c.dim, c.inter, pf.stage.ptr);
+        for i in 0..pf.m {
+            let (s, di) = (p * pf.m + i, desc + (i * 32) as u64);
+            self.g.launch_pf(pf.kern[1], (pf.blocks, 3, 1), 256, 0, &[Arg::P(di), Arg::P(st), Arg::P(st + gb as u64), Arg::P(st + 2 * gb as u64), Arg::I(gb as i32), Arg::I(gb as i32), Arg::I(db as i32)])?;
+            let sl = pf.slots[s];
+            self.g.launch_pf(pf.kern[2], ((gb.max(db) as u32 / 4).div_ceil(256), 3, 1), 256, 0, &[Arg::P(di), Arg::I(kg as i32), Arg::I(kd as i32), Arg::P(st), Arg::P(sl[0]), Arg::P(sl[1]), Arg::P(sl[2]), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(gb as i32)])?;
+            self.g.write_value_pf(pf.ready.ptr + (s * 4) as u64, seq + 1)?;
+        }
+        Ok(())
+    }
+
+    /// DSX_PREFETCH, at layer `li` (decode) before publish_route: hand the landed slots whose experts li picked to
+    /// GPU0's store and write the take mask the CPU reads. Returns whether pf_reset must follow the layer's experts.
+    fn pf_take(&self, li: usize, sel: u64, seq: u32) -> Result<bool> {
+        let Some(pf) = self.pf.as_ref() else { return Ok(false) };
+        let mask = self.xch_dev + crate::handoff::TAKE as u64;
+        let (Some(s0), Some((_, _, gu, dn, _, _))) = (self.exp0.as_ref(), pf.lay[li]) else {
+            self.g.write_value(mask, 0)?;
+            return Ok(false);
+        };
+        if li == 0 {
+            self.g.write_value(mask, 0)?;
+            return Ok(false);
+        }
+        let c = &self.m.cfg;
+        let p = li % 2;
+        let tab_row = s0.tab_ptr() + (li * c.n_experts * 32) as u64;
+        self.g.launch(pf.kern[3], (1, 1, 1), 32, 0, &[Arg::P(sel), Arg::I(c.top_k as i32), Arg::P(pf.desc.ptr + (p * pf.m * 32) as u64), Arg::P(pf.ready.ptr + (p * pf.m * 4) as u64), Arg::I(seq as i32), Arg::I(pf.m as i32), Arg::P(tab_row), Arg::P(pf.rel.ptr + (p * pf.m * 24) as u64), Arg::I(gu), Arg::I(dn), Arg::P(mask), Arg::P(pf.taken.ptr + (p * pf.m * 4) as u64)])?;
+        Ok(true)
+    }
+
+    /// DSX_PREFETCH: after layer `li`'s resident experts ran, the slots' table entries are cleared
+    fn pf_reset(&self, li: usize) -> Result<()> {
+        let (Some(pf), Some(s0)) = (self.pf.as_ref(), self.exp0.as_ref()) else { return Ok(()) };
+        let c = &self.m.cfg;
+        let p = li % 2;
+        self.g.launch(pf.kern[4], (1, 1, 1), 32, 0, &[Arg::P(pf.taken.ptr + (p * pf.m * 4) as u64), Arg::I(pf.m as i32), Arg::P(s0.tab_ptr() + (li * c.n_experts * 32) as u64)])
     }
 
     fn bonus_ptr(&self, li: usize) -> u64 {
@@ -1500,6 +1703,7 @@ impl<'m> GpuModel<'m> {
 
     pub fn step(&mut self, token: u32) -> Result<Vec<f32>> {
         let t_step = std::time::Instant::now();
+        self.pf_bits()?;
         let r = self.step_inner(token);
         if let Ok(l) = &r {
             if l.iter().any(|v| !v.is_finite()) && !self.warned_nan {
