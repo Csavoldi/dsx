@@ -218,3 +218,27 @@ entries per lookup; IQ1/IQ2 grids measured slower).
 Still to measure on .102 (no new code; one window): the same three ncu runs (sm_86 instruction counts and issue use,
 especially gemv_q8r's), and `CPUB_THREADS=2,14 cpubench t16` (~20 s, inside the thermal limits) for the per-core
 compute rate at the 12700K's clock under the 125 W cap.
+
+## 8. Lever status when DSX work paused (2026-10-23, 04:35 PT)
+
+Branches (local in Dev 4's worktrees, committed, not pushed): `engram-fp8` 29a4506 (E1, E2), `t16-inflight` 93979a9
+(T16 GEMV), `window-dev4` 58ede8d (github/main 3f14dde + both, plus the window script), `budget-102` (this doc).
+All .102 results below are Dev 1's windows; all 5090 numbers are sudo ncu / event timings on the workstation.
+
+| Lever | State | Evidence | To pick up |
+|---|---|---|---|
+| 1 / 11. Dense q_b / o_b below Q8_0 | not started | section 7: 46% issue use at full bandwidth, room down to ~4 bpw (LUT scalar) or ~1.7 bpw (trellis) | quantize q_b / o_b, kernel, decode eval KL; kill as in row 11 |
+| 2. DSX_DEFER=2 | **killed** (Dev 1) | decode eval KL (8 threads, 2046 tokens): defer 3 0.2370, 2 0.2600, 1 0.3062 vs none ~0.208; speed came from free-running gen, not valid for numeric changes | -; note production defer=3 itself costs ~0.029 KL (flagged to lxe) |
+| 3 / 8. E1: engram wkv as FP8 | **pending one .102 window** | window 24 (teacher-forced, 1023 steps): +1.6% tok/s (28.99 -> 29.48) but KL 0.139519 -> 0.141207, traced to gemv_fp8b32's summation order; fixed by gemv_fp8b32_o (29a4506): gemv_f16's arithmetic on the FP8 bytes, 0 of 25600 outputs differ in any bit on the checkpoint's layer-1 wkv, 104 us vs 198 us on the 5090 | `window-dev4`, `EVAL_ARGS="<window 24's>" bash bench/w4_102.sh`, step 4 arm e1: KL must equal base exactly, ship if >= +1% |
+| 3 / 8. E2: persistent engram gather | **parked** (Dev 1) | window 24: join wait 0.77 ms -> 0, +0.49% over E1 (kill line 0.5%) | re-test only after E1 ships (DSX_ENGRAM_PERSIST=1) |
+| 4. Small-kernel fusion | Dev 1's (branch small-kernels, window 26) | | Dev 1's results |
+| 5. T16 decode GEMV (GPU experts) | **pending one .102 window** | bit-identical (gpu_t16 t16_decode_bits 1148e32a0aaa9120); 5090 layer call (6 experts) 95.4 -> 54.2 us (K 1.5/2), 88 -> 62.3 us (K 2/2.5); t16d_gemv_3 23 -> 53% of DRAM peak, issue-bound at 3.9 thread-inst per weight (docs/t16-decode-inflight.md on t16-inflight: Little's-law analysis, stall sampling, negative tries). Decode gain predicted +0-2% (GPU0 waits ~4.3 ms on the CPU under defer 3); prefill / verify / GPU1 gain more | same window, steps 1-2 (DSX_T16_GEMV=0 vs 1, ncu sm_86) and step 4 arm t16; kill: < 60% of DRAM on .102 or no decode gain |
+| 6 / 7 | not started | | |
+| 9. q / o split onto GPU1 | not proposed | break-even round trip R ~ 39 us, estimated 80-110 us | measure R (ping-pong over x4) first |
+| 10. gpu-unlock | **waiting on lxe** (enables it 10-24 with the thermal fix; no power-off before) | section 6: 3000-token prefill 2.5-9%, ~300-token turn 2-8%, decode 0 | cuBLAS FP16 -> FP32 GEMM before / after at M 3000, K 5120; re-trace lp3000 and srvturn |
+| Section 7 sm_86 counts | **pending the same window** | 5090 ncu only; gemv_q8r's sm_86 SASS is 1.56x larger | w4_102.sh steps 2-3 (sudo /usr/local/cuda-13.4/bin/ncu; cpubench t16 at 2 / 14 threads) |
+| DSX_PREFETCH | **killed** (section 4, FINDINGS 9) | decode 33.1 -> 25.3 / 22.2 tok/s | - |
+| Build audit (sm_86 / sm_120) | **dropped** at the pause | partial: no assert / printf in any kernel; no hot decode kernel spills or uses local memory except router_topk (32 B frame); dequant_f16 (prefill) has a 128 B frame with 273 STL in its SASS; gemv_q6g8 spills (unused); the CALLs in rmsnorm, t16d_gemv, sparse_attn_tc, router_topk were not yet traced (likely --prec-div slow paths) | resume from these |
+
+`bench/w4_102.sh` (window-dev4) was checked locally for steps 1-3 (kernels, ncu, cpubench); step 4 needs .102's model.
+Per the pause, no .102 window was requested to run.
