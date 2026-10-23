@@ -752,11 +752,14 @@ impl Arena {
         let mut take = vec![];
         let mut rest = vec![];
         let mut tot = 0usize;
+        let piece = crate::gpu::HostBuf::PIECE;
         for &(l, e) in which {
             let s = size(l, e);
-            if tot + s <= cap {
-                take.push((l, e, tot));
-                tot += s;
+            // no expert crosses a registration piece of the buffer (copies of it would fail)
+            let off = if tot / piece != (tot + s - 1) / piece { (tot / piece + 1) * piece } else { tot };
+            if off + s <= cap {
+                take.push((l, e, off));
+                tot = off + s;
             } else {
                 rest.push((l, e));
             }

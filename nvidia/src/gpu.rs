@@ -509,25 +509,55 @@ impl Gpu {
 pub struct HostBuf {
     ptr: *mut u8,
     pub bytes: usize,
+    /// registered ranges (offset, len): one, or 2 GiB pieces for hugepage buffers over 4 GiB
+    regs: Vec<(usize, usize)>,
 }
 
 unsafe impl Send for HostBuf {}
 unsafe impl Sync for HostBuf {}
 
 impl HostBuf {
+    /// buffers over 4 GiB are registered in pieces of this size (from the start); a copy must not cross a piece
+    /// boundary (cuMemcpyHtoDAsync: invalid argument), so callers lay their contents out within pieces
+    pub const PIECE: usize = 2 << 30;
+
     pub fn new(bytes: usize) -> Result<HostBuf> {
         let align = 2 << 20;
         let size = bytes.div_ceil(align) * align;
         unsafe {
             let layout = std::alloc::Layout::from_size_align(size, align)?;
-            let ptr = std::alloc::alloc_zeroed(layout);
+            let ptr = std::alloc::alloc(layout);
             if ptr.is_null() {
                 bail!("host alloc of {size} bytes failed");
             }
+            // hugepages, then zero on all cores: zeroing first (alloc_zeroed: posix_memalign + a one-thread memset,
+            // 26 s for the 107.6 GB arena) faulted every page in as 4 KiB before the madvise, and 4 KiB pinned pages
+            // copy to an RTX 3090 at 13.5 GB/s against 24.6 from hugepages (bench/pcie.cu)
             libc_madvise(ptr, size);
+            fault_in_paced(ptr, size, align);
             // PORTABLE | DEVICEMAP: usable from every context, and addressable by kernels (zero-copy)
-            check(cu::cuMemHostRegister_v2(ptr as *mut c_void, size, 1 | 2), "cuMemHostRegister")?;
-            Ok(HostBuf { ptr, bytes: size })
+            // one cuMemHostRegister of ~100 GB of hugepages raised memory pressure past systemd-oomd's limit within
+            // half a minute (a 4 KiB-page buffer of the same size registers in ~8 s without it), so big buffers are
+            // registered in 2 GiB pieces, waiting between pieces while pressure is high; the pieces are contiguous and
+            // only host pointers into them are used (dev_ptr is for small buffers)
+            let piece = if size > 4 << 30 { HostBuf::PIECE } else { size };
+            let mut regs = vec![];
+            let mut off = 0;
+            let mut waited = 0f64;
+            while off < size {
+                let n = piece.min(size - off);
+                check(cu::cuMemHostRegister_v2(ptr.add(off) as *mut c_void, n, 1 | 2), "cuMemHostRegister")?;
+                regs.push((off, n));
+                off += n;
+                while off < size && waited < 120.0 && mem_pressure() > 20.0 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    waited += 0.5;
+                }
+            }
+            if regs.len() > 1 && std::env::var_os("DSX_TIME_PIN").is_some() {
+                eprintln!("host buffer: registered in {} pieces, {waited:.1} s waiting on memory pressure", regs.len());
+            }
+            Ok(HostBuf { ptr, bytes: size, regs })
         }
     }
     pub fn host_ptr(&self) -> *mut u8 {
@@ -551,7 +581,9 @@ impl HostBuf {
 impl Drop for HostBuf {
     fn drop(&mut self) {
         unsafe {
-            cu::cuMemHostUnregister(self.ptr as *mut c_void);
+            for &(off, _) in &self.regs {
+                cu::cuMemHostUnregister(self.ptr.add(off) as *mut c_void);
+            }
             std::alloc::dealloc(self.ptr, std::alloc::Layout::from_size_align(self.bytes, 2 << 20).unwrap());
         }
     }
@@ -559,6 +591,58 @@ impl Drop for HostBuf {
 
 unsafe extern "C" {
     fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+    fn posix_fadvise(fd: i32, offset: i64, len: i64, advice: i32) -> i32;
+}
+
+/// /proc/pressure/memory's "some avg10" (percent of the last 10 s with a task stalled on memory)
+fn mem_pressure() -> f64 {
+    std::fs::read_to_string("/proc/pressure/memory")
+        .ok()
+        .and_then(|s| s.lines().next().and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix("avg10=")).and_then(|v| v.parse().ok())))
+        .unwrap_or(0.0)
+}
+
+/// Zero (fault in) `size` bytes at `ptr` on all cores, 1 GiB at a time. Hugepage faults may compact memory, and 16
+/// threads stalling in compaction drove memory pressure past systemd-oomd's limit (50% for 20 s) and got the process
+/// killed; so between chunks this waits while /proc/pressure/memory's "some avg10" is above 20%, and after 60 s of
+/// waiting in total it gives up on hugepages (MADV_NOHUGEPAGE) for the rest.
+unsafe fn fault_in_paced(ptr: *mut u8, size: usize, align: usize) {
+    use rayon::prelude::*;
+    let pressure = mem_pressure;
+    let (base, chunk) = (ptr as usize, 1usize << 30);
+    let (mut waited, mut huge) = (0f64, true);
+    let mut off = 0;
+    while off < size {
+        let n = chunk.min(size - off);
+        (0..n / align).into_par_iter().for_each(|i| unsafe { std::ptr::write_bytes((base + off + i * align) as *mut u8, 0, align) });
+        off += n;
+        while huge && off < size && pressure() > 20.0 {
+            if waited >= 60.0 {
+                const MADV_NOHUGEPAGE: i32 = 15;
+                unsafe { madvise((base + off) as *mut c_void, size - off, MADV_NOHUGEPAGE) };
+                eprintln!("host buffer: memory pressure stayed high, 4 KiB pages for the last {:.1} GB", (size - off) as f64 / 1e9);
+                huge = false;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited += 0.5;
+        }
+    }
+    if size > 1 << 30 && waited > 0.0 {
+        eprintln!("host buffer: {:.1} GB faulted in, {waited:.1} s waiting on memory pressure", size as f64 / 1e9);
+    }
+}
+
+/// Drop `paths`' pages from the page cache (POSIX_FADV_DONTNEED), e.g. the model files after the GPUs' experts were
+/// read through the mmap, so a large hugepage allocation finds free memory instead of reclaiming and compacting
+/// (memory pressure from that got the server killed by systemd-oomd).
+pub fn drop_page_cache(paths: &[std::path::PathBuf]) {
+    use std::os::fd::AsRawFd;
+    for p in paths {
+        if let Ok(f) = std::fs::File::open(p) {
+            unsafe { posix_fadvise(f.as_raw_fd(), 0, 0, 4) };
+        }
+    }
 }
 
 unsafe fn libc_madvise(p: *mut u8, len: usize) {
