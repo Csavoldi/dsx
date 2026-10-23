@@ -4,8 +4,9 @@
 //! A session with no drafts feeds one token, as plain decoding does.
 
 use crate::batch::Batch;
-use crate::decode::Decoder;
+use crate::decode::{Decoder, VOCAB};
 use anyhow::Result;
+use dsx_core::server::sample::Sampler;
 use std::collections::HashMap;
 
 /// most drafts verified per session per step (slot rings hold 16 spare rows)
@@ -75,12 +76,14 @@ impl Decoder {
     /// One speculative step for slots[i] whose next (emitted, not yet fed) token is nexts[i]. Returns, per slot, the
     /// tokens it emits (accepted drafts, then its new next token); st[i].push gets the same tokens.
     pub fn spec_step(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32], st: &mut [&mut SpecState]) -> Result<Vec<Vec<u32>>> {
-        self.spec_step_s(b, slots, nexts, st, &mut |_, l, d| { let a = dsx_core::server::sample::argmax(l); (Some(a) == d, a) })
+        let mut none: Vec<Option<&mut Sampler>> = (0..slots.len()).map(|_| None).collect();
+        self.spec_step_s(b, slots, nexts, st, &mut none)
     }
 
-    /// spec_step with `decide(i, logits, draft)` for a sampled session i: with Some(draft), accept it or return the
-    /// resampled token (Sampler::accept_or_resample: exact speculative sampling); with None, sample a token
-    pub fn spec_step_s(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32], st: &mut [&mut SpecState], decide: &mut dyn FnMut(usize, &[f32], Option<u32>) -> (bool, u32)) -> Result<Vec<Vec<u32>>> {
+    /// spec_step where session i samples with samplers[i] (None: greedy). A sampled session accepts each draft with
+    /// its probability or takes the resampled token (Sampler::accept_or_resample: exact speculative sampling); the
+    /// verified logits come down in one copy and the sampled sessions are decided on parallel threads.
+    pub fn spec_step_s(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32], st: &mut [&mut SpecState], samplers: &mut [Option<&mut Sampler>]) -> Result<Vec<Vec<u32>>> {
         let n = slots.len();
         let rooms: Vec<usize> = slots.iter().map(|&s| (b.ctx - b.pos[s] - 2).min(MAX_DRAFTS)).collect();
         // drafts: prompt lookup first, else DSpark while it pays off (a session below the bar still probes it now and then)
@@ -111,32 +114,44 @@ impl Decoder {
         }).collect();
         let pre: Vec<usize> = slots.iter().map(|&s| b.pos[s]).collect();
         let outs = self.batch_verify(b, slots, &feeds)?;
+        // sampled sessions: (drafts accepted, next token)
+        let starts: Vec<usize> = feeds.iter().scan(0, |r, f| { let s0 = *r; *r += f.len(); Some(s0) }).collect();
+        let mut decided: Vec<Option<(usize, u32)>> = vec![None; n];
+        if let Some(last) = (0..n).rev().find(|&i| samplers[i].is_some()) {
+            let rows_n = starts[last] + feeds[last].len();
+            let all: Vec<f32> = self.g.dtoh(b.logits.at(0), rows_n * VOCAB)?;
+            std::thread::scope(|sc| {
+                for ((i, sm), dc) in samplers.iter_mut().enumerate().zip(decided.iter_mut()) {
+                    let Some(sm) = sm.as_mut() else { continue };
+                    let (f, l) = (&feeds[i], &all[starts[i] * VOCAB..(starts[i] + feeds[i].len()) * VOCAB]);
+                    sc.spawn(move || {
+                        let mut acc = 0;
+                        while acc + 1 < f.len() {
+                            let (ok, t) = sm.accept_or_resample(&l[acc * VOCAB..(acc + 1) * VOCAB], f[acc + 1]);
+                            if !ok {
+                                *dc = Some((acc, t));
+                                return;
+                            }
+                            acc += 1;
+                        }
+                        *dc = Some((acc, sm.sample(&l[acc * VOCAB..(acc + 1) * VOCAB])));
+                    });
+                }
+            });
+        }
         let (mut rows, mut opos, mut oslot) = (vec![], vec![], vec![]);
         let mut emitted = vec![];
         let mut row = 0;
         for i in 0..n {
             let f = &feeds[i];
             let mut acc = 0;
-            // sampled sessions: each draft accepted with its probability, else resampled (exact)
             let mut sampled_next = None;
-            if st[i].greedy {
+            if let Some((a, t)) = decided[i] {
+                acc = a;
+                sampled_next = Some(t);
+            } else {
                 while acc + 1 < f.len() && outs[i][acc] == f[acc + 1] {
                     acc += 1;
-                }
-            } else {
-                loop {
-                    let l = self.batch_logits(b, row + acc)?;
-                    if acc + 1 < f.len() {
-                        let (ok, t) = decide(i, &l, Some(f[acc + 1]));
-                        if ok {
-                            acc += 1;
-                            continue;
-                        }
-                        sampled_next = Some(t);
-                    } else {
-                        sampled_next = Some(decide(i, &l, None).1);
-                    }
-                    break;
                 }
             }
             self.batch_commit(b, slots[i], row, f, acc + 1)?;

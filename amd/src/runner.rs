@@ -293,13 +293,9 @@ impl Runner<'_> {
                 for sq in seqs.iter_mut() {
                     let Seq { spec, sampler, .. } = sq;
                     sts.push(spec.as_mut().unwrap());
-                    samplers.push(sampler.as_mut());
+                    samplers.push(sampler.as_mut().filter(|s| s.temperature > 0.0));
                 }
-                self.dec.spec_step_s(&mut self.b, &slots, &nexts, &mut sts, &mut |i, l, d| match (samplers[i].as_mut(), d) {
-                    (Some(s), Some(d)) => s.accept_or_resample(l, d),
-                    (Some(s), None) => (false, s.sample(l)),
-                    (None, d) => { let a = dsx_core::server::sample::argmax(l); (Some(a) == d, a) }
-                })
+                self.dec.spec_step_s(&mut self.b, &slots, &nexts, &mut sts, &mut samplers)
             };
             match r {
                 Ok(em) => {
