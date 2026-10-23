@@ -282,7 +282,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "gemv_q8g_bf", "gemv_q8r_gu", "sparse_attn_merge_rf", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "gemv_q8g_bf", "gemv_q8r_gu", "sparse_attn_merge_rf", "gemv_q8r1_rope", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -1319,8 +1319,16 @@ impl<'m> GpuModel<'m> {
         let l = &self.layers[li];
         self.gemv(&l.q_a, self.x.ptr, self.qr.ptr)?;
         self.rmsnorm(self.qr.ptr, &l.q_a_norm, self.qr.ptr, c.q_lora, true)?;
-        self.gemv(&l.q_b, self.qr.ptr, self.q.ptr)?;
-        self.rope(self.q.ptr, nh, hd, compressed, t, false)?;
+        // q_b's RoPE in the GEMV's epilogue (gemv_q8r1_rope) when q_b is the one-row-per-warp Q8_0 one
+        let qb = &l.q_b;
+        if self.fuse3 && self.q8r1 && qb.ty == GType::Q8_0 && qb.q8r && !qb.act_fp8 && qb.rows >= 2048 && qb.rows % 4 == 0 && hd % 4 == 0 {
+            let (wp, sp, _) = qb.ptrs(0);
+            let f = if compressed { &self.freqs.1 } else { &self.freqs.0 };
+            self.g.launch(self.k["gemv_q8r1_rope"], ((qb.rows / 4) as u32, 1, 1), 128, 0, &[Arg::P(wp), Arg::P(self.qr.ptr), Arg::P(self.q.ptr), Arg::I(qb.rows as i32), Arg::I(qb.cols as i32), Arg::P(sp), Arg::P(f.ptr), Arg::I(hd as i32), Arg::I(c.rope_dim as i32), Arg::I(t as i32)])?;
+        } else {
+            self.gemv(&l.q_b, self.qr.ptr, self.q.ptr)?;
+            self.rope(self.q.ptr, nh, hd, compressed, t, false)?;
+        }
         self.ev(li, 11)?;
         self.gemv(&l.kv, self.x.ptr, self.kvv.ptr)?;
         let w = c.window;

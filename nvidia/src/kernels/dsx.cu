@@ -509,8 +509,9 @@ extern "C" __global__ void sparse_attn_merge_rf(const float *part, int S, const 
     sincosf(ang, &sn, &cs);
     sn = -sn;
     float a = x0, b = x1;
-    x0 = a * cs - b * sn;
-    x1 = a * sn + b * cs;
+    // as rope compiles it: fma(a, c, -(b * s)) and fma(b, c, a * s), products rounded first
+    x0 = __fmaf_rn(a, cs, -__fmul_rn(b, sn));
+    x1 = __fmaf_rn(b, cs, __fmul_rn(a, sn));
   }
   float amax = fmaxf(fabsf(x0), fabsf(x1));
 #pragma unroll
@@ -1748,6 +1749,48 @@ __device__ __forceinline__ void gemv_q8h_body(const int8_t *__restrict__ qs, con
 extern "C" __global__ void gemv_q8r1(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
                                      int rows, int k, int T, int ldx, int ldy, const __half *__restrict__ d) {
   gemv_q8h_body<1, 1>(qs, x, y, rows, k, 1, ldx, ldy, d);
+}
+
+// decode q_b: gemv_q8r1 with RoPE on each head's last rd rows at `pos` (rope with inverse = 0) in the epilogue: a pair is
+// rows (2j, 2j + 1) of the same 4-row block, exchanged through shared memory. Bit-identical to gemv_q8r1 + rope.
+// rows % 4 == 0, hd % 4 == 0, rd even. grid rows / 4, block 128.
+extern "C" __global__ void gemv_q8r1_rope(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
+                                          int rows, int k, const __half *__restrict__ d, const float *freqs, int hd, int rd,
+                                          int pos) {
+  __shared__ float sv[4];
+  int w = threadIdx.x >> 5, r = blockIdx.x * 4 + w, lane = threadIdx.x & 31;
+  const int8_t *qr = qs + (size_t)r * k;
+  const __half *dr = d + (size_t)r * (k / 32);
+  float acc = 0.f;
+  for (int i = lane * 16; i < k; i += 512) {
+    int4 raw = __ldg((const int4 *)(qr + i));
+    const int8_t *q = (const int8_t *)&raw;
+    float sc = __half2float(dr[i / 32]);
+    float wv[16];
+#pragma unroll
+    for (int j = 0; j < 16; j++) wv[j] = (float)q[j] * sc;
+    const float4 *xp = (const float4 *)(x + i);
+    float4 a = xp[0], b = xp[1], c = xp[2], e = xp[3];
+    acc += wv[0] * a.x + wv[1] * a.y + wv[2] * a.z + wv[3] * a.w + wv[4] * b.x + wv[5] * b.y + wv[6] * b.z + wv[7] * b.w +
+           wv[8] * c.x + wv[9] * c.y + wv[10] * c.z + wv[11] * c.w + wv[12] * e.x + wv[13] * e.y + wv[14] * e.z + wv[15] * e.w;
+  }
+  float v = warp_sum(acc);
+  if (lane == 0) sv[w] = v;
+  __syncthreads();
+  if (threadIdx.x < 4) {
+    int rr = blockIdx.x * 4 + threadIdx.x, c0 = rr % hd;
+    float out = sv[threadIdx.x];
+    if (c0 >= hd - rd) {
+      int p = (c0 - (hd - rd)) >> 1;
+      float ang = (float)pos * freqs[p];
+      float sn, cs;
+      sincosf(ang, &sn, &cs);
+      float a = sv[threadIdx.x & ~1], b = sv[threadIdx.x | 1];
+      // as rope compiles it: fma(a, c, -(b * s)) and fma(b, c, a * s), products rounded first
+      out = (threadIdx.x & 1) ? __fmaf_rn(b, cs, __fmul_rn(a, sn)) : __fmaf_rn(a, cs, -__fmul_rn(b, sn));
+    }
+    y[rr] = out;
+  }
 }
 
 // Q8_0 repacked, one row per warp, 4 independent 16-byte loads in flight per lane (latency hiding).
