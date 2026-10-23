@@ -23,13 +23,15 @@ pub struct SpecState {
     pub passes: usize,
     pub accepted: usize,
     pub ngram_hits: usize,
+    /// drafts verified (all sources)
+    pub drafted: usize,
     /// sampled (temperature > 0) sessions get no drafts and sample their token from the logits
     pub greedy: bool,
 }
 
 impl SpecState {
     pub fn new(history: &[u32]) -> SpecState {
-        let mut s = SpecState { toks: vec![], ngram: HashMap::new(), ema: 2.0, lema: 4.0, passes: 0, accepted: 0, ngram_hits: 0, greedy: true };
+        let mut s = SpecState { toks: vec![], ngram: HashMap::new(), ema: 2.0, lema: 4.0, passes: 0, accepted: 0, ngram_hits: 0, drafted: 0, greedy: true };
         s.push(history);
         s
     }
@@ -73,19 +75,20 @@ impl Decoder {
     /// One speculative step for slots[i] whose next (emitted, not yet fed) token is nexts[i]. Returns, per slot, the
     /// tokens it emits (accepted drafts, then its new next token); st[i].push gets the same tokens.
     pub fn spec_step(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32], st: &mut [&mut SpecState]) -> Result<Vec<Vec<u32>>> {
-        self.spec_step_s(b, slots, nexts, st, &mut |_, _| 0)
+        self.spec_step_s(b, slots, nexts, st, &mut |_, l, d| { let a = dsx_core::server::sample::argmax(l); (Some(a) == d, a) })
     }
 
-    /// spec_step with `sample(i, logits)` choosing the token of a sampled session i (no drafts)
-    pub fn spec_step_s(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32], st: &mut [&mut SpecState], sample: &mut dyn FnMut(usize, &[f32]) -> u32) -> Result<Vec<Vec<u32>>> {
+    /// spec_step with `decide(i, logits, draft)` for a sampled session i: with Some(draft), accept it or return the
+    /// resampled token (Sampler::accept_or_resample: exact speculative sampling); with None, sample a token
+    pub fn spec_step_s(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32], st: &mut [&mut SpecState], decide: &mut dyn FnMut(usize, &[f32], Option<u32>) -> (bool, u32)) -> Result<Vec<Vec<u32>>> {
         let n = slots.len();
         let rooms: Vec<usize> = slots.iter().map(|&s| (b.ctx - b.pos[s] - 2).min(MAX_DRAFTS)).collect();
         // drafts: prompt lookup first, else DSpark while it pays off (a session below the bar still probes it now and then)
         // lookup draft length follows its acceptance (a wrong guess still lengthens the verify)
-        let mut drafts: Vec<Vec<u32>> = (0..n).map(|i| if st[i].greedy { st[i].lookup(rooms[i].min((st[i].lema * 1.5 + 1.0).round().max(1.0) as usize)) } else { vec![] }).collect();
+        let mut drafts: Vec<Vec<u32>> = (0..n).map(|i| st[i].lookup(rooms[i].min((st[i].lema * 1.5 + 1.0).round().max(1.0) as usize))).collect();
         let mut from_lookup: Vec<bool> = drafts.iter().map(|d| !d.is_empty()).collect();
         let want: Vec<usize> = if self.dspark.is_some() {
-            (0..n).filter(|&i| st[i].greedy && drafts[i].is_empty() && rooms[i] > 0 && (st[i].ema >= dspark_min() || st[i].passes % 32 == 31)).collect()
+            (0..n).filter(|&i| drafts[i].is_empty() && rooms[i] > 0 && (st[i].ema >= dspark_min() || st[i].passes % 32 == 31)).collect()
         } else {
             vec![]
         };
@@ -114,8 +117,27 @@ impl Decoder {
         for i in 0..n {
             let f = &feeds[i];
             let mut acc = 0;
-            while acc + 1 < f.len() && outs[i][acc] == f[acc + 1] {
-                acc += 1;
+            // sampled sessions: each draft accepted with its probability, else resampled (exact)
+            let mut sampled_next = None;
+            if st[i].greedy {
+                while acc + 1 < f.len() && outs[i][acc] == f[acc + 1] {
+                    acc += 1;
+                }
+            } else {
+                loop {
+                    let l = self.batch_logits(b, row + acc)?;
+                    if acc + 1 < f.len() {
+                        let (ok, t) = decide(i, &l, Some(f[acc + 1]));
+                        if ok {
+                            acc += 1;
+                            continue;
+                        }
+                        sampled_next = Some(t);
+                    } else {
+                        sampled_next = Some(decide(i, &l, None).1);
+                    }
+                    break;
+                }
             }
             self.batch_commit(b, slots[i], row, f, acc + 1)?;
             for j in 0..=acc {
@@ -124,9 +146,10 @@ impl Decoder {
                 oslot.push(slots[i] as i32);
             }
             let mut e = f[1..=acc].to_vec();
-            e.push(if st[i].greedy { outs[i][acc] } else { sample(i, &self.batch_logits(b, row)?) });
+            e.push(sampled_next.unwrap_or(outs[i][acc]));
             st[i].push(&e);
             if f.len() > 1 {
+                st[i].drafted += f.len() - 1;
                 st[i].passes += 1;
                 st[i].accepted += acc;
                 if from_lookup[i] {

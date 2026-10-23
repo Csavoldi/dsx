@@ -33,6 +33,11 @@ struct Seq {
     cached: usize,
     /// speculative decoding state (prompt lookup, DSpark acceptance), from the end of the prefill
     spec: Option<crate::spec::SpecState>,
+    // dashboard bookkeeping
+    started: std::time::Instant,
+    first: Option<std::time::Instant>,
+    generated: usize,
+    prompt_len: usize,
 }
 
 struct Slot {
@@ -54,6 +59,8 @@ pub struct Runner<'a> {
     lane: Option<u64>,
     chunk: usize,
     clock: u64,
+    /// live numbers for the admin dashboard
+    pub tel: Option<std::sync::Arc<crate::telemetry::Telemetry>>,
 }
 
 // the decoder is created and used only on the engine thread
@@ -65,7 +72,7 @@ impl<'a> Runner<'a> {
         let b = dec.new_batch(slots, ctx)?;
         let chunk = std::env::var("DSXR_CHUNK").ok().and_then(|v| v.parse().ok()).unwrap_or(2048);
         let slots = (0..slots).map(|_| Slot { owner: None, tokens: vec![], parked: false, used: 0 }).collect();
-        Ok(Runner { dec, b, seqs: HashMap::new(), slots, waiting: VecDeque::new(), lane: None, chunk, clock: 0 })
+        Ok(Runner { dec, b, seqs: HashMap::new(), slots, waiting: VecDeque::new(), lane: None, chunk, clock: 0, tel: None })
     }
 
     /// Move the lane's decoding sequence into its slot.
@@ -121,12 +128,73 @@ impl BatchEngine for Runner<'_> {
             sl.tokens.clear();
         }
         let sampler = if p.temperature > 0.0 { Some(Sampler::from_params(p)) } else { None };
-        self.seqs.insert(id, Seq { slot, phase: Phase::Prefill { prompt: prompt.to_vec(), done: reuse }, fed: prompt[..reuse].to_vec(), sampler, stop: p.stop_token_ids.first().copied(), cached: reuse, spec: None });
+        self.seqs.insert(id, Seq { slot, phase: Phase::Prefill { prompt: prompt.to_vec(), done: reuse }, fed: prompt[..reuse].to_vec(), sampler, stop: p.stop_token_ids.first().copied(), cached: reuse, spec: None, started: std::time::Instant::now(), first: None, generated: 0, prompt_len: prompt.len() });
+        if let Some(t) = &self.tel {
+            t.admitted(reuse);
+        }
         self.waiting.push_back(id);
         Ok(())
     }
 
     fn step(&mut self) -> Result<Vec<(u64, u32)>> {
+        let t0 = std::time::Instant::now();
+        let spec_sum = |r: &Runner| r.seqs.values().filter_map(|s| s.spec.as_ref()).fold((0usize, 0usize), |a, x| (a.0 + x.drafted, a.1 + x.accepted));
+        let (d0, k0) = spec_sum(self);
+        let fed0: usize = self.seqs.values().map(|s| match &s.phase { Phase::Prefill { done, .. } => *done, _ => 0 }).sum();
+        let pre: std::collections::HashSet<u64> = self.seqs.iter().filter(|(_, s)| matches!(s.phase, Phase::Prefill { .. })).map(|(&id, _)| id).collect();
+        let out = self.step_inner()?;
+        let now = std::time::Instant::now();
+        for &(id, _) in &out {
+            if let Some(s) = self.seqs.get_mut(&id) {
+                s.first.get_or_insert(now);
+                s.generated += 1;
+            }
+        }
+        if let Some(t) = self.tel.clone() {
+            let (d1, k1) = spec_sum(self);
+            // prompt tokens fed this step: progress of prefilling sequences (finished ones fed their whole rest)
+            let fed1: usize = self.seqs.iter().map(|(id, s)| match &s.phase {
+                Phase::Prefill { done, .. } => *done,
+                _ if pre.contains(id) => s.prompt_len,
+                _ => 0,
+            }).sum();
+            let infos = self.seqs.iter().map(|(&id, s)| {
+                let dec_s = s.first.map(|f| (now - f).as_secs_f64()).unwrap_or(0.0);
+                let (dr, kp) = s.spec.as_ref().map(|x| (x.drafted, x.accepted)).unwrap_or((0, 0));
+                crate::telemetry::SessionInfo {
+                    id: format!("#{id}"),
+                    gpu: 0,
+                    slot: s.slot,
+                    state: if matches!(s.phase, Phase::Prefill { .. }) { "prefill" } else { "decode" },
+                    prompt_tokens: s.prompt_len,
+                    cached_tokens: s.cached,
+                    generated: s.generated,
+                    tok_s: if dec_s > 0.0 && s.generated > 1 { (s.generated - 1) as f64 / dec_s } else { 0.0 },
+                    acceptance: if dr > 0 { kp as f64 / dr as f64 } else { 0.0 },
+                    age_s: (now - s.started).as_secs_f64(),
+                    sampled: s.sampler.is_some(),
+                }
+            }).collect();
+            t.step(out.len(), fed1.saturating_sub(fed0), t0.elapsed().as_secs_f64() * 1e3, 0.0, d1.saturating_sub(d0), k1.saturating_sub(k0), infos, 0);
+        }
+        Ok(out)
+    }
+
+    fn finish(&mut self, id: u64) {
+        if let (Some(t), Some(s)) = (&self.tel, self.seqs.get(&id)) {
+            let dec_s = s.first.map(|f| f.elapsed().as_secs_f64()).unwrap_or(0.0);
+            t.finished(&format!("#{id}"), s.generated, if dec_s > 0.0 && s.generated > 1 { (s.generated - 1) as f64 / dec_s } else { 0.0 });
+        }
+        self.finish_inner(id);
+    }
+
+    fn cached_prompt_tokens(&self, id: u64) -> usize {
+        self.seqs.get(&id).map(|s| s.cached).unwrap_or(0)
+    }
+}
+
+impl Runner<'_> {
+    fn step_inner(&mut self) -> Result<Vec<(u64, u32)>> {
         let mut out = vec![];
         // ---- 1. prefill: one chunk of the oldest waiting prompt in the lane
         if let Some(&wid) = self.waiting.front() {
@@ -227,7 +295,11 @@ impl BatchEngine for Runner<'_> {
                     sts.push(spec.as_mut().unwrap());
                     samplers.push(sampler.as_mut());
                 }
-                self.dec.spec_step_s(&mut self.b, &slots, &nexts, &mut sts, &mut |i, l| samplers[i].as_mut().map(|s| s.sample(l)).unwrap_or(0))
+                self.dec.spec_step_s(&mut self.b, &slots, &nexts, &mut sts, &mut |i, l, d| match (samplers[i].as_mut(), d) {
+                    (Some(s), Some(d)) => s.accept_or_resample(l, d),
+                    (Some(s), None) => (false, s.sample(l)),
+                    (None, d) => { let a = dsx_core::server::sample::argmax(l); (Some(a) == d, a) }
+                })
             };
             match r {
                 Ok(em) => {
@@ -253,7 +325,7 @@ impl BatchEngine for Runner<'_> {
         Ok(out)
     }
 
-    fn finish(&mut self, id: u64) {
+    fn finish_inner(&mut self, id: u64) {
         let Some(s) = self.seqs.remove(&id) else { return };
         self.waiting.retain(|&w| w != id);
         let decoding = matches!(s.phase, Phase::Decode { .. });
@@ -269,7 +341,4 @@ impl BatchEngine for Runner<'_> {
         sl.tokens = if parked { s.fed } else { vec![] };
     }
 
-    fn cached_prompt_tokens(&self, id: u64) -> usize {
-        self.seqs.get(&id).map(|s| s.cached).unwrap_or(0)
-    }
 }
