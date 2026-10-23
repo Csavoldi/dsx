@@ -154,9 +154,72 @@ fn t16_bench(nexp: usize, rng: &mut Rng) {
         }
         println!("{line}");
     }
+    // prefill windows: calls of 6 experts with nt tokens routed to each (CPUB_NT, default 1,2,4,8,16); per call and
+    // per token, and weight-token products per clock and thread at the measured clock (CPUB_GHZ, default 4.9)
+    let nts: Vec<usize> = std::env::var("CPUB_NT").unwrap_or("1,2,4,8,16".into()).split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    let ghz: f64 = std::env::var("CPUB_GHZ").ok().and_then(|v| v.parse().ok()).unwrap_or(4.9);
+    let ths: Vec<usize> = std::env::var("CPUB_THREADS").unwrap_or("8,14,16".into()).split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    println!("nt sweep ({}): ms per 6-expert call / per token, weight-token products per clock per thread at {ghz} GHz",
+        if dsx::cpu::t16k::multi() { "gemv_multi" } else { "per-token gemv, DSX_T16_MULTI=0" });
+    for th in ths {
+        let mut moe = CpuMoe::new(Pool::new(&cpus(th), Duration::from_millis(5)));
+        for (name, exs) in sets.iter().skip(1).take(2) {
+            let ew = views(exs);
+            let mut line = format!("{th:2} threads {name}:");
+            for &nt in &nts {
+                let (_, ms) = layer_rate(&mut moe, &ew, nt, if th == 1 { 1 } else { 3 }, rng);
+                let wpc = (6 * 3 * DIM * INTER * nt) as f64 / (ms * 1e-3 * ghz * 1e9 * th as f64);
+                line += &format!("  nt={nt} {ms:.2} ({:.3}/tok, {wpc:.1} w/clk)", ms / nt as f64);
+            }
+            println!("{line}");
+        }
+    }
+}
+
+/// t16k: the T16 kernel alone, 1 thread on P-core 0, a 5120-input matrix's first 16 tile columns (L2-resident):
+/// ns per call and clocks per 16x16 tile per token for nt = CPUB_NT tokens (gemv_multi; DSX_T16_MULTI=0 per token)
+fn t16k_bench(rng: &mut Rng) {
+    use dsx::cpu::t16k::{Act, gemv_multi, prep, scales};
+    dsx::cpu::pool::pin_to(0);
+    let nts: Vec<usize> = std::env::var("CPUB_NT").unwrap_or("1,2,3,4,8,16".into()).split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    let ghz: f64 = std::env::var("CPUB_GHZ").ok().and_then(|v| v.parse().ok()).unwrap_or(4.9);
+    let reps: usize = std::env::var("CPUB_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+    for ty in [GType::T16K15, GType::T16K2, GType::T16K25] {
+        let k2 = dsx::t16::k2(ty).unwrap();
+        let e = t16_ex(ty, ty, rng);
+        let m = &e.gate;
+        let suh = scales(m, k2, DIM, INTER).0;
+        let acts: Vec<Act> = (0..16).map(|_| {
+            let x: Vec<f32> = (0..DIM).map(|_| rng.normal()).collect();
+            let mut a = Act::default();
+            prep(&x, suh, DIM, &mut a);
+            a
+        }).collect();
+        let cols = 16;
+        let tiles = cols * DIM / 16;
+        let mut line = format!("{ty:?}:");
+        for &nt in &nts {
+            let ar: Vec<&Act> = acts[..nt].iter().collect();
+            let mut ys = vec![vec![0f32; 16 * cols]; nt];
+            let mut run = |n: usize| for _ in 0..n {
+                let mut o: Vec<&mut [f32]> = ys.iter_mut().map(|v| &mut v[..]).collect();
+                gemv_multi(m, k2, DIM, INTER, &ar, 0, cols, &mut o);
+            };
+            run(reps / 10);
+            let t0 = Instant::now();
+            run(reps);
+            let ns = t0.elapsed().as_secs_f64() * 1e9 / reps as f64;
+            line += &format!("  nt={nt} {:.0} us ({:.1} clk/tile/tok)", ns / 1e3, ns * ghz / (tiles * nt) as f64);
+        }
+        println!("{line}");
+    }
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "t16k") {
+        t16k_bench(&mut Rng(0x2545f4914f6cdd1d));
+        return;
+    }
     let quick = std::env::args().any(|a| a == "quick");
     if std::env::args().any(|a| a == "t16") {
         t16_bench(if quick { 12 } else { 64 }, &mut Rng(0x2545f4914f6cdd1d));
