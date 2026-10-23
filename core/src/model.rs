@@ -472,6 +472,13 @@ impl EngramLayer<'_> {
             EngramLayer::Table { mat, row0 } => mat.dequant(row0 + r, out),
         }
     }
+    /// the bytes `row` reads for row `r` (the codes; FP8 scales are 1/32 of them): what to prefetch or test for residency
+    pub fn row_bytes(&self, r: usize) -> &[u8] {
+        match self {
+            EngramLayer::Fp8 { w, dim, .. } => &w[r * dim..(r + 1) * dim],
+            EngramLayer::Table { mat, row0 } => mat.row(row0 + r),
+        }
+    }
 }
 
 /// Where the weights live: kept alive for as long as the Mats point into them.
