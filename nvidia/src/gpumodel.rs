@@ -336,6 +336,21 @@ impl<'m> GpuModel<'m> {
             Ok(DMat { buf: g.upload(w.bytes())?, scale, ty: w.ty, rows: w.rows, cols: w.cols, act_fp8: w.act_fp8, q8r: false, q6: None })
         };
         let upo = |w: &Option<Mat>| -> Result<Option<DMat>> { w.as_ref().map(up).transpose() };
+        // DSX_ENGRAM_FP8=1: an F16 engram wkv goes up as FP8 + 32x32 E8M0 scales (the checkpoint's layout), half the
+        // bytes for its bandwidth-bound decode GEMV; only when the conversion is exact (the F16 came from that FP8)
+        let engram_fp8 = std::env::var("DSX_ENGRAM_FP8").is_ok_and(|v| v == "1");
+        let up_engram = |w: &Option<Mat>| -> Result<Option<DMat>> {
+            let Some(w) = w else { return Ok(None) };
+            if engram_fp8 && w.ty == GType::F16 {
+                let h: &[half::f16] = unsafe { std::slice::from_raw_parts(w.bytes().as_ptr().cast(), w.rows * w.cols) };
+                if let Some((q, sc)) = crate::numerics::f16_to_fp8b32(h, w.rows, w.cols) {
+                    eprintln!("engram: {} as FP8 (exact), {:.0} MB", w.name, (q.len() + sc.len()) as f64 / 1e6);
+                    return Ok(Some(DMat { buf: g.upload(&q)?, scale: Some(g.upload(&sc)?), ty: GType::Fp8B32, rows: w.rows, cols: w.cols, act_fp8: w.act_fp8, q8r: false, q6: None }));
+                }
+                eprintln!("engram: {} is not exact FP8, kept F16", w.name);
+            }
+            up(w).map(Some)
+        };
         let upv = |v: &Option<Vec<f32>>| -> Result<Option<Buf>> { v.as_ref().map(|v| f32buf(&g, v)).transpose() };
         let f32mat = |v: &[f32], rows: usize| -> Result<DMat> {
             Ok(DMat { buf: g.upload(v)?, scale: None, ty: GType::F32, rows, cols: v.len() / rows, act_fp8: false, q8r: false, q6: None })
@@ -378,7 +393,7 @@ impl<'m> GpuModel<'m> {
                 sh_gate: up(&l.sh_gate)?,
                 sh_up: up(&l.sh_up)?,
                 sh_down: up(&l.sh_down)?,
-                engram_kv: upo(&l.engram_kv)?,
+                engram_kv: up_engram(&l.engram_kv)?,
                 engram_qk: upv(&l.engram_qk)?,
                 window: bf16zeros(c.window * c.head_dim)?,
                 comp_cache: if is_src { Some(bf16zeros(max_ctx / ratio * c.head_dim)?) } else { None },
@@ -1091,7 +1106,7 @@ impl<'m> GpuModel<'m> {
         // few rows: one block per row with the warps splitting k (measured faster below ~2K rows)
         let sk = n < 2048 && matches!(kname, "gemv_q8r" | "gemv_f16" | "gemv_bf16" | "gemv_f32");
         let kname = if sk { match kname { "gemv_q8r" => "gemv_q8r_sk", "gemv_f16" => "gemv_f16_sk", "gemv_bf16" => "gemv_bf16_sk", _ => "gemv_f32_sk" } } else { kname };
-        let per_block = if sk { 1 } else if kname == "gemv_q8r4" { 16 } else { 4 };
+        let per_block = if sk { 1 } else if matches!(kname, "gemv_q8r4" | "gemv_fp8b32") { 16 } else { 4 };
         self.g.launch(
             self.k[kname],
             ((n as u32).div_ceil(per_block), 1, 1),
