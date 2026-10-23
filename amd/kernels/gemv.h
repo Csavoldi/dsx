@@ -339,7 +339,8 @@ DEV f4 wave_fp8g(const u4v* __restrict__ wp, int S, const uint8_t* __restrict__ 
 }
 
 // single-token expert tile (MXFP4 / codebook), column-rotated as wave_x1, activations from global
-template <int FMT, int U = 4>
+// CO: activations with ordinary loads (batched callers; the decode chain needs device-coherent loads)
+template <int FMT, int U = 4, bool CO = false>
 DEV f4 wave_x1g(const uint32_t* __restrict__ wp, const u4v* __restrict__ sp, int S, const uint8_t* __restrict__ xq,
                 const float* __restrict__ xs, uint32_t tlo, uint32_t thi, int lane) {
     constexpr int NDW = FMT == 0 ? 4 : FMT;
@@ -352,7 +353,7 @@ DEV f4 wave_x1g(const uint32_t* __restrict__ wp, const u4v* __restrict__ sp, int
 #pragma unroll
         for (int q = 0; q < NDW; q++) w[q] = __builtin_nontemporal_load(wp + (size_t)k * WSTR + q);
 #pragma unroll
-        for (int m = 0; m < 4; m++) x[m] = ((4 * k + m) & 15) == col ? ld_dev64(xq + (4 * k + m) * 32 + g8) : 0;
+        for (int m = 0; m < 4; m++) x[m] = ((4 * k + m) & 15) == col ? (CO ? *reinterpret_cast<const uint64_t*>(xq + (4 * k + m) * 32 + g8) : ld_dev64(xq + (4 * k + m) * 32 + g8)) : 0;
     };
 #pragma unroll
     for (int u = 0; u < U; u++)
@@ -363,7 +364,7 @@ DEV f4 wave_x1g(const uint32_t* __restrict__ wp, const u4v* __restrict__ sp, int
             const u4v sv = sp[(size_t)(kb >> 2) * 4];
             const int m = kb & 3;
             const uint32_t ss[4] = {sv.x, sv.y, sv.z, sv.w};
-            const float xsv = ld_dev(xs + kb);
+            const float xsv = CO ? xs[kb] : ld_dev(xs + kb);
 #pragma unroll
             for (int j = 0; j < 4; j++) {
                 const uint32_t b = (ss[j] >> (8 * m)) & 0xFFu;

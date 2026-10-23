@@ -507,9 +507,9 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
             if (rt * 16 >= J.n) break;
             const u4v* sp = (const u4v*)(base + J.soff) + ((size_t)rt * KU + u0) * 4 + (lane >> 4);
             f4 acc;
-            if (J.fmt == 1) acc = wave_x1g<0, X1U>((const uint32_t*)((const u4v*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 + lane), sp, S, xq1, xs1, 0u, 0u, lane);
-            else if (J.fmt == 2) acc = wave_x1g<3, X1U>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 3 + lane * 3, sp, S, xq1, xs1, cb3lo, cb3hi, lane);
-            else acc = wave_x1g<2, X1U>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 2 + lane * 2, sp, S, xq1, xs1, cb2, 0u, lane);
+            if (J.fmt == 1) acc = wave_x1g<0, X1U, true>((const uint32_t*)((const u4v*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 + lane), sp, S, xq1, xs1, 0u, 0u, lane);
+            else if (J.fmt == 2) acc = wave_x1g<3, X1U, true>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 3 + lane * 3, sp, S, xq1, xs1, cb3lo, cb3hi, lane);
+            else acc = wave_x1g<2, X1U, true>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 2 + lane * 2, sp, S, xq1, xs1, cb2, 0u, lane);
 #pragma unroll
             for (int j = 0; j < 4; j++) acc[j] = group_sum<16>(acc[j]);
             if (col == 0) {
