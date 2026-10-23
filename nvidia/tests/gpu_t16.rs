@@ -152,12 +152,17 @@ fn t16_decode_speed() {
     };
     let mix = [(GType::Iq1S, GType::Iq2Xxs), (GType::Iq2Xxs, GType::Iq2Xs), (GType::Iq1S, GType::Iq2S), (GType::Iq2Xxs, GType::Iq2Xxs)];
     // one type per role per layer for T16; the IQ store mixes types across experts like UD's files
-    let t16m: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..64).map(|_| (random_matrix(GType::T16K15, c.dim, c.inter, &mut seed), random_matrix(GType::T16K15, c.dim, c.inter, &mut seed), random_matrix(GType::T16K2, c.inter, c.dim, &mut seed))).collect();
+    // T16_SPEED_K="gu,dn" bits per weight of the T16 store (default 1.5,2: the first half's layout)
+    let ks: Vec<f32> = std::env::var("T16_SPEED_K").unwrap_or("1.5,2".into()).split(',').map(|v| v.parse().unwrap()).collect();
+    let kty = |k: f32| if k == 1.5 { GType::T16K15 } else if k == 2.0 { GType::T16K2 } else { GType::T16K25 };
+    let (tgu, tdn) = (kty(ks[0]), kty(ks[1]));
+    println!("T16 store: gate/up K {}, down K {}", ks[0], ks[1]);
+    let t16m: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..64).map(|_| (random_matrix(tgu, c.dim, c.inter, &mut seed), random_matrix(tgu, c.dim, c.inter, &mut seed), random_matrix(tdn, c.inter, c.dim, &mut seed))).collect();
     let iqm: Vec<(GType, GType, Vec<u8>, Vec<u8>, Vec<u8>)> = (0..64).map(|e| {
         let (gu, dn) = mix[e % mix.len()];
         (gu, dn, iq(gu, c.inter, c.dim, &mut seed), iq(gu, c.inter, c.dim, &mut seed), iq(dn, c.dim, c.inter, &mut seed))
     }).collect();
-    let st_t16 = GpuExperts::build(&g, c, &t16m.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.0, up: &m.1, down: &m.2, gu: GType::T16K15, dn: GType::T16K2 })).collect::<Vec<_>>(), true).unwrap();
+    let st_t16 = GpuExperts::build(&g, c, &t16m.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.0, up: &m.1, down: &m.2, gu: tgu, dn: tdn })).collect::<Vec<_>>(), true).unwrap();
     let st_iq = GpuExperts::build(&g, c, &iqm.iter().enumerate().map(|(e, m)| ((0, e), RawExpert { gate: &m.2, up: &m.3, down: &m.4, gu: m.0, dn: m.1 })).collect::<Vec<_>>(), true).unwrap();
     let calls = 400;
     let sels: Vec<Vec<i32>> = (0..calls).map(|i| (0..6).map(|j| ((i * 7 + j * 11) % 64) as i32).collect()).collect();

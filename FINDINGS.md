@@ -328,7 +328,11 @@ both GPUs wait (`DSX_PROF`), next to ~2.8 s of attention.
   weights per clock). ExLlamaV3's own CPU MoE kernel (AVX2 tier here, since it has no AVX-VNNI path): 3.65 / 2.09 /
   2.94 ms. GPU decode GEMV (RTX 3090, 6 experts, gate + up + down): 100 / 107 / 126 µs vs the better of two mul1
   kernels 149 / 135 / 162 µs (T16 26-48% faster): mul1 needs a dp4a per weight and a 16-bit mask per window where T16
-  packs two products into one dp4a. ExLlamaV3 has had CPU offload of MoE experts since July 2026 (moe_mul1.cpp).
+  packs two products into one dp4a. ExLlamaV3's own decode MoE kernels (exl3_moe_coop, its bsz <= 8 path: two fused
+  launches for gate/up + activation and down + the weighted sum; v1.6.4 built for sm_86, bench/exl3_gpubench.py) take
+  209 / 196 / 239 µs per layer against dsx's whole T16 MoE step (prep + GEMVs + post, gpu_t16 t16_decode_speed)
+  124 / 122 / 136 µs: T16 in dsx is 1.6-1.8x faster; its m = 1 int8 GEMV, one launch per matrix, 272-311 µs.
+  ExLlamaV3 has had CPU offload of MoE experts since July 2026 (moe_mul1.cpp).
 - **Experts on disk.** Each token needs ~2 GB of expert weights; serving 10% of it from a 6 GB/s drive adds ~30 ms.
 - **Swapping on the x4 GPU** (`DSX_AUX_ADAPTIVE=1`). Decode on a 3K agent prompt 28.8 → 31.0 tok/s, on prose 29.1 →
   22.0: evictable experts need RAM copies, GPU1's 23 GB of them push ~2,200 cold experts out of the arena onto disk.
