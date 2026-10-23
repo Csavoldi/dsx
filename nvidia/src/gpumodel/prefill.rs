@@ -233,11 +233,12 @@ fn noise_rel(li: usize) -> Option<f32> {
 /// and the streaming aux GPUs. Default 2: an aux GPU also computes its resident experts (twice the main GPU's on 2x
 /// RTX 3090), and on PCIe 3.0 x16 links an expert's compute costs about as much as its copy; best of 1-3 on an 8K
 /// prompt (warm prefill 15.6 s streaming on the main GPU alone, 14.4-15.4 s at 1, 12.9-13.3 s at 2, 13.5 s at 3)
-/// chunks longer than this (DSX_PREFILL_CPU_MAX_N, default 1024) stream every expert: at 3000 tokens the CPU share
-/// made prefill 5% slower (few experts have few tokens there, and the x download stalls the stream)
+/// chunks longer than this (DSX_PREFILL_CPU_MAX_N, default 512) stream every expert: on .102 the CPU share helped at
+/// 60-300 tokens (server turns 1137 -> 738 ms, 2227 -> 1698 ms), was 2% slower at 1024 and 5-20% slower at 2048-3000
+/// (few experts have few tokens there, the x download stalls the stream, and the CPU competes for DRAM with the link)
 fn prefill_cpu_max_n() -> usize {
     static P: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *P.get_or_init(|| std::env::var("DSX_PREFILL_CPU_MAX_N").ok().and_then(|v| v.parse().ok()).unwrap_or(1024))
+    *P.get_or_init(|| std::env::var("DSX_PREFILL_CPU_MAX_N").ok().and_then(|v| v.parse().ok()).unwrap_or(512))
 }
 
 /// DSX_PREFILL_CPU=0: prefill streams every expert no GPU holds (no CPU share)
