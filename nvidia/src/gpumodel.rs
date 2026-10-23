@@ -1677,8 +1677,8 @@ impl<'m> GpuModel<'m> {
         // GPU1's work for the token is enqueued after GPU0's layer-0 attention (below): it cannot start before layer 0's
         // router publishes, and enqueueing it first (~0.15 ms of host calls) kept GPU0 idle at the token's start
         let mut aux_pending = self.worker.is_some() && !self.skip_experts;
-        // DSX_AUX_LATE=1: enqueue GPU1's token after GPU0's layer-0 attention (off until measured on its own)
-        if aux_pending && !std::env::var("DSX_AUX_LATE").is_ok_and(|v| v == "1") {
+        // DSX_AUX_LATE=0: enqueue GPU1's token first, as before (window 31: late is +0.35% teacher-forced)
+        if aux_pending && std::env::var("DSX_AUX_LATE").is_ok_and(|v| v == "0") {
             aux_pending = false;
             self.enqueue_aux(1)?;
             self.g.bind();
