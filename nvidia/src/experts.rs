@@ -166,6 +166,67 @@ struct T16Bufs {
     pd: Buf,
     h: Buf,
 }
+/// device pointers of a T16 decode pass's scratch (T16Bufs, or carved from a caller's buffer)
+#[derive(Clone, Copy)]
+pub struct T16Ptrs {
+    xpg: u64,
+    xpu: u64,
+    xpd: u64,
+    xdg: u64,
+    xsg: u64,
+    xdu: u64,
+    xsu: u64,
+    xdd: u64,
+    xsd: u64,
+    pg: u64,
+    pu: u64,
+    pd: u64,
+    h: u64,
+}
+
+impl T16Ptrs {
+    /// scratch bytes for `picks` (token, expert) picks, each piece 256-byte aligned
+    pub fn bytes(picks: usize, dim: usize, inter: usize) -> usize {
+        Self::layout(picks, dim, inter).1
+    }
+    fn layout(p: usize, d: usize, i: usize) -> ([usize; 13], usize) {
+        let sizes = [p * d / 2, p * d / 2, p * i / 2, p * d / 256, p * d / 256, p * d / 256, p * d / 256, p * i / 256, p * i / 256, T16_SGU * p * i, T16_SGU * p * i, T16_SD * p * d, p * i];
+        let mut offs = [0usize; 13];
+        let mut o = 0;
+        for (k, n) in sizes.iter().enumerate() {
+            offs[k] = o;
+            o += (n * 4).div_ceil(256) * 256;
+        }
+        (offs, o)
+    }
+    /// carve the scratch for `picks` picks out of [base, base + T16Ptrs::bytes(..))
+    pub fn carve(base: u64, picks: usize, dim: usize, inter: usize) -> T16Ptrs {
+        let (o, _) = Self::layout(picks, dim, inter);
+        let at = |k: usize| base + o[k] as u64;
+        T16Ptrs { xpg: at(0), xpu: at(1), xpd: at(2), xdg: at(3), xsg: at(4), xdu: at(5), xsu: at(6), xdd: at(7), xsd: at(8), pg: at(9), pu: at(10), pd: at(11), h: at(12) }
+    }
+}
+
+impl T16Bufs {
+    fn ptrs(&self) -> T16Ptrs {
+        T16Ptrs {
+            xpg: self.xpg.ptr,
+            xpu: self.xpu.ptr,
+            xpd: self.xpd.ptr,
+            xdg: self.xdg.ptr,
+            xsg: self.xsg.ptr,
+            xdu: self.xdu.ptr,
+            xsu: self.xsu.ptr,
+            xdd: self.xdd.ptr,
+            xsd: self.xsd.ptr,
+            pg: self.pg.ptr,
+            pu: self.pu.ptr,
+            pd: self.pd.ptr,
+            h: self.h.ptr,
+        }
+    }
+}
+
 /// k-splits of the T16 GEMVs: gate / up (dim / 256 = 20 groups), down (inter / 256 = 9 groups)
 const T16_SGU: usize = 4;
 const T16_SD: usize = 3;
@@ -592,22 +653,42 @@ impl GpuExperts {
     /// GEMV, then each token's sum. Eight launches, no host round trip.
     #[allow(clippy::too_many_arguments)]
     fn run_t16(&self, g: &Gpu, l: usize, sel: u64, wts: u64, k: usize, t: usize, x: u64, out: u64, kg: usize, kd: usize) -> Result<()> {
-        let b = self.t16b.as_ref().unwrap();
+        let b = self.t16b.as_ref().unwrap().ptrs();
+        self.run_t16_on(g, l, sel, wts, k, t, x, out, kg, kd, &b)
+    }
+
+    /// whether layer `l`'s experts here are T16 (run_t16_ext applies)
+    pub fn is_t16_layer(&self, l: usize) -> bool {
+        self.t16.get(l).is_some_and(|v| v.is_some())
+    }
+
+    /// The T16 decode kernels over `t` tokens x `k` picks with any t, on scratch carved from `scratch`
+    /// (T16Ptrs::bytes(t * k, ..) bytes): every pick whose expert is resident here, out [t][dim] = each token's sum
+    /// (written, not added; 0 for tokens without one). Prefill uses it for resident experts with few tokens.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_t16_ext(&self, g: &Gpu, l: usize, sel: u64, wts: u64, k: usize, t: usize, x: u64, out: u64, scratch: u64) -> Result<()> {
+        let Some((kg, kd)) = self.t16[l] else { bail!("run_t16_ext: layer {l} is not T16") };
+        let b = T16Ptrs::carve(scratch, t * k, self.dim, self.inter);
+        self.run_t16_on(g, l, sel, wts, k, t, x, out, kg, kd, &b)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_t16_on(&self, g: &Gpu, l: usize, sel: u64, wts: u64, k: usize, t: usize, x: u64, out: u64, kg: usize, kd: usize, b: &T16Ptrs) -> Result<()> {
         let (dim, inter, picks) = (self.dim, self.inter, t * k);
         let (tab, base, e) = (Arg::P(self.tab.ptr), Arg::P(self.buf.ptr), Arg::I(self.n_experts as i32));
         let (li, ki, ti) = (Arg::I(l as i32), Arg::I(k as i32), Arg::I(t as i32));
         let blocks = |warps: usize| ((warps as u32).div_ceil(4), 1, 1);
         let gemv = |k2: usize| self.k[["t16d_gemv_3", "t16d_gemv_4", "t16d_gemv_5"][k2 - 3]];
-        for (role, xp, xd, xs) in [(0, &b.xpg, &b.xdg, &b.xsg), (1, &b.xpu, &b.xdu, &b.xsu)] {
-            g.launch(self.k["t16d_prep"], blocks(picks * dim / 256), 128, 0, &[Arg::P(x), Arg::I(0), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::P(xp.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr)])?;
+        for (role, xp, xd, xs) in [(0, b.xpg, b.xdg, b.xsg), (1, b.xpu, b.xdu, b.xsu)] {
+            g.launch(self.k["t16d_prep"], blocks(picks * dim / 256), 128, 0, &[Arg::P(x), Arg::I(0), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::P(xp), Arg::P(xd), Arg::P(xs)])?;
         }
-        for (role, xp, xd, xs, part) in [(0, &b.xpg, &b.xdg, &b.xsg, &b.pg), (1, &b.xpu, &b.xdu, &b.xsu, &b.pu)] {
-            g.launch(gemv(kg), blocks(picks * inter / 32 * T16_SGU), 128, 0, &[Arg::P(xp.ptr), Arg::P(xd.ptr), Arg::P(xs.ptr), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(T16_SGU as i32), Arg::P(part.ptr)])?;
+        for (role, xp, xd, xs, part) in [(0, b.xpg, b.xdg, b.xsg, b.pg), (1, b.xpu, b.xdu, b.xsu, b.pu)] {
+            g.launch(gemv(kg), blocks(picks * inter / 32 * T16_SGU), 128, 0, &[Arg::P(xp), Arg::P(xd), Arg::P(xs), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(T16_SGU as i32), Arg::P(part)])?;
         }
-        g.launch(self.k["t16d_post_gu"], blocks(picks * inter / 128), 128, 0, &[Arg::P(b.pg.ptr), Arg::P(b.pu.ptr), Arg::I(T16_SGU as i32), Arg::P(sel), Arg::P(wts), tab, base, li, e, ki, ti, Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::F(self.lim), Arg::P(b.h.ptr)])?;
-        g.launch(self.k["t16d_prep"], blocks(picks * inter / 256), 128, 0, &[Arg::P(b.h.ptr), Arg::I(1), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(2), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(kd as i32), Arg::P(b.xpd.ptr), Arg::P(b.xdd.ptr), Arg::P(b.xsd.ptr)])?;
-        g.launch(gemv(kd), blocks(picks * dim / 32 * T16_SD), 128, 0, &[Arg::P(b.xpd.ptr), Arg::P(b.xdd.ptr), Arg::P(b.xsd.ptr), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(2), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(T16_SD as i32), Arg::P(b.pd.ptr)])?;
-        g.launch(self.k["t16d_post_down"], blocks(t * dim / 128), 128, 0, &[Arg::P(b.pd.ptr), Arg::I(T16_SD as i32), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(kd as i32), Arg::P(out)])
+        g.launch(self.k["t16d_post_gu"], blocks(picks * inter / 128), 128, 0, &[Arg::P(b.pg), Arg::P(b.pu), Arg::I(T16_SGU as i32), Arg::P(sel), Arg::P(wts), tab, base, li, e, ki, ti, Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::F(self.lim), Arg::P(b.h)])?;
+        g.launch(self.k["t16d_prep"], blocks(picks * inter / 256), 128, 0, &[Arg::P(b.h), Arg::I(1), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(2), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(kd as i32), Arg::P(b.xpd), Arg::P(b.xdd), Arg::P(b.xsd)])?;
+        g.launch(gemv(kd), blocks(picks * dim / 32 * T16_SD), 128, 0, &[Arg::P(b.xpd), Arg::P(b.xdd), Arg::P(b.xsd), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(2), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(T16_SD as i32), Arg::P(b.pd)])?;
+        g.launch(self.k["t16d_post_down"], blocks(t * dim / 128), 128, 0, &[Arg::P(b.pd), Arg::I(T16_SD as i32), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(kd as i32), Arg::P(out)])
     }
 }
 

@@ -246,11 +246,37 @@ fn prefill_cpu() -> bool {
     *P.get_or_init(|| std::env::var("DSX_PREFILL_CPU").map_or(true, |v| v != "0"))
 }
 
-/// DSX_PRE_CPU_US: the CPU's estimated time per expert-token in prefill (default 200: 1.2 ms per 6-expert token at 14
-/// threads on .102)
+/// DSX_PRE_CPU_US: the CPU's estimated time for one expert and one token in prefill (default 200: 1.2 ms per 6-expert
+/// token at 14 threads on .102); more tokens scale by pre_cpu_cost
 fn pre_cpu_us() -> f64 {
     static P: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *P.get_or_init(|| std::env::var("DSX_PRE_CPU_US").ok().and_then(|v| v.parse().ok()).unwrap_or(200.0))
+}
+
+/// An expert's CPU cost for nt tokens in units of one token's: the multi-token kernel decodes each tile once per up to
+/// 8 tokens (t16k::gemv_multi; cpubench t16 at 14 threads on .102: x1.18 at 2 tokens, x1.67 at 4, x2.66 at 8, x5.29
+/// at 16), linear in between and beyond
+fn pre_cpu_cost(nt: usize) -> f64 {
+    const P: [(f64, f64); 5] = [(1.0, 1.0), (2.0, 1.18), (4.0, 1.67), (8.0, 2.66), (16.0, 5.29)];
+    let x = nt as f64;
+    for w in P.windows(2) {
+        if x <= w[1].0 {
+            return w[0].1 + (x - w[0].0) / (w[1].0 - w[0].0) * (w[1].1 - w[0].1);
+        }
+    }
+    P[4].1 + (x - 16.0) * (P[4].1 - P[3].1) / 8.0
+}
+
+/// tokens per pass of the decode kernels over prefill's few-token resident experts
+const PRE_DEV_TB: usize = 64;
+
+/// DSX_PRE_DEV_NT: resident experts with at most this many tokens in a prefill chunk run on decode's T16 kernels (0 =
+/// off, the default: on .102 at 60-1024 tokens it was no faster, the dequant overlapping the link's copies, and the
+/// int8 activations cost KL 0.1965 -> 0.2010). At 6: dequant + GEMM costs ~110 us per expert (three f16 copies of the weights at ~640 GB/s) plus ~10
+/// launches; the decode kernels read the expert's ~7.4 MB once per token, ~15 us each
+fn pre_dev_nt() -> usize {
+    static P: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("DSX_PRE_DEV_NT").ok().and_then(|v| v.parse().ok()).unwrap_or(0))
 }
 
 fn stream_main_weight() -> f64 {
@@ -1039,7 +1065,7 @@ impl GpuModel<'_> {
             let mut link_s: f64 = cand.iter().map(|c| c.2 / link).sum();
             let mut cpu_s = 0.0;
             for &(e, nt, bytes) in &cand {
-                let (cc, cl) = (nt as f64 * pre_cpu_us() * 1e-6, bytes / link);
+                let (cc, cl) = (pre_cpu_cost(nt) * pre_cpu_us() * 1e-6, bytes / link);
                 if cpu_s + cc > link_s - cl {
                     break;
                 }
@@ -1067,7 +1093,27 @@ impl GpuModel<'_> {
                 if j == 0 { main_spans.push(sp) } else { aux_spans[streamers[j - 1]].push(sp) }
             }
         }
-        let spans = main_spans;
+        // GPU0's resident experts with few tokens: decode's T16 kernels over all their picks at once (no f16 copy of the
+        // weights, ~7 launches per 64 tokens instead of ~10 per expert); the rest keep dequant + GEMM
+        let ntd = pre_dev_nt();
+        let (dev_spans, spans): (Vec<_>, Vec<_>) = if ntd > 0 && self.exp0.as_ref().is_some_and(|s| s.is_t16_layer(li)) {
+            main_spans.into_iter().partition(|&(e, _, nt)| nt <= ntd && self.exp0.as_ref().unwrap().has(li, e))
+        } else {
+            (vec![], main_spans)
+        };
+        let k = c.top_k;
+        let al = |b: usize| b.div_ceil(256) * 256;
+        let (o_sel, o_wts) = (al(n * c.n_experts * 4), al(n * c.n_experts * 4) + al(n * k * 4));
+        let (o_out, o_scr) = (o_wts + al(n * k * 4), o_wts + al(n * k * 4) + al(n * d * 4));
+        let need = o_scr + crate::experts::T16Ptrs::bytes(PRE_DEV_TB * k, d, inter);
+        let (dev_spans, spans) = if !dev_spans.is_empty() && need > pb.tmp.bytes {
+            // no room in the scratch: everything through dequant + GEMM
+            let mut all = spans;
+            all.extend(dev_spans);
+            (vec![], all)
+        } else {
+            (dev_spans, spans)
+        };
         // the CPU's experts start now, in windows of MAX_TOKENS rows, and run through the GPUs' whole layer
         let cpu_job = !cpu_spans.is_empty();
         if cpu_job {
@@ -1127,6 +1173,26 @@ impl GpuModel<'_> {
             return Ok(());
         }
         self.prof_mark("prefill moe . router+shared+aux ship", tp0)?;
+        if !dev_spans.is_empty() {
+            let tpd = std::time::Instant::now();
+            let s0 = self.exp0.as_ref().unwrap();
+            let mut on_dev = vec![false; c.n_experts];
+            for &(e, _, _) in &dev_spans {
+                on_dev[e] = true;
+            }
+            // picks of the other experts point at one that is not resident here, so the kernels skip them
+            let sentinel = (0..c.n_experts).find(|&e| !s0.has(li, e)).unwrap_or(0) as i32;
+            let sel_dev: Vec<i32> = sel.iter().map(|&e| if on_dev[e as usize] { e } else { sentinel }).collect();
+            let base = pb.tmp.ptr;
+            self.up(pb, base + o_sel as u64, &sel_dev)?;
+            self.up(pb, base + o_wts as u64, &wts)?;
+            for t0 in (0..n).step_by(PRE_DEV_TB) {
+                let tb = PRE_DEV_TB.min(n - t0);
+                s0.run_t16_ext(&self.g, li, base + (o_sel + t0 * k * 4) as u64, base + (o_wts + t0 * k * 4) as u64, k, tb, x + (t0 * d * 4) as u64, base + (o_out + t0 * d * 4) as u64, base + o_scr as u64)?;
+            }
+            self.g.launch(self.k["add_inplace"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(pb.out.ptr), Arg::P(base + o_out as u64), Arg::I((n * d) as i32)])?;
+            self.prof_mark("prefill moe . resident few-token experts (decode kernels)", tpd)?;
+        }
         // the aux GPUs start once x has reached pinned memory (queued ahead of the shared expert, which covers the wait)
         let mut qs = if use_aux { self.prefill_aux_begin(pb, li, n, &aux_spans, &all_rows, &all_w)? } else { vec![] };
         let main = ExpQueue { g: &self.g, k: &self.k, gather: "gather_f16", x, rows: pb.rows.ptr, wrow: pb.wrow.ptr, gx16: pb.gx16.ptr, tx16: pb.tx16.ptr, gg: pb.gg.ptr, gu: pb.gu.ptr, h16: pb.h16.ptr, go: pb.go.ptr, w16: pb.w16.ptr, out: pb.out.ptr, store: self.exp0.as_ref(), estage: &pb.estage, ev_ready: &pb.ev_ready, ev_free: &pb.ev_free, nstaged: 0 };
