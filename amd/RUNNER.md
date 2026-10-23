@@ -76,3 +76,33 @@ Measure each step on the box (beval KL, bbench / long-context benches), commit b
 - Cheaper expert decode: the 3-bit codebook loop is 171 VALU per 64 weights per lane (~96 unpacking the 3-bit
   indices from bit planes, ~48 scales); field unpacking cannot go much below ~1.5 instructions per weight with VALU
   bit operations, and MXFP4 is no cheaper (162 per 64, 30% more bytes). No format change passes the budget rule now.
+
+## Gap to floor (2026-10-23 04:30 PT)
+
+Floor = bytes per token or step at 5 TB/s (practical HBM rate; 6 TB/s peak). Experts at the load's mix (~14.4 MB per
+3-bit expert, 18.8 MB MXFP4; RES 24: 1953 MXFP4 + 13407 3-bit), dense FP8 6.7 GB, head BF16 1.3 GB. Experts touched
+per layer by B sessions under uniform routing: 384 * (1 - (1 - 6/384)^B). Attention state at 256K: single session
+(bf16 lane caches) ~0.19 GB per token, batched (FP4 slots) ~0.058 GB per session per step.
+
+| mode | measured | floor (bytes) | gap | source of measured |
+|---|---|---|---|---|
+| 1 session, 4K | 8.66 ms (115.5 tok/s) | 2.3 ms (~11.6 GB) | 3.8x | rental 2/3 `bench 4096` |
+| 1 session, 128K | ~8.8 ms (~113 tok/s, est.) | 2.35 ms | 3.7x | interpolated 4K/256K |
+| 1 session, 256K | 8.95 ms (111.8 tok/s) | 2.4 ms (~11.8 GB) | 3.7x | rental 3 `bench 262000` |
+| B=8, 256K, plain | 15.6 ms (64 tok/s each) | 6.9 ms (~34.5 GB) | 2.3x | rental 3 `lspec` 258K prefix |
+| B=8, 256K, speculation (agentic) | 92 tok/s each | n/a (more tokens per expert read) | | rental 3 `lspec` |
+| B=64, 256K | 52.3 ms (1,223 total) | 30.5 ms (244 experts/layer, ~152 GB) | 1.7x | rental 3 `bbench 64 262144` (before later kernel work) |
+| B=128, 228K | 76.4 ms (1,676 total) | 41 ms (332 experts/layer, ~201 GB) | 1.9x | rental 3 `bbench 128 232000` (1595 2-bit experts) |
+
+Ranking by the gap each next item closes:
+1. Single-session expert products (decode path, gemv_jobs): gate/up 39.6 us + down 23.9 us per layer for ~86 MB
+   (6 experts x 3 matrices) = ~1.4 TB/s; at 5 TB/s they would take ~17 us. Closing that saves ~1.9 ms of 8.7 ms
+   (+28%: ~147 tok/s). Mechanism: 1,728 waves for gate/up is ~1.4 waves per SIMD with ~3 KB in flight each,
+   ~17 KB per CU against ~40 KB needed. Confirming measurement (kernel reload + `waves`, no code): sweep X1U
+   (prefetch depth 4 / 6 / 8) x TARGET_WAVES (2048 / 4096 / 8192) on `prof 4096`; build a dedicated kernel only if
+   one point moves the expert time >= 20%. Kill otherwise.
+2. Single-session small kernels: hc_step 16 us x 83, attention 41 us x 40, and ~540 graph nodes; the per-launch floor
+   (launch_bench, rental 6) sets how much fusing can recover.
+3. B=8 fold of prep / hc_mix into hc_step (~0.6 ms of 22 ms at 4K, ~3%), gated on the same launch floor.
+4. B >= 64: experts read at ~3.7 TB/s and dominate; closing to 5 TB/s is ~25% of the step, but the 3-bit decode is
+   ALU-bound (171 VALU per 64 weights); no format change passes the budget yet.
