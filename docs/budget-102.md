@@ -115,3 +115,38 @@ the window's experts; FINDINGS 9); routing bias toward VRAM-resident experts (+4
 A lever that moves bytes off the CPU without adding DRAM traffic would need either reuse (an expert copied once and
 then hit on later tokens: the adaptive cache) or fewer bytes per CPU expert (HOBBIT's low-precision copies for
 low-gate picks; RAM is nearly full, so that means a lower-bit quant of the CPU-resident experts, gated on the eval).
+
+## 6. Prefill and server turns: gpu-unlock
+
+gpu-unlock (HW Tuning's REPORT.md, Task 2) lifts GeForce's half rate on FP16 / BF16 tensor MMA with FP32
+accumulation (GA102 whitepaper: 142 dense TFLOPS with FP16 accumulate, 71 with FP32). Users report FP32-accumulate
+GEMMs on a 3090 / 3090 Ti going from ~60-87 to ~90-118 TFLOPS. At .102's 230 W cap that is ~1.5x on compute-bound
+GEMMs; 2x (the whitepaper ratio) is the ceiling.
+
+What it touches in dsx, from the sm_86 SASS of every dsx kernel and the kernel names in the nsys traces: cuBLAS's
+`ampere_s16816gemm_fp16_*` / `s1688gemm_fp16_*` (FP16 in, FP32 accumulate: prefill's dense and dequantized-expert
+GEMMs) and dsx's `sparse_attn_tc` / `sparse_attn_tc_fast` (`HMMA.16816.F32.BF16`, prefill attention). The routed-expert
+kernels (`moe_gu_fast`, `moe_down_fast`, `xgemv`) use int8 `IMMA`, which was never limited. **Decode does not change:**
+the 64 decode steps of Dev 1's dec64 trace (2.28 s) run none of these kernels on either GPU, and decode's attention is
+`sparse_attn_tile` (no MMA).
+
+Measured exposure in Dev 1's existing nsys traces (.102, T16 build). Each GPU0 phase is split at its last cuBLAS GEMM,
+so the decode steps after it are excluded; "link idle" = GPU0's host-to-device copies idle (the part of a kernel no
+expert stream can hide):
+
+| Trace | Prefill wall | GPU0 busy / link busy | FP32-acc HMMA on GPU0 (of it with link idle) | on GPU1 |
+|---|---|---|---|---|
+| lp3000: 3000-token prompt, hugepage arena (3 GPU0 phases) | 4.94 s (5.2 s with host gaps) | 3.67 / 3.09 s | 1.43 s, 39% of GPU0 busy (0.38 s) | 0.42 s |
+| srvturn, turn 2 (1.89 s prefill; likely the ~300-token turn of 8d) | 1.89 s | 0.94 / 1.37 s | 0.44 s (0.11 s) | 0.16 s |
+| srvturn, turn 1 (likely the ~60-token turn) | 0.79 s | 0.46 / 0.60 s | 0.19 s (0.03 s) | 0.09 s |
+
+Bounds at speedup s on these kernels (saved = time x (1 - 1/s)): the low end counts only GPU0's link-idle HMMA time,
+the high end all of GPU0's HMMA time (true if GPU0's compute, not the link, bounds the overlapped stretches; the link
+busy time stays a floor). GPU1's share is left out, since its results are not known to be on the critical path.
+
+| # | Lever | Predicted gain | Confirming measurement | Kill criterion |
+|---|---|---|---|---|
+| 10 | gpu-unlock (needs a full power-off and lxe's OK; .102 now runs kernel 7.0 and driver 615.71.10, the versions it was tested on) | 3000-token prefill: s = 1.5 **0.13-0.48 s (2.5-9%)**, s = 2 0.19-0.71 s (4-14%). ~300-token turn: s = 1.5 **35-146 ms (2-8%)**, mostly link-bound (link busy 72% of the prefill), so the low end is likelier. ~60-token turn: ~0: its GEMMs have M ~ 60, under the ~76 FLOP/byte where a 3090's FP32-accumulate GEMM turns compute-bound. Decode: 0 | cuBLAS FP16 -> FP32 GEMM TFLOPS at a 3000 x 7168 x 4096 shape before and after (one process per config, 230 W); then the lp3000 and srvturn traces again: s16816 kernel time and prefill wall time; decode teacher-forced tok/s unchanged | GEMM speedup < 1.2x at 230 W, or the 3000-token prefill < 2% faster |
+
+HW Tuning's earlier 0-5% assumed prefill was bound by the expert stream. The traces cut against that for long prompts:
+in lp3000 GPU0 computes with its link idle for 1.47 s of 4.94 s, and 39% of GPU0's kernel time is FP32-accumulate HMMA.
