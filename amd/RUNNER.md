@@ -118,7 +118,7 @@ Reproduce (commit at or after this section):
 2. On the box: `bash setup.sh` (amd/box/setup.sh: ROCm dev, Rust, Python), then the fetch script
    (~/.cache/v2work/amd_fetch2.sh locally: dsx-mxfp4 + checkpoint config/tokenizer/Engram shards 47-48, with
    restarts on stalls; then `hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 config.json`, which the include list
-   misses). rsync this repo to /root/dsx and `cargo build --release -p dsx-amd` (~35 s).
+   misses; copy dsx-mxfp4/dsx-engram.json into v41-1017). rsync this repo to /root/dsx and `cargo build --release -p dsx-amd` (~35 s).
 3. Start the dev runner with room for the slots at 256K:
    `DSXA_RESERVE_GB=24 DSXA_WEIGHTS=/data/models/dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf
     ./target/release/dsx-amd dev --model /data/models/v41-1017 --rank /data/models/dsx-mxfp4/expert-rank.json
@@ -126,7 +126,9 @@ Reproduce (commit at or after this section):
 4. `amd/box/devcmd.sh "lspec 8 240 512"` prints plain and speculative tok/s per session and the first session's
    output (it should be the requested file with `// NOTE:` comments); `lspec 12 240 512` for 12 sessions.
 For a client-facing demo use `dsx-amd serve --slots 8 --batch-ctx 262144 --ctx 262200` (same environment), the
-OpenAI-compatible server on port 8090 with continuous batching and prefix reuse.
+OpenAI-compatible server on port 8090 with continuous batching and prefix reuse; `--admin-port 8091` adds Volta's admin dashboard (`/`) and `/stats`, and `--temperature 0.6 --top-p
+0.95` matches Volta's gauntlet sampling (sampled sessions still speculate: exact speculative sampling). The gauntlet copy is
+`~/gauntlet-amd` (setup.sh, start.sh, watch.sh; Pi provider `dsx-amd` at localhost:9090).
 
 ## Single-session expert products: sweep and counters (rental 6, 2026-10-23 04:22-04:44 PT)
 

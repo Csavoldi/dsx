@@ -16,3 +16,4 @@ Budget for the batched runner (lxe, 2026-10-23, relayed by Supervisor): $100 of 
 | 4 | 2026-10-23 03:27 | 03:30 | 0.05 | $0.19 | $11.40 | dense few-token product microbenchmark (RUNNER.md item 1) |
 | 5 | 2026-10-23 03:53 | 04:11 | 0.30 | $1.14 | $12.54 | batched-step graphs vs eager, KL, speculation with graphs |
 | 6 | 2026-10-23 04:22 | 04:44 | 0.37 | $1.39 | $13.93 | launch floor, single-session expert sweep + counters, then droplet destroyed (DSX paused by lxe) |
+| 7 | 2026-10-23 08:22 | (running) | | | | serving demo: API + stats dashboard tunneled to 9090/9091, gauntlet staged (lxe) |
