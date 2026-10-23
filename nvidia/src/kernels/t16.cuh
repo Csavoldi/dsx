@@ -295,6 +295,51 @@ __device__ __forceinline__ void t16d_gemv_k(const uint4 *__restrict__ xp, const 
   }
   part[((size_t)s * picks + j) * n + 16 * nb + c] = f;
 }
+// DSX_T16_GEMV=0: the kernel before the cp.async staging (for A/Bs; same launch, same output bits).
+// part [S][T K][n]: split s of k's 256-groups. One warp per (pick, pair of tile columns, split); block 128.
+template <int K2>
+__device__ __forceinline__ void t16d_gemv0_k(const uint4 *__restrict__ xp, const float *__restrict__ xd, const int *__restrict__ xs,
+                                            const int *__restrict__ sel, const ExpSlot *__restrict__ tab, const unsigned char *__restrict__ base,
+                                            int layer, int E, int K, int T, int role, int k, int n, int S, float *__restrict__ part) {
+  const int lane = threadIdx.x & 31, warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  const int nbs = n / 16, groups = k / 256, pairs = nbs / 2, picks = T * K;
+  if (warp >= picks * pairs * S) return;
+  const int s = warp / (picks * pairs), r = warp % (picks * pairs), j = r / pairs, nb = 2 * (r % pairs) + lane / 16, c = lane % 16;
+  const ExpSlot sl = tab[layer * E + sel[j]];
+  if (sl.gate == ~0ull) return;
+  const int g0 = groups * s / S, g1 = groups * (s + 1) / S;
+  constexpr int WT = 4 * K2, NB = 32 * WT;
+  const int e15 = t16_hend(K2, 16 * c + 15) + NB, hw = (e15 - 1) / 32;
+  const int i2 = hw % WT, i1 = (hw - 1) % WT, i0 = (hw - 2) % WT, sh = (hw + 1) * 32 - e15;
+  const uint32_t *tp = (const uint32_t *)t16_mat(sl, base, role) + ((size_t)16 * g0 * nbs + nb) * WT;
+  const uint32_t step = (uint32_t)nbs * WT;
+  const uint4 *xe = xp + (size_t)j * (k / 8) + 2 * 16 * g0;
+  float f = 0.f;
+  for (int gr = g0; gr < g1; gr++) {
+    int acc = 0;
+#pragma unroll 4
+    for (int i = 0; i < 16; i++, tp += step, xe += 2) {
+      uint32_t p[16];
+      t16_prod16<K2>(tp, i0, i1, i2, sh, p);
+      const uint4 xa = __ldg(xe), xb = __ldg(xe + 1);
+      const uint32_t xw[8] = {xa.x, xa.y, xa.z, xa.w, xb.x, xb.y, xb.z, xb.w};
+#pragma unroll
+      for (int q = 0; q < 8; q++) acc = t16_dp4a(__byte_perm(p[2 * q], p[2 * q + 1], 0x5410), (int)xw[q], acc);
+    }
+    f += __ldg(xd + (size_t)j * groups + gr) * (0.009567260742f * (float)acc - 2.4375f * (float)__ldg(xs + (size_t)j * groups + gr));
+  }
+  part[((size_t)s * picks + j) * n + 16 * nb + c] = f;
+}
+#define T16D_GEMV0(K2)                                                                                                                  \
+  extern "C" __global__ void __launch_bounds__(128) t16d_gemv0_##K2(const uint4 *xp, const float *xd, const int *xs, const int *sel,  \
+                                                                    const ExpSlot *tab, const unsigned char *base, int layer, int E,    \
+                                                                    int K, int T, int role, int k, int n, int S, float *part) {         \
+    t16d_gemv0_k<K2>(xp, xd, xs, sel, tab, base, layer, E, K, T, role, k, n, S, part);                                                 \
+  }
+T16D_GEMV0(3)
+T16D_GEMV0(4)
+T16D_GEMV0(5)
+
 #define T16D_GEMV(K2)                                                                                                                   \
   extern "C" __global__ void __launch_bounds__(128) t16d_gemv_##K2(const uint4 *xp, const float *xd, const int *xs, const int *sel,   \
                                                                    const ExpSlot *tab, const unsigned char *base, int layer, int E,     \
