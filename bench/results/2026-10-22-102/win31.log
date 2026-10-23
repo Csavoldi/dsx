@@ -1,0 +1,42 @@
+  07:08:43 +32.0°C GPU 47, 26.68 W 40, 35.72 W 
+== round 1 base
+teacher-forced decode 1023 steps in 30.15 s (33.93 tok/s)
+{"tokens": 1023, "nll": 2.314597, "ppl": 10.1208, "kl_top256": 0.157755, "top1_agree": 0.836755}
+  07:11:27 +34.0°C GPU 51, 27.60 W 41, 35.73 W 
+== round 1 K
+teacher-forced decode 1023 steps in 29.18 s (35.06 tok/s)
+{"tokens": 1023, "nll": 2.314597, "ppl": 10.1208, "kl_top256": 0.157755, "top1_agree": 0.836755}
+  07:14:10 +35.0°C GPU 52, 28.05 W 41, 35.56 W 
+== round 1 Q
+teacher-forced decode 1023 steps in 29.08 s (35.17 tok/s)
+{"tokens": 1023, "nll": 2.310062, "ppl": 10.0750, "kl_top256": 0.151646, "top1_agree": 0.843597}
+  07:16:54 +36.0°C GPU 52, 28.13 W 41, 36.16 W 
+== round 1 QA
+teacher-forced decode 1023 steps in 28.98 s (35.30 tok/s)
+{"tokens": 1023, "nll": 2.310422, "ppl": 10.0787, "kl_top256": 0.150910, "top1_agree": 0.839687}
+  07:19:39 +40.0°C GPU 52, 28.41 W 41, 35.17 W 
+== round 2 base
+teacher-forced decode 1023 steps in 30.20 s (33.87 tok/s)
+{"tokens": 1023, "nll": 2.310062, "ppl": 10.0750, "kl_top256": 0.151646, "top1_agree": 0.843597}
+  07:22:26 +36.0°C GPU 52, 27.92 W 41, 36.53 W 
+== round 2 K
+teacher-forced decode 1023 steps in 29.19 s (35.04 tok/s)
+{"tokens": 1023, "nll": 2.314597, "ppl": 10.1208, "kl_top256": 0.157755, "top1_agree": 0.836755}
+  07:25:12 +36.0°C GPU 52, 28.17 W 41, 35.41 W 
+== round 2 Q
+teacher-forced decode 1023 steps in 29.08 s (35.18 tok/s)
+{"tokens": 1023, "nll": 2.310062, "ppl": 10.0750, "kl_top256": 0.151646, "top1_agree": 0.843597}
+  07:27:56 +36.0°C GPU 52, 28.32 W 41, 35.46 W 
+== round 2 QA
+teacher-forced decode 1023 steps in 28.98 s (35.30 tok/s)
+{"tokens": 1023, "nll": 2.310422, "ppl": 10.0787, "kl_top256": 0.150910, "top1_agree": 0.839687}
+  07:30:43 +36.0°C GPU 52, 28.40 W 41, 35.44 W 
+== adapt 0 base
+teacher-forced decode 1023 steps in 44.20 s (23.14 tok/s)
+{"tokens": 1023, "nll": 2.312076, "ppl": 10.0954, "kl_top256": 0.160876, "top1_agree": 0.832845}
+  07:33:36 +37.0°C GPU 53, 28.22 W 41, 36.58 W 
+== adapt 0 Q
+teacher-forced decode 1023 steps in 43.85 s (23.33 tok/s)
+{"tokens": 1023, "nll": 2.312076, "ppl": 10.0954, "kl_top256": 0.160876, "top1_agree": 0.832845}
+gen base: decode 120 tokens in 3.27 s (36.73 tok/s); CPU experts busy 14.1 ms/token, 23.0% of picks on the CPU; GPU0 expert swaps 960 (0.26 ms/token host)
+gen h2: decode 120 tokens in 3.13 s (38.34 tok/s); CPU experts busy 14.0 ms/token, 23.0% of picks on the CPU; GPU0 expert swaps 960 (0.26 ms/token host)

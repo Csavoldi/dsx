@@ -182,6 +182,10 @@ pub struct GpuModel<'m> {
     fuse2: bool,
     /// one token: attention merge + inverse RoPE + fake FP8 in one launch (DSX_FUSE3=0: separate)
     fuse3: bool,
+    /// one token: the sublayers' closing hc_post inside o_b's GEMV and combine_post (DSX_FUSE4=0: separate)
+    fuse4: bool,
+    post_attn_done: bool,
+    post_ffn_done: bool,
     warned_nan: bool,
     /// pinned staging for this token's Engram rows ([engram layer][rows][dim] f32)
     eng_host: crate::gpu::HostBuf,
@@ -286,7 +290,7 @@ pub const KERNELS: &[&str] = &[
     "gemv_q8_0", "gemv_f16", "gemv_f32", "rmsnorm", "round_bf16", "rope", "fake_fp8", "fake_fp4", "hc_mixes", "hc_pre",
     "hc_post", "sparse_attn", "sparse_attn_tile", "sparse_attn_merge", "store_bf16", "indexer_score", "compress_pool", "router_topk", "swiglu", "add_inplace",
     "engram_gate", "scale_bf16", "gemv_fp8b32", "gemv_bf16", "fake_fp8_copy", "gemv_q2_0", "gemv_ptq1_0", "gemv_q3_k", "publish_route", "combine_experts", "spin_wait", "rope_pos", "compress_pairs", "gather_f16", "swiglu_rows_f16", "scatter_add", "engram_gate_t", "dequant_f16", "dequant_f16_iq8", "dequant_t16_f16", "t16_pre", "t16_post", "to_f16", "ring_scatter", "pack_f16", "gemv_q8r", "gemv_q8r4", "hc_dots", "hc_dots_t", "hc_finish", "hc_finish_w", "gemv_q8g", "hc_pre_mb", "hc_post_mb", "to_bf16", "gemv_q8r_sk", "gemv_f16_sk", "gemv_bf16_sk", "gemv_f32_sk", "hc_part", "hc_reduce", "gemv_q6p", "dequant_q6p_f16", "gemv_q5p", "dequant_q5p_f16", "gemv_q6g4", "gemv_q6g8", "gemv_q6s8", "gemv_q5p4",
-    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "gemv_q8g_bf", "gemv_q8r_gu", "sparse_attn_merge_rf", "gemv_q8r1_rope", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
+    "fwht_rows_f16", "hc_reduce_finish", "kv_norm_rope_store", "add_noise_rows", "hc_add_post", "hc_pre_norm", "router_publish", "gemv_q8r1", "gemv_bf16_sk1", "gemv_f16_sk1", "gemv_q8r_sk1", "combine_post", "gemv_q8g_bf", "gemv_q8r_gu", "sparse_attn_merge_rf", "gemv_q8r1_rope", "gemv_q8r1_post", "vit_rmsnorm", "vit_bias_add", "vit_rope_split", "vit_softmax", "vit_heads_merge", "vit_swiglu", "vit_unfold3", "vit_gelu_bias", "vit_to_bf16",
 ];
 
 fn f32buf(g: &Gpu, v: &[f32]) -> Result<Buf> {
@@ -466,6 +470,9 @@ impl<'m> GpuModel<'m> {
             combine_fused: std::env::var("DSX_COMBINE_FUSED").map_or(true, |v| v != "0"),
             fuse2: std::env::var("DSX_FUSE2").map_or(true, |v| v != "0"),
             fuse3: std::env::var("DSX_FUSE3").map_or(true, |v| v != "0"),
+            fuse4: std::env::var("DSX_FUSE4").map_or(true, |v| v != "0"),
+            post_attn_done: false,
+            post_ffn_done: false,
             warned_nan: false,
             eng_host: crate::gpu::HostBuf::new(4 << 20)?,
             bonus: None,
@@ -849,8 +856,10 @@ impl<'m> GpuModel<'m> {
                 ((d as u32).div_ceil(256), 1, 1),
                 256,
                 0,
-                &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(cpu_mask), Arg::I(self.aux.len() as i32), Arg::I(crate::handoff::y_cpu2(d) as i32), Arg::I(crate::handoff::y_cpu3(d) as i32), Arg::P(self.h.ptr), Arg::I(inj_off), Arg::P(prev), Arg::P(self.dpost.ptr + ((li % 2) * 16) as u64), Arg::P(self.mix_f.ptr)],
+                &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(cpu_mask), Arg::I(self.aux.len() as i32), Arg::I(crate::handoff::y_cpu2(d) as i32), Arg::I(crate::handoff::y_cpu3(d) as i32), Arg::P(self.h.ptr), Arg::I(inj_off), Arg::P(prev), Arg::P(self.dpost.ptr + ((li % 2) * 16) as u64), Arg::P(self.mix_f.ptr), Arg::I(self.fuse4 as i32)],
             )?;
+            // the layer's closing hc_post ran inside combine_post
+            self.post_ffn_done = self.fuse4;
         } else {
             self.g.launch(self.k["combine_experts"], (((t * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(a), Arg::P(self.out0.ptr), Arg::P(d0), Arg::I(d as i32), Arg::I(cpu_mask), Arg::I(self.aux.len() as i32), Arg::I(t as i32), Arg::I(crate::handoff::y_cpu2(d) as i32), Arg::I(crate::handoff::y_cpu3(d) as i32)])?;
         }
@@ -1445,6 +1454,16 @@ impl<'m> GpuModel<'m> {
         if !rounded {
             self.g.launch(self.k["round_bf16"], (((c.o_groups * c.o_lora) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.r.ptr), Arg::I((c.o_groups * c.o_lora) as i32)])?;
         }
+        // o_b with the attention half's hc_post in its epilogue (gemv_q8r1_post)
+        let ob = &l.o_b;
+        if self.fuse4 && self.q8r1 && ob.ty == GType::Q8_0 && ob.q8r && !ob.act_fp8 && ob.rows >= 2048 && ob.rows == c.dim {
+            let (wp, sp, _) = ob.ptrs(0);
+            let (rows, cols) = (ob.rows, ob.cols);
+            self.hc_join_main()?;
+            self.g.launch(self.k["gemv_q8r1_post"], ((rows as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(wp), Arg::P(self.r.ptr), Arg::P(self.a.ptr), Arg::I(rows as i32), Arg::I(cols as i32), Arg::P(sp), Arg::P(self.h.ptr), Arg::P(self.mix_a.ptr)])?;
+            self.post_attn_done = true;
+            return Ok(());
+        }
         self.gemv(&l.o_b, self.r.ptr, self.a.ptr)
     }
 
@@ -1791,8 +1810,10 @@ impl<'m> GpuModel<'m> {
             self.ev(li, 10)?;
             self.hmark(th, if li < 20 { "host: attention enc" } else { "host: attention dec" });
             self.mark(&mut tm, "attention")?;
-            self.hc_join_main()?;
-            self.g.launch(self.k["hc_post_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.a.ptr), Arg::P(self.mix_a.ptr), Arg::I(d as i32)])?;
+            if !std::mem::take(&mut self.post_attn_done) {
+                self.hc_join_main()?;
+                self.g.launch(self.k["hc_post_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.a.ptr), Arg::P(self.mix_a.ptr), Arg::I(d as i32)])?;
+            }
             // ffn half
             self.hc_pre_norm(&self.mix_a, &self.layers[li].ffn_norm, true)?;
             self.hc_mixes(&self.layers[li].hc_ffn, &self.mix_f)?;
@@ -1801,8 +1822,10 @@ impl<'m> GpuModel<'m> {
             if self.worker.is_some() { self.moe_fast(li)?; } else { self.moe(li)?; }
             self.hmark(th, if li < 20 { "host: moe enc" } else { "host: moe dec" });
             self.mark(&mut tm, "moe")?;
-            self.hc_join_main()?;
-            self.g.launch(self.k["hc_post_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.a.ptr), Arg::P(self.mix_f.ptr), Arg::I(d as i32)])?;
+            if !std::mem::take(&mut self.post_ffn_done) {
+                self.hc_join_main()?;
+                self.g.launch(self.k["hc_post_mb"], ((d as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(self.h.ptr), Arg::P(self.a.ptr), Arg::P(self.mix_f.ptr), Arg::I(d as i32)])?;
+            }
             if std::env::var_os("DSX_DUMP").is_some() && self.pos < 4 {
                 let h: Vec<f32> = self.g.download(self.h.ptr, c.hc * d)?;
                 crate::model::dump("gpu", self.pos, li, &h);

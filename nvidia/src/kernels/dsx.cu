@@ -18,6 +18,12 @@ __device__ __forceinline__ float warp_max(float v) {
   return v;
 }
 __device__ __forceinline__ float bf16r(float x) { return __bfloat162float(__float2bfloat16(x)); }
+// hc_post for element i (output xv of the sublayer): the one expression hc_post_mb and the fused kernels share
+__device__ __forceinline__ void hc_post_elem(float *h, int i, int d, const float *m, float xv) {
+  float r0 = h[i], r1 = h[d + i], r2 = h[2 * d + i], r3 = h[3 * d + i];
+#pragma unroll
+  for (int k = 0; k < 4; k++) h[k * d + i] = bf16r(m[4 + k] * xv + m[8 + k] * r0 + m[12 + k] * r1 + m[16 + k] * r2 + m[20 + k] * r3);
+}
 __device__ __forceinline__ float ld_h(const uint8_t *p) {
   return __half2float(__ushort_as_half((uint16_t)p[0] | ((uint16_t)p[1] << 8)));
 }
@@ -1273,11 +1279,12 @@ extern "C" __global__ void combine_experts(float *a, const float *out0, const ui
 
 // decode with DSX_DEFER (T = 1): combine_experts, plus the previous layer's deferred CPU experts entering the residual
 // (hc_add_post: h[k] = bf16(h[k] + post_prev[k] * y)) when inj_off >= 0, plus this layer's output weights saved for its
-// own deferred experts (post_cur[0..4] = mixes[4..8], the 16-byte copy) when post_cur is set. One launch instead of three,
-// bit-identical: the same per-element expressions. grid ceil(dim / 256), block 256.
+// own deferred experts (post_cur[0..4] = mixes[4..8], the 16-byte copy) when post_cur is set, plus the layer's closing
+// hc_post with `mixes` when do_post. One launch instead of four, bit-identical: the same per-element expressions.
+// grid ceil(dim / 256), block 256.
 extern "C" __global__ void combine_post(float *a, const float *out0, const uint8_t *xch, int dim, int cpu_mask, int n_aux,
                                         int cpu2_off, int cpu3_off, float *h, int inj_off, const float *post_prev,
-                                        float *post_cur, const float *mixes) {
+                                        float *post_cur, const float *mixes, int do_post) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (post_cur && i < 4) post_cur[i] = mixes[4 + i];
   if (i >= dim) return;
@@ -1291,7 +1298,10 @@ extern "C" __global__ void combine_post(float *a, const float *out0, const uint8
 #pragma unroll
     for (int k = 0; k < 4; k++) h[k * dim + i] = bf16r(h[k * dim + i] + post_prev[k] * y);
   }
-  a[i] = bf16r(v);
+  float av = bf16r(v);
+  a[i] = av;
+  // the end-of-layer hc_post (hc_post_mb with mixes) for this element
+  if (do_post) hc_post_elem(h, i, dim, mixes, av);
 }
 
 // ---------------------------------------------------------------- prefill: weights -> f16 for cuBLAS
@@ -1751,6 +1761,34 @@ extern "C" __global__ void gemv_q8r1(const int8_t *__restrict__ qs, const float 
   gemv_q8h_body<1, 1>(qs, x, y, rows, k, 1, ldx, ldy, d);
 }
 
+// decode o_b: gemv_q8r1, then hc_post (hc_post_mb with mixes) for each output element in the epilogue (rows = d).
+// Bit-identical to gemv_q8r1 + hc_post_mb. grid ceil(rows / 4), block 128.
+extern "C" __global__ void gemv_q8r1_post(const int8_t *__restrict__ qs, const float *__restrict__ x, float *__restrict__ y,
+                                          int rows, int k, const __half *__restrict__ d, float *h, const float *mixes) {
+  int r = blockIdx.x * 4 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+  if (r >= rows) return;
+  const int8_t *qr = qs + (size_t)r * k;
+  const __half *dr = d + (size_t)r * (k / 32);
+  float acc = 0.f;
+  for (int i = lane * 16; i < k; i += 512) {
+    int4 raw = __ldg((const int4 *)(qr + i));
+    const int8_t *q = (const int8_t *)&raw;
+    float sc = __half2float(dr[i / 32]);
+    float wv[16];
+#pragma unroll
+    for (int j = 0; j < 16; j++) wv[j] = (float)q[j] * sc;
+    const float4 *xp = (const float4 *)(x + i);
+    float4 a = xp[0], b = xp[1], c = xp[2], e = xp[3];
+    acc += wv[0] * a.x + wv[1] * a.y + wv[2] * a.z + wv[3] * a.w + wv[4] * b.x + wv[5] * b.y + wv[6] * b.z + wv[7] * b.w +
+           wv[8] * c.x + wv[9] * c.y + wv[10] * c.z + wv[11] * c.w + wv[12] * e.x + wv[13] * e.y + wv[14] * e.z + wv[15] * e.w;
+  }
+  float s = warp_sum(acc);
+  if (lane == 0) {
+    y[r] = s;
+    hc_post_elem(h, r, rows, mixes, s);
+  }
+}
+
 // decode q_b: gemv_q8r1 with RoPE on each head's last rd rows at `pos` (rope with inverse = 0) in the epilogue: a pair is
 // rows (2j, 2j + 1) of the same 4-row block, exchanged through shared memory. Bit-identical to gemv_q8r1 + rope.
 // rows % 4 == 0, hd % 4 == 0, rd even. grid rows / 4, block 128.
@@ -1917,10 +1955,7 @@ extern "C" __global__ void hc_pre_mb(const float *h, const float *mixes, int mof
 extern "C" __global__ void hc_post_mb(float *h, const float *x, const float *mixes, int d) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= d) return;
-  const float *m = mixes;
-  float r0 = h[i], r1 = h[d + i], r2 = h[2 * d + i], r3 = h[3 * d + i], xv = x[i];
-#pragma unroll
-  for (int k = 0; k < 4; k++) h[k * d + i] = bf16r(m[4 + k] * xv + m[8 + k] * r0 + m[12 + k] * r1 + m[16 + k] * r2 + m[20 + k] * r3);
+  hc_post_elem(h, i, d, mixes, x[i]);
 }
 
 // One token: hc_pre_mb + rmsnorm(x, w) in one launch, bit-identical to the two: the same per-element expressions, and
