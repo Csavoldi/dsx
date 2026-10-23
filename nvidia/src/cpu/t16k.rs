@@ -22,6 +22,12 @@ pub const M1_MUL: u32 = 0x83DC_D12D;
 pub const M1_CB: f32 = 0.006767272949;
 pub const M1_C0: f32 = 3.453125;
 
+/// DSX_T16_MULTI=0 (read once): gemv_multi runs gemv per token, the per-token baseline for benchmarks
+pub fn multi() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var("DSX_T16_MULTI").map_or(true, |v| v != "0"))
+}
+
 pub fn mul1() -> bool {
     static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *M.get_or_init(|| std::env::var("DSX_T16_CODEBOOK").is_ok_and(|v| v == "mul1"))
@@ -115,6 +121,24 @@ pub fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: u
         #[cfg(target_arch = "x86_64")]
         Isa::Vnni512 => unsafe { vnni512::gemv(m, k2, k, n, a, nb0, nb1, out) },
         _ => gemv_scalar(m, k2, k, n, a, nb0, nb1, out),
+    }
+}
+
+/// gemv for several tokens on the same columns: outs[i] = gemv(acts[i]) bit for bit, each tile decoded once per up
+/// to 8 tokens (SIMD; the scalar and mul1 paths, and DSX_T16_MULTI=0, run gemv per token)
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_multi(m: &[u8], k2: usize, k: usize, n: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]]) {
+    if !mul1() && multi() {
+        match isa() {
+            #[cfg(target_arch = "x86_64")]
+            Isa::Vnni => return unsafe { vnni::gemv_multi(m, k2, k, n, acts, nb0, nb1, outs) },
+            #[cfg(target_arch = "x86_64")]
+            Isa::Vnni512 => return unsafe { vnni512::gemv_multi(m, k2, k, n, acts, nb0, nb1, outs) },
+            _ => {}
+        }
+    }
+    for (a, o) in acts.iter().zip(outs.iter_mut()) {
+        gemv(m, k2, k, n, a, nb0, nb1, o);
     }
 }
 
@@ -249,6 +273,41 @@ macro_rules! tile {
     }};
 }
 
+// tile! for N tokens (gemv_n), one half of the tile (columns 0-7: views 0 and 2, 8-15: 1 and 3): each pair's product
+// is decoded once and dotted with every token's pair word; for N > 4 gemv_n runs a group's 16 tiles per half, so the
+// N accumulators, two views and the shift temporaries fit the 16 registers up to N = 8
+macro_rules! tile_n {
+    ($t:ident, $p:ident, $msk:ident, $x:ident, $kb:ident, $acc:ident, $vl:literal, $vh:literal, $mul:ident; $($q:literal: ($ka:ident $($oa:literal)?, $kb2:ident $($ob:literal)?)),*) => {{
+        let l = view($t, $p, &$msk, $vl);
+        let h = view($t, $p, &$msk, $vh);
+        $(
+            let pr = _mm256_mullo_epi16(_mm256_blend_epi16::<0b1010_1010>(sh!(l, h, $ka $($oa)?), sh!(l, h, $kb2 $($ob)?)), $mul);
+            for i in 0..N {
+                $acc[i] = dp($acc[i], pr, _mm256_set1_epi32(*$x[i].add(8 * $kb + $q)));
+            }
+        )*
+    }};
+}
+
+// tile_n for N <= 4: both halves per tile, 2N accumulator chains (vpdpbusd's latency, 5 clocks, would bound fewer)
+macro_rules! tile_n2 {
+    ($t:ident, $p:ident, $msk:ident, $x:ident, $kb:ident, $a0:ident, $a1:ident, $mul:ident; $($q:literal: ($ka:ident $($oa:literal)?, $kb2:ident $($ob:literal)?)),*) => {{
+        let l0 = view($t, $p, &$msk, 0);
+        let l1 = view($t, $p, &$msk, 1);
+        let h0 = view($t, $p, &$msk, 2);
+        let h1 = view($t, $p, &$msk, 3);
+        $(
+            let p0 = _mm256_mullo_epi16(_mm256_blend_epi16::<0b1010_1010>(sh!(l0, h0, $ka $($oa)?), sh!(l0, h0, $kb2 $($ob)?)), $mul);
+            let p1 = _mm256_mullo_epi16(_mm256_blend_epi16::<0b1010_1010>(sh!(l1, h1, $ka $($oa)?), sh!(l1, h1, $kb2 $($ob)?)), $mul);
+            for i in 0..N {
+                let xq = _mm256_set1_epi32(*$x[i].add(8 * $kb + $q));
+                $a0[i] = dp($a0[i], p0, xq);
+                $a1[i] = dp($a1[i], p1, xq);
+            }
+        )*
+    }};
+}
+
 // mul1: one window per 32-bit lane (window j = the view shifted right by o_j = end(15) - end(j), masked to 16 bits),
 // vpmulld by 0x83DCD12D, vpdpbusd of the product's 4 bytes with [q_j q_j q_j q_j]: 8 weights per multiply and dot
 macro_rules! tile_m1 {
@@ -366,6 +425,104 @@ macro_rules! t16_kernels {
                 }
             }
 
+            /// gemv for N tokens at once: the same integer accumulators and epilogue per token, the decode shared
+            #[inline]
+            #[target_feature(enable = $feat)]
+            unsafe fn gemv_n<const N: usize, const BOTH: bool>(m: &[u8], k2: usize, k: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]]) {
+                unsafe {
+                    let p = &plans()[k2 - 3];
+                    let mut msk = [[[_mm_setzero_si128(); 2]; 2]; 4];
+                    for v in 0..4 {
+                        for hh in 0..2 {
+                            for q in 0..2 {
+                                msk[v][hh][q] = _mm_loadu_si128(p.mask[v][hh][q].as_ptr() as *const __m128i);
+                            }
+                        }
+                    }
+                    let (kt, tb) = (k / 16, 16 * k2);
+                    let mul = _mm256_set1_epi16(t16::MUL as i16);
+                    let x: [*const i32; N] = std::array::from_fn(|i| acts[i].x4.as_ptr());
+                    for nb in nb0..nb1 {
+                        let (mut f0, mut f1) = ([_mm256_setzero_ps(); N], [_mm256_setzero_ps(); N]);
+                        let col = m.as_ptr().add(nb * kt * tb);
+                        for gr in 0..k / 256 {
+                            let (mut a0, mut a1) = ([_mm256_setzero_si256(); N], [_mm256_setzero_si256(); N]);
+                            if BOTH {
+                                for kb in 16 * gr..16 * gr + 16 {
+                                    let t = col.add(kb * tb);
+                                    match k2 {
+                                        3 => tile_n2!(t, p, msk, x, kb, a0, a1, mul; 0: (lo 23, lo 5), 1: (lo 20, lo 2), 2: (lo 17, left 1), 3: (lo 14, left 4), 4: (lo 11, left 7), 5: (lo 8, left 10), 6: (lo 5, left 13), 7: (lo 2, left 16)),
+                                        4 => tile_n2!(t, p, msk, x, kb, a0, a1, mul; 0: (lo 30, lo 12), 1: (lo 26, lo 8), 2: (lo 22, lo 4), 3: (lo 18, zero), 4: (lo 14, left 4), 5: (lo 10, left 8), 6: (lo 6, left 12), 7: (lo 2, left 16)),
+                                        _ => tile_n2!(t, p, msk, x, kb, a0, a1, mul; 0: (hi 6, lo 19), 1: (hi 1, lo 14), 2: (lo 28, lo 9), 3: (lo 23, lo 4), 4: (lo 18, left 1), 5: (lo 13, left 6), 6: (lo 8, left 11), 7: (lo 3, left 16)),
+                                    }
+                                }
+                            } else {
+                                // columns 0-7 of the group's 16 tiles, then 8-15: N accumulators live, not 2N
+                                for kb in 16 * gr..16 * gr + 16 {
+                                    let t = col.add(kb * tb);
+                                    match k2 {
+                                        3 => tile_n!(t, p, msk, x, kb, a0, 0, 2, mul; 0: (lo 23, lo 5), 1: (lo 20, lo 2), 2: (lo 17, left 1), 3: (lo 14, left 4), 4: (lo 11, left 7), 5: (lo 8, left 10), 6: (lo 5, left 13), 7: (lo 2, left 16)),
+                                        4 => tile_n!(t, p, msk, x, kb, a0, 0, 2, mul; 0: (lo 30, lo 12), 1: (lo 26, lo 8), 2: (lo 22, lo 4), 3: (lo 18, zero), 4: (lo 14, left 4), 5: (lo 10, left 8), 6: (lo 6, left 12), 7: (lo 2, left 16)),
+                                        _ => tile_n!(t, p, msk, x, kb, a0, 0, 2, mul; 0: (hi 6, lo 19), 1: (hi 1, lo 14), 2: (lo 28, lo 9), 3: (lo 23, lo 4), 4: (lo 18, left 1), 5: (lo 13, left 6), 6: (lo 8, left 11), 7: (lo 3, left 16)),
+                                    }
+                                }
+                                for kb in 16 * gr..16 * gr + 16 {
+                                    let t = col.add(kb * tb);
+                                    match k2 {
+                                        3 => tile_n!(t, p, msk, x, kb, a1, 1, 3, mul; 0: (lo 23, lo 5), 1: (lo 20, lo 2), 2: (lo 17, left 1), 3: (lo 14, left 4), 4: (lo 11, left 7), 5: (lo 8, left 10), 6: (lo 5, left 13), 7: (lo 2, left 16)),
+                                        4 => tile_n!(t, p, msk, x, kb, a1, 1, 3, mul; 0: (lo 30, lo 12), 1: (lo 26, lo 8), 2: (lo 22, lo 4), 3: (lo 18, zero), 4: (lo 14, left 4), 5: (lo 10, left 8), 6: (lo 6, left 12), 7: (lo 2, left 16)),
+                                        _ => tile_n!(t, p, msk, x, kb, a1, 1, 3, mul; 0: (hi 6, lo 19), 1: (hi 1, lo 14), 2: (lo 28, lo 9), 3: (lo 23, lo 4), 4: (lo 18, left 1), 5: (lo 13, left 6), 6: (lo 8, left 11), 7: (lo 3, left 16)),
+                                    }
+                                }
+                            }
+                            let cb = _mm256_set1_ps(C_B);
+                            for i in 0..N {
+                                let d = _mm256_set1_ps(*acts[i].d.get_unchecked(gr));
+                                let c0 = _mm256_set1_ps(C_0 * *acts[i].s.get_unchecked(gr) as f32);
+                                f0[i] = _mm256_fmadd_ps(d, _mm256_fmsub_ps(cb, _mm256_cvtepi32_ps(a0[i]), c0), f0[i]);
+                                f1[i] = _mm256_fmadd_ps(d, _mm256_fmsub_ps(cb, _mm256_cvtepi32_ps(a1[i]), c0), f1[i]);
+                            }
+                        }
+                        for i in 0..N {
+                            let o = outs[i].as_mut_ptr().add((nb - nb0) * 16);
+                            _mm256_storeu_ps(o, f0[i]);
+                            _mm256_storeu_ps(o.add(8), f1[i]);
+                        }
+                    }
+                }
+            }
+
+            /// gemv of several tokens' activations against the same columns: chunks of up to 8 tokens per decode. Chunks
+            /// of up to 4 tokens at K 1.5 and 2, 2 at K 2.5 (longer shifts, more temporaries) take both halves of a tile
+            /// at once (2N accumulator chains), larger ones a group's tiles per half (N live accumulators, no spills):
+            /// the faster of the two per (K, N) on Raptor Cove
+            #[target_feature(enable = $feat)]
+            pub(super) unsafe fn gemv_multi(m: &[u8], k2: usize, k: usize, n: usize, acts: &[&Act], nb0: usize, nb1: usize, outs: &mut [&mut [f32]]) {
+                unsafe {
+                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && acts.len() == outs.len());
+                    for (a, o) in acts.iter().zip(outs.iter()) {
+                        assert!(a.x4.len() >= k / 2 && a.d.len() >= k / 256 && a.s.len() >= k / 256 && o.len() >= 16 * (nb1 - nb0));
+                    }
+                    let mut i = 0;
+                    while i < acts.len() {
+                        let (a, o) = (&acts[i..], &mut outs[i..]);
+                        let both = |c: usize| c <= [4, 4, 2][k2 - 3];
+                        i += match a.len() {
+                            1 => { gemv(m, k2, k, n, a[0], nb0, nb1, o[0]); 1 }
+                            2 => { gemv_n::<2, true>(m, k2, k, a, nb0, nb1, o); 2 }
+                            3 if both(3) => { gemv_n::<3, true>(m, k2, k, a, nb0, nb1, o); 3 }
+                            3 => { gemv_n::<3, false>(m, k2, k, a, nb0, nb1, o); 3 }
+                            4 if both(4) => { gemv_n::<4, true>(m, k2, k, a, nb0, nb1, o); 4 }
+                            4 => { gemv_n::<4, false>(m, k2, k, a, nb0, nb1, o); 4 }
+                            5 => { gemv_n::<5, false>(m, k2, k, a, nb0, nb1, o); 5 }
+                            6 => { gemv_n::<6, false>(m, k2, k, a, nb0, nb1, o); 6 }
+                            7 => { gemv_n::<7, false>(m, k2, k, a, nb0, nb1, o); 7 }
+                            _ => { gemv_n::<8, false>(m, k2, k, a, nb0, nb1, o); 8 }
+                        };
+                    }
+                }
+            }
+
             #[target_feature(enable = $feat)]
             pub(super) unsafe fn gemv_m1(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
                 unsafe {
@@ -455,6 +612,43 @@ mod tests {
         *s ^= *s >> 7;
         *s ^= *s << 17;
         *s
+    }
+
+    /// gemv_multi for 1..=17 tokens (chunks of 8 and every remainder) equals gemv per token bit for bit, on every K
+    #[test]
+    fn multi_matches_per_token() {
+        let mut seed = 0x51d7_348f_00c4_2b77u64;
+        for (k2, k, n) in [(3usize, 512usize, 256usize), (4, 768, 128), (5, 256, 384)] {
+            let ty = t16::ty_for_k2(k2).unwrap();
+            let m: Vec<u8> = (0..t16::matrix_bytes(ty, k, n)).map(|_| rng(&mut seed) as u8).collect();
+            let (suh, _) = scales(&m, k2, k, n);
+            let acts: Vec<Act> = (0..17)
+                .map(|_| {
+                    let x: Vec<f32> = (0..k).map(|_| (rng(&mut seed) % 2001) as f32 / 1000.0 - 1.0).collect();
+                    let mut a = Act::default();
+                    prep(&x, suh, k, &mut a);
+                    a
+                })
+                .collect();
+            for nt in 1..=17 {
+                for (nb0, nb1) in [(0, n / 16), (1, 4)] {
+                    let want: Vec<Vec<f32>> = (0..nt)
+                        .map(|i| {
+                            let mut y = vec![0f32; 16 * (nb1 - nb0)];
+                            gemv(&m, k2, k, n, &acts[i], nb0, nb1, &mut y);
+                            y
+                        })
+                        .collect();
+                    let mut got = vec![vec![0f32; 16 * (nb1 - nb0)]; nt];
+                    let ar: Vec<&Act> = acts[..nt].iter().collect();
+                    let mut or: Vec<&mut [f32]> = got.iter_mut().map(|v| &mut v[..]).collect();
+                    gemv_multi(&m, k2, k, n, &ar, nb0, nb1, &mut or);
+                    for i in 0..nt {
+                        assert!(want[i].iter().zip(&got[i]).all(|(a, b)| a.to_bits() == b.to_bits()), "k2 {k2} nt {nt} token {i} cols {nb0}..{nb1}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

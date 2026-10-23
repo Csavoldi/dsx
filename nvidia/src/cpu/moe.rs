@@ -238,7 +238,7 @@ impl CpuMoe {
         let (cnt, next) = (&s.cnt, &s.next);
         let groups = dim / 256;
         let work = |c: &Ctx| unsafe {
-            use super::t16k::{gemv, post_block, prep_group, scales};
+            use super::t16k::{gemv_multi, post_block, prep_group, scales};
             let (ag, au, ad, gb, ub, hb, outp) = (&ag, &au, &ad, &gb, &ub, &hb, &outp);
             // 1. x for gate and up
             let units: Vec<(usize, usize)> = toks.iter().enumerate().flat_map(|(e, tk)| (0..tk.len()).map(move |j| (e, j))).collect();
@@ -267,11 +267,14 @@ impl CpuMoe {
                     continue;
                 }
                 let (k2, k2d) = (crate::t16::k2(ex[e].gu).unwrap(), crate::t16::k2(ex[e].dn).unwrap());
-                for j in 0..tk.len() {
-                    let si = e * MAX_TOKENS + j;
-                    let (g, u) = (&mut *gb.0.add(si), &mut *ub.0.add(si));
-                    gemv(ex[e].gate, k2, dim, inter, &*ag.0.add(si), 4 * u0, 4 * u0 + 4, &mut g[64 * u0..]);
-                    gemv(ex[e].up, k2, dim, inter, &*au.0.add(si), 4 * u0, 4 * u0 + 4, &mut u[64 * u0..]);
+                // all of the expert's tokens per call: each tile decoded once per up to 8 tokens
+                let nt = tk.len();
+                let si = |j: usize| e * MAX_TOKENS + j.min(nt - 1);
+                for (acts, outs, mat) in [(ag, gb, ex[e].gate), (au, ub, ex[e].up)] {
+                    let a: [&super::t16k::Act; MAX_TOKENS] = std::array::from_fn(|j| &*acts.0.add(si(j)));
+                    let mut o: [&mut [f32]; MAX_TOKENS] =
+                        std::array::from_fn(|j| if j < nt { &mut (&mut *outs.0.add(si(j)))[64 * u0..] } else { Default::default() });
+                    gemv_multi(mat, k2, dim, inter, &a[..nt], 4 * u0, 4 * u0 + 4, &mut o[..nt]);
                 }
                 let b = u0 / 4;
                 if cnt[e * nb + b].fetch_add(1, AcqRel) == 3 {
@@ -293,7 +296,7 @@ impl CpuMoe {
             }
             c.barrier();
             // 3. down, 128 outputs per unit
-            let mut y = [0f32; 128];
+            let mut ys = [[0f32; 128]; MAX_TOKENS];
             loop {
                 let i = next[2].0.fetch_add(1, Relaxed);
                 if i >= dim / 128 {
@@ -302,9 +305,21 @@ impl CpuMoe {
                 for (e, tk) in toks.iter().enumerate() {
                     let k2d = crate::t16::k2(ex[e].dn).unwrap();
                     let svd = scales(ex[e].down, k2d, inter, dim).1;
+                    let nt = tk.len();
+                    if nt == 0 {
+                        continue;
+                    }
+                    let a: [&super::t16k::Act; MAX_TOKENS] = std::array::from_fn(|j| &*ad.0.add(e * MAX_TOKENS + j.min(nt - 1)));
+                    {
+                        let mut o: [&mut [f32]; MAX_TOKENS] = std::array::from_fn(|_| Default::default());
+                        for (oj, y) in o.iter_mut().zip(ys.iter_mut()).take(nt) {
+                            *oj = &mut y[..];
+                        }
+                        gemv_multi(ex[e].down, k2d, inter, dim, &a[..nt], 8 * i, 8 * i + 8, &mut o[..nt]);
+                    }
                     for (j, &tok) in tk.iter().enumerate() {
-                        gemv(ex[e].down, k2d, inter, dim, &*ad.0.add(e * MAX_TOKENS + j), 8 * i, 8 * i + 8, &mut y);
-                        post_block(&mut y, svd, 128 * i);
+                        let y = &mut ys[j];
+                        post_block(y, svd, 128 * i);
                         for (r, v) in y.iter().enumerate() {
                             *outp.0.add(tok * dim + 128 * i + r) += v;
                         }
@@ -716,6 +731,54 @@ mod tests {
             let err = rel(&got, &want);
             println!("T16 pooled T {t}: rel err {err:.2e} (int8 activations)");
             assert!(err < 0.03, "T {t}: T16 pooled vs reference {err}");
+        }
+    }
+
+    #[test]
+    fn t16_window_matches_single_tokens() {
+        use crate::t16;
+        let (dim, inter) = (1024usize, 512usize);
+        let mut seed = 0x1357_9bdf_2468_ace0u64;
+        let mut r = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut mat = |ty: GType, k: usize, n: usize| -> Vec<u8> {
+            let k2 = t16::k2(ty).unwrap();
+            let tb = t16::trellis_bytes(k2, k, n);
+            let mut m: Vec<u8> = (0..t16::matrix_bytes(ty, k, n)).map(|_| r() as u8).collect();
+            for c in m[tb..].chunks_exact_mut(2) {
+                let v = 0.02 * (0.5 + (r() % 1000) as f32 / 1000.0) * if r() % 2 == 0 { 1.0 } else { -1.0 };
+                c.copy_from_slice(&half::f16::from_f32(v).to_le_bytes());
+            }
+            m
+        };
+        let mut moe = CpuMoe::new(Pool::new(&[0, 1, 2, 3, 4, 5], Duration::from_millis(1)));
+        let mut seed2 = 7u64;
+        let mut f = || {
+            seed2 = seed2.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed2 >> 33) % 2001) as f32 / 1000.0 - 1.0
+        };
+        // a window of t tokens (experts with 1..=t of them, so every chunk size of gemv_multi) equals t one-token calls
+        for (t, gu, dn) in [(16usize, GType::T16K15, GType::T16K25), (7, GType::T16K2, GType::T16K2), (5, GType::T16K25, GType::T16K15)] {
+            let mats: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..4).map(|_| (mat(gu, dim, inter), mat(gu, dim, inter), mat(dn, inter, dim))).collect();
+            let ew: Vec<ExpertW> = mats.iter().map(|m| ExpertW { gu, gate: &m.0, up: &m.1, dn, down: &m.2 }).collect();
+            let x: Vec<f32> = (0..t * dim).map(|_| f()).collect();
+            // expert e takes every (e + 1)-th token from token e % 2: 16, 8, 6 and 4 tokens at t = 16
+            let w: Vec<f32> = (0..ew.len() * t).map(|i| {
+                let (e, j) = (i / t, i % t);
+                if j >= e % 2 && (j - e % 2) % (e + 1) == 0 { 0.2 + 0.1 * (i % 5) as f32 } else { 0.0 }
+            }).collect();
+            let mut got = vec![0f32; t * dim];
+            moe.forward(&ew, dim, &x, t, &w, &mut got);
+            for j in 0..t {
+                let wj: Vec<f32> = (0..ew.len()).map(|e| w[e * t + j]).collect();
+                let mut one = vec![0f32; dim];
+                moe.forward(&ew, dim, &x[j * dim..(j + 1) * dim], 1, &wj, &mut one);
+                assert!(one.iter().zip(&got[j * dim..(j + 1) * dim]).all(|(a, b)| a.to_bits() == b.to_bits()), "t {t} {gu:?}/{dn:?}: token {j} differs from its one-token call");
+            }
         }
     }
 }
