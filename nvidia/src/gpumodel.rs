@@ -1538,7 +1538,7 @@ impl<'m> GpuModel<'m> {
                 self.adapt_step()?;
                 self.adapt_s += t.elapsed().as_secs_f64();
             }
-            let l = self.g.download(self.logits.ptr, self.m.cfg.vocab);
+            let l = self.g.download::<f32>(self.logits.ptr, self.m.cfg.vocab);
             if let Some(w) = self.worker.as_ref() {
                 for (i, v) in self.adapt_flags.drain(..) {
                     w.on_cpu[i].store(v, std::sync::atomic::Ordering::Relaxed);
