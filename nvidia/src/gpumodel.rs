@@ -122,6 +122,10 @@ pub struct GpuModel<'m> {
     hc_part: Buf,
     hc_fork: crate::gpu::Event,
     hc_join: crate::gpu::Event,
+    /// DSX_PAR_ATTN fork / join (see attention)
+    attn_fork: crate::gpu::Event,
+    attn_join: crate::gpu::Event,
+    par_attn: bool,
     tmp: Buf,
     tmp2: Buf,
     iq: Buf,
@@ -427,6 +431,9 @@ impl<'m> GpuModel<'m> {
             hc_part: fz(25 * 8)?,
             hc_fork: g.event()?,
             hc_join: g.event()?,
+            attn_fork: g.event()?,
+            attn_join: g.event()?,
+            par_attn: std::env::var("DSX_PAR_ATTN").map_or(true, |v| v != "0"),
             tmp: fz(1 << 18)?,
             tmp2: fz(32768)?,
             iq: fz(c.idx_heads * c.idx_dim)?,
@@ -1319,6 +1326,12 @@ impl<'m> GpuModel<'m> {
         let l = &self.layers[li];
         self.gemv(&l.q_a, self.x.ptr, self.qr.ptr)?;
         self.rmsnorm(self.qr.ptr, &l.q_a_norm, self.qr.ptr, c.q_lora, true)?;
+        // DSX_PAR_ATTN: the kv / compressor / indexer branch (inputs x and qr, needed first by sparse attention) runs on the
+        // par stream while the main stream runs q_b; joined before sparse attention
+        let par_attn = self.par_attn;
+        if par_attn {
+            self.g.par_after_main(self.attn_fork)?;
+        }
         // q_b's RoPE in the GEMV's epilogue (gemv_q8r1_rope) when q_b is the one-row-per-warp Q8_0 one
         let qb = &l.q_b;
         if self.fuse3 && self.q8r1 && qb.ty == GType::Q8_0 && qb.q8r && !qb.act_fp8 && qb.rows >= 2048 && qb.rows % 4 == 0 && hd % 4 == 0 {
@@ -1330,6 +1343,11 @@ impl<'m> GpuModel<'m> {
             self.rope(self.q.ptr, nh, hd, compressed, t, false)?;
         }
         self.ev(li, 11)?;
+        if par_attn {
+            // every launch below goes to the par stream until the swap back
+            std::mem::swap(&mut self.g.stream, &mut self.g.par);
+        }
+        let l = &self.layers[li];
         self.gemv(&l.kv, self.x.ptr, self.kvv.ptr)?;
         let w = c.window;
         // rmsnorm + rope + fake FP8 + bf16 into the window slot, one launch
@@ -1376,6 +1394,11 @@ impl<'m> GpuModel<'m> {
                 self.layers[li].n_comp += 1;
             }
             n_comp_rows = self.topk_k;
+        }
+        if par_attn {
+            std::mem::swap(&mut self.g.stream, &mut self.g.par);
+            self.g.record_par(self.attn_join)?;
+            self.g.wait(self.attn_join, false)?;
         }
         self.ev(li, 13)?;
         let l = &self.layers[li];
