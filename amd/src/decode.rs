@@ -19,6 +19,9 @@ pub const WIN: usize = 128;
 pub const IH: usize = 32;
 pub const ID: usize = 128;
 pub const VOCAB: usize = 129280;
+/// packed FP4 cache rows of the batched-decode slots (kernels/dsxa.hip CROW_B / IROW_B)
+pub const CROW_B: usize = 288;
+pub const IROW_B: usize = 72;
 pub(crate) const ACH: usize = 16;
 pub(crate) const NCHUNK: usize = (WIN + 512).div_ceil(ACH);
 pub(crate) const CAND_CAP: usize = 65536;
@@ -346,8 +349,8 @@ pub struct Decoder {
     /// its bytes, tiled bytes per row, k, row-major copy); see Decoder::build_bdense
     pub(crate) bdense: Vec<(u64, usize, usize, usize, Buf)>,
     pub(crate) blas: Option<crate::hip::blas::Handle>,
-    /// batched step in progress: device job count for vgemv_xp (bgroup's npairs[1])
-    pub(crate) xp_njp: std::cell::Cell<Option<u64>>,
+    /// grouped expert launch in progress (batched step / prompt chunk): vgemv_xg{R}{G} tiles and token groups
+    pub(crate) xg: std::cell::Cell<Option<(usize, usize)>>,
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
@@ -673,6 +676,20 @@ impl Decoder {
             let mut tot: usize = fmt.iter().map(|&f| expert_bytes(f)).sum();
             if (draft > 0 || extra > 0) && tot > budget {
                 anyhow::ensure!(!rank.is_empty(), "export does not fit next to the draft layers / DSXA_RESERVE_GB: pass --rank to choose experts to re-quantize");
+                // if even every MXFP4 expert at 3 bits would not fit, the coldest MXFP4 experts go to 2 bits first
+                let n_fp4 = (0..nl * NE).filter(|&i| fmt[i] == E_FP4).count();
+                let mut all3 = tot - n_fp4 * (FP4_BYTES - CB3_BYTES);
+                for &(l, e) in rank.iter().rev() {
+                    if all3 <= budget {
+                        break;
+                    }
+                    let i = l * NE + e;
+                    if l < nl && fmt[i] == E_FP4 {
+                        fmt[i] = E_CB2;
+                        tot = tot - FP4_BYTES + CB2_BYTES;
+                        all3 -= CB3_BYTES - CB2_BYTES;
+                    }
+                }
                 for &(l, e) in rank.iter().rev() {
                     if tot <= budget {
                         break;
@@ -740,7 +757,7 @@ impl Decoder {
             vgraphs: Default::default(),
             bdense: vec![],
             blas: None,
-            xp_njp: std::cell::Cell::new(None),
+            xg: std::cell::Cell::new(None),
             pos: 0,
             dump: None,
             etab: vec![],

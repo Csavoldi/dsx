@@ -10,6 +10,7 @@ mod selftest;
 mod serve;
 mod verify;
 mod batch;
+mod runner;
 mod dspark;
 
 use anyhow::{Context, Result};
@@ -99,6 +100,12 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value_t = 32768)]
         max_tokens: usize,
+        /// batched runner: this many concurrent sequences (0: one conversation at a time)
+        #[arg(long, default_value_t = 0)]
+        slots: usize,
+        /// batched runner: context per slot (default: --ctx)
+        #[arg(long)]
+        batch_ctx: Option<usize>,
         /// require this key on every API request (`Authorization: Bearer <key>` or `x-api-key: <key>`);
         /// `openssl rand -hex 32` makes one. Health checks and the web UI's files stay open.
         #[arg(long, env = "DSX_API_KEY")]
@@ -192,6 +199,39 @@ fn bench(dec: &mut Decoder, c: usize, steps: usize, prof: bool) -> Result<()> {
 
 fn eval_run(dec: &mut Decoder, eval: &Path, seqs: usize, len: usize) -> Result<String> {
     eval_run_m(dec, eval, seqs, len, false)
+}
+
+/// eval_run through the prompt path in chunks of `chunk` tokens (logits of every position from chunk_logits)
+fn ceval_run(dec: &mut Decoder, eval: &Path, seqs: usize, len: usize, chunk: usize) -> Result<String> {
+    let rd = |f: &str| std::fs::read(eval.join(f));
+    let toks: Vec<u32> = rd("heldout.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
+    let tidx: Vec<i32> = rd("teacher_idx.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())).collect();
+    let tlp: Vec<f32> = rd("teacher_lp.f32")?.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+    let topk = 256;
+    dec.build_bdense()?;
+    let (mut nll, mut kl, mut agree, mut cnt) = (0f64, 0f64, 0usize, 0usize);
+    let t0 = Instant::now();
+    for sq in 0..seqs {
+        dec.reset()?;
+        let seq = &toks[sq * len..(sq + 1) * len];
+        for c0 in (0..len - 1).step_by(chunk) {
+            let c1 = (c0 + chunk).min(len - 1);
+            dec.prefill(&seq[c0..c1])?;
+            dec.chunk_logits(c1 - c0, &mut |i, l| {
+                let p = c0 + i;
+                let lq = log_softmax(l);
+                nll -= lq[seq[p + 1] as usize];
+                let row = sq * (len - 1) + p;
+                let (ti, tl) = (&tidx[row * topk..(row + 1) * topk], &tlp[row * topk..(row + 1) * topk]);
+                kl += ti.iter().zip(tl).map(|(&i, &lt)| (lt as f64).exp() * (lt as f64 - lq[i as usize])).sum::<f64>();
+                let am = l.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |a, (i, &v)| if v > a.1 { (i, v) } else { a }).0;
+                agree += (am as i32 == ti[0]) as usize;
+                cnt += 1;
+                Ok(())
+            })?;
+        }
+    }
+    Ok(format!("{{\"chunk\": {chunk}, \"tokens\": {cnt}, \"ppl\": {:.4}, \"kl_top{topk}\": {:.6}, \"top1_agree\": {:.6}, \"s\": {:.1}}}", (nll / cnt as f64).exp(), kl / cnt as f64, agree as f64 / cnt as f64, t0.elapsed().as_secs_f64()))
 }
 
 /// `prompt`: every token through the prompt path (a one-token prefill) instead of the decode step
@@ -467,6 +507,86 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         println!("prompt {} tokens, next {t1}; batch argmax {}", ids.len(), nb[0]);
                         println!("  decode top5 {:?}\n  batch  top5 {:?} rel {:.2e}\n  prompt top5 {:?} rel {:.2e}", top(&l1), top(&l2), rel(&l2, &l1), top(&l3), rel(&l3, &l1));
                     }
+                    "bdense" => dec.build_bdense()?,
+                    "plogit" => {
+                        // plogit N: prefill N eval tokens from empty, print the top-5 and the rel. difference of the last
+                        // logits from the previous plogit's (A/B of prompt-path settings)
+                        let n: usize = w[1].parse()?;
+                        let toks: Vec<u32> = std::fs::read("/data/models/lucebox/eval/heldout.i32")?.chunks(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as u32).collect();
+                        let toks: Vec<u32> = toks.iter().cycle().take(n).copied().collect();
+                        dec.reset()?;
+                        let t0 = Instant::now();
+                        dec.prefill(&toks)?;
+                        let l = dec.logits()?;
+                        let dt = t0.elapsed().as_secs_f64();
+                        let mut ix: Vec<usize> = (0..l.len()).collect();
+                        ix.sort_by(|&a, &b| l[b].partial_cmp(&l[a]).unwrap());
+                        let prev: Vec<f32> = std::fs::read("/root/plogit.bin").map(|b| b.chunks(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()).unwrap_or_default();
+                        let rel = if prev.len() == l.len() { let lp = log_softmax(&prev); let lq = log_softmax(&l); Some(lp.iter().zip(&lq).map(|(a, b)| (a.exp() as f64) * (a - b) as f64).sum::<f64>()) } else { None };
+                        std::fs::write("/root/plogit.bin", l.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
+                        println!("plogit {n}: {:.2} s ({:.0} tok/s), top5 {:?}, KL vs previous {:?}", dt, n as f64 / dt, &ix[..5], rel);
+                    }
+                    "rbench" => {
+                        // rbench SLOTS CTX N PROMPT GEN [TURNS]: N requests of PROMPT synthetic tokens (distinct per request),
+                        // GEN greedy tokens each, through the batched runner; TURNS > 1 sends each conversation's
+                        // follow-up (its history + 256 new tokens) after it finishes (prefix reuse)
+                        use dsx_core::server::BatchEngine;
+                        let slots: usize = w[1].parse()?;
+                        let bctx: usize = w[2].parse()?;
+                        let n: usize = w[3].parse()?;
+                        let plen: usize = w[4].parse()?;
+                        let ngen: usize = w[5].parse()?;
+                        let turns: usize = w.get(6).map(|s| s.parse()).transpose()?.unwrap_or(1);
+                        let p = dsx_core::server::GenParams { max_new: ngen, temperature: 0.0, top_p: 1.0, seed: None, stop_token_ids: vec![], hesitation: None, images: Default::default() };
+                        let mut r = runner::Runner::new(&mut dec, slots, bctx)?;
+                        let prompt = |i: usize, len: usize| -> Vec<u32> { (0..len).map(|j| ((j * 7919 + i * 104729 + 13) % 120000) as u32).collect() };
+                        let t0 = Instant::now();
+                        let mut hist: Vec<Vec<u32>> = (0..n).map(|i| prompt(i, plen)).collect();
+                        let mut left: Vec<usize> = vec![turns; n];
+                        let mut got = vec![0usize; n];
+                        let mut first: Vec<Option<f64>> = vec![None; n];
+                        let mut queue: std::collections::VecDeque<usize> = (0..n).collect();
+                        let mut active = 0usize;
+                        let (mut steps, mut toks) = (0usize, 0usize);
+                        let mut tdec = 0f64;
+                        while !queue.is_empty() || active > 0 {
+                            while r.has_room() {
+                                let Some(i) = queue.pop_front() else { break };
+                                r.start(i as u64, &hist[i], &p)?;
+                                got[i] = 0;
+                                active += 1;
+                            }
+                            let ts = Instant::now();
+                            let out = r.step()?;
+                            let dt = ts.elapsed().as_secs_f64();
+                            steps += 1;
+                            if out.len() > 1 { tdec += dt; toks += out.len(); }
+                            for (id, tk) in out {
+                                let i = id as usize;
+                                first[i].get_or_insert(t0.elapsed().as_secs_f64());
+                                got[i] += 1;
+                                hist[i].push(tk);
+                                if got[i] >= ngen {
+                                    // history = fed tokens: the last emitted token was not fed
+                                    hist[i].pop();
+                                    r.finish(id);
+                                    active -= 1;
+                                    left[i] -= 1;
+                                    if left[i] > 0 {
+                                        let more = prompt(1000 + i * 31 + left[i], 256);
+                                        hist[i].extend(more);
+                                        queue.push_back(i);
+                                    }
+                                }
+                            }
+                        }
+                        let tot = t0.elapsed().as_secs_f64();
+                        let mut ttft: Vec<f64> = first.iter().flatten().copied().collect();
+                        ttft.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                        let gen_tot = n * ngen * turns;
+                        println!("rbench {n} x ({plen} prompt + {ngen}) x {turns} turns on {slots} slots: {tot:.1} s, {:.0} tok/s generated overall; {steps} steps; batched steps {:.0} tok/s; first token median {:.1} s, max {:.1} s",
+                            gen_tot as f64 / tot, toks as f64 / tdec.max(1e-9), ttft[ttft.len() / 2], ttft[ttft.len() - 1]);
+                    }
                     "bbench" => {
                         // bbench B CTX [STEPS] [PROMPT]: B slots, each holding the same PROMPT-token context (default
                         // CTX/2), STEPS batched steps; tok/s and the kernel profile of one step
@@ -594,6 +714,11 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         }
                         unsafe { std::env::remove_var("DSX_DUMP") };
                     }
+                    "ceval" => {
+                        // ceval DIR SEQS CHUNK: Lucebox KL through the prompt path in chunks of CHUNK tokens
+                        let r = ceval_run(&mut dec, Path::new(w[1]), w[2].parse()?, 1024, w[3].parse()?)?;
+                        println!("{r}");
+                    }
                     "peval" => {
                         let r = eval_run_m(&mut dec, Path::new(w[1]), w.get(2).map(|s| s.parse()).transpose()?.unwrap_or(8), 1024, true)?;
                         println!("{r}");
@@ -644,7 +769,7 @@ fn main() -> Result<()> {
             let dec = Decoder::load(&model, 4096, &read_rank(&rank)?, &[], None)?;
             dec.export(&model, &out)
         }
-        Cmd::Serve { model, rank, ctx, host, port, max_tokens, api_key } => serve::serve(model, read_rank(&rank)?, ctx, host, port, max_tokens, api_key),
+        Cmd::Serve { model, rank, ctx, host, port, max_tokens, api_key, slots, batch_ctx } => serve::serve(model, read_rank(&rank)?, ctx, host, port, max_tokens, api_key, slots, batch_ctx.unwrap_or(ctx)),
         Cmd::Dev { model, rank, ctx, cmd } => dev(&model, &read_rank(&rank)?, ctx, &cmd),
         Cmd::Check { model, ids, n, rank, ref_cache } => {
             // ---- reference: tokens fed, logits per position, routed experts

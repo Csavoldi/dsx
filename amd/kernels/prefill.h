@@ -865,7 +865,7 @@ extern "C" __global__ void __launch_bounds__(256) mm2(const MmJob* __restrict__ 
 // attn_core: query t (its q row), window rows lo .. lo+nwin-1 read from lin at row p - wsub or, ring, p % WIN, then nc compressed rows comp[cidx[t][..] - woff]
 __device__ __forceinline__ void attn_core(int t, int lo, int nwin, int wsub, bool ring, float* __restrict__ q, const uint16_t* __restrict__ lin,
                                           const uint16_t* __restrict__ comp, const int* __restrict__ cidx, int nc, int ldc,
-                                          int woff, float scale, const float* sinks) {
+                                          int woff, float scale, const float* sinks, bool cpk = false) {
     __shared__ uint16_t rows[32][HD + 8];
     __shared__ float sp[2][64][33];
     __shared__ uint16_t ph[64][32 + 8], pl[64][32 + 8];
@@ -916,9 +916,16 @@ __device__ __forceinline__ void attn_core(int t, int lo, int nwin, int wsub, boo
             const int src = rowsrc[rw];
             u4v v0 = {0, 0, 0, 0}, v1 = {0, 0, 0, 0};
             if (src >= 0) {
-                const uint16_t* bp = (src & 0x40000000) ? comp + (size_t)(src & 0x3FFFFFFF) * HD : lin + (size_t)src * HD;
-                v0 = *reinterpret_cast<const u4v*>(bp + j);
-                v1 = *reinterpret_cast<const u4v*>(bp + j + 8);
+                if (cpk && (src & 0x40000000)) {
+                    // packed FP4 compressed row (batched decode slots)
+                    const uint8_t* rp = (const uint8_t*)comp + (size_t)(src & 0x3FFFFFFF) * CROW_B;
+                    v0 = fp4_row_bf16x8(rp, HD, 16, j, true);
+                    v1 = fp4_row_bf16x8(rp, HD, 16, j + 8, true);
+                } else {
+                    const uint16_t* bp = (src & 0x40000000) ? comp + (size_t)(src & 0x3FFFFFFF) * HD : lin + (size_t)src * HD;
+                    v0 = *reinterpret_cast<const u4v*>(bp + j);
+                    v1 = *reinterpret_cast<const u4v*>(bp + j + 8);
+                }
             }
             *reinterpret_cast<u4v*>(&rows[rw][j]) = v0;
             *reinterpret_cast<u4v*>(&rows[rw][j + 8]) = v1;

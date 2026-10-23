@@ -107,6 +107,8 @@ pub struct PfBufs {
     /// DSpark main_hidden rows [t][3][D] (f32, bf16 values)
     pub(crate) mh: Buf,
     dyn_: Buf,
+    /// device-built expert jobs of prompt chunks (bgroup, up to 12288 pairs)
+    gdyn: Buf,
     jobs: Buf,
     blk: Buf,
     /// pinned staging ring for job tables (async uploads; the device side uses the same offsets)
@@ -205,6 +207,7 @@ impl PfBufs {
             vlog: f(16 * VOCAB)?,
             mh: f(t * 3 * D)?,
             dyn_: f(3 * 48 * 40)?,
+            gdyn: f(3 * (NE + 12288 / 16) * (8 + 2 * 64))?,
             jobs: g.alloc(RING)?,
             blk: f(1)?,
             pin: g.host_alloc(RING)?,
@@ -378,6 +381,21 @@ impl Decoder {
         if self.pf.as_ref().unwrap().bmode.get() && !plain(label) && std::env::var_os("DSXA_BMM").is_none() {
             return self.bdense_launch(label, self.as_v(jobs));
         }
+        // prompt chunks: dense GEMMs on hipBLAS too once the BF16 copies exist (DSXA_PMM=1: the mm kernels)
+        if !verify && !self.bdense.is_empty() && !label.contains("experts") && jobs.iter().all(|j| j.ntok >= 64 && j.toks == 0 && j.yrow == 0)
+            && std::env::var_os("DSXA_PMM").is_none()
+        {
+            let mut v = self.as_v(jobs);
+            for (vj, j) in v.iter_mut().zip(jobs) {
+                vj.split = 1;
+                if j.fmt == 0 {
+                    match self.bf16_twin(j.xq) { Some(b) => vj.xb = b, None => return self.mm_l(label, jobs) }
+                }
+            }
+            if self.bgemm(label, &v)? {
+                return Ok(());
+            }
+        }
         if verify && !plain(label) { self.vlaunch(label, self.as_v(jobs), self.st.ptr) } else { self.mm_l(label, jobs) }
     }
 
@@ -458,6 +476,9 @@ impl Decoder {
         // DSpark main_hidden capture (prompt and verify passes): layer -> slot
         // batched decode: per-token positions / slots (kernels/batch.h), experts grouped on the device (bgroup)
         let bx = bt.is_some() && !plain("mm experts");
+        // prompt chunks: experts grouped on the device too (bgroup jobs of 16 * DSXA_PG tokens; DSXA_PGROUP=0: mm)
+        let pg = bt.is_none() && !verify && !draft && t >= 16 && t * 6 <= 12288 && !plain("mm experts")
+            && std::env::var("DSXA_PGROUP").map(|v| v != "0").unwrap_or(true);
         let mh_slot = |li: usize| if draft || bt.is_some() { None } else { dsx.and_then(|d| d.targets.iter().position(|&x| x == li)) };
         let nl = layers.len();
         let hc = |y: u64, round: bool, pm: u64, pa: &HcArgs, pre: u64, prea: &HcArgs, fnw: u64, nmix: u64, xr: u64, xss: u64, eng: Option<(u64, u64)>| -> Result<()> {
@@ -666,29 +687,34 @@ impl Decoder {
             let (kk, ebase) = if draft { (dsx.unwrap().top_k, dsx.unwrap().arena.ptr) } else { (6, self.arena.ptr) };
             if draft {
                 g.launch("route_k_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::I(ne_l as i32), Arg::I(kk as i32), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr)])?;
-            } else if bx || vk && !plain("mm experts") {
+            } else if bx || pg || vk && !plain("mm experts") {
                 // verify / batch: no expert counts needed (device grouping)
                 g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
             }
-            if !(draft || bx || (vk && !plain("mm experts"))) {
+            if !(draft || bx || pg || (vk && !plain("mm experts"))) {
                 g.memset(pf.counts.ptr, 0, NE * 4)?;
                 g.launch("route_t", (t as u32, 1, 1), 64, 0, &[Arg::P(pf.logits.ptr), Arg::P(l.gate_bias.ptr), Arg::F(c.route_scale), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(pf.counts.ptr)])?;
             }
-            if draft || bx || (vk && !plain("mm experts")) {
-                // device grouping: one job per distinct expert (batch: per 16 of its tokens) and matrix, tokens as MFMA columns
-                let (ndyn, dynb) = if let Some(b) = bt { (crate::batch::BG_JOBS, b.dyn_.ptr) } else { (48, pf.dyn_.ptr) };
-                if bt.is_some() {
-                    g.launch("bgroup", (64, 1, 1), 1024, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(dynb), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.y.ptr)])?;
+            if draft || bx || pg || (vk && !plain("mm experts")) {
+                // device grouping: one job per distinct expert (batch / prompt chunks: per jt of its tokens) and matrix,
+                // tokens as MFMA columns. Batch: jt 16; prompt chunks: jt 16 * DSXA_PG (default 2)
+                let pgg: usize = if pg { std::env::var("DSXA_PG").ok().and_then(|v| v.parse().ok()).unwrap_or(2) } else { 1 };
+                let jt = 16 * pgg;
+                let js = 8 + 2 * jt;
+                let (ndyn, dynb) = if pg { (NE + (t * kk).div_ceil(jt), pf.gdyn.ptr) } else if let Some(b) = bt { (crate::batch::BG_JOBS, b.dyn_.ptr) } else { (48, pf.dyn_.ptr) };
+                if bt.is_some() || pg {
+                    g.launch("bgroup", (64, 1, 1), 1024, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(dynb), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.y.ptr), Arg::I(jt as i32), Arg::I(ndyn as i32)])?;
                 } else {
                 g.launch("vgroup", (64, 1, 1), 256, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(pf.dyn_.ptr), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.y.ptr)])?;
                 }
-                if bt.is_some() && std::env::var_os("DSXA_NOXP").is_none() {
-                    self.xp_njp.set(Some(pf.fill.at(4)));
+                if (bt.is_some() || pg) && std::env::var_os("DSXA_NOXP").is_none() {
+                    let r: usize = std::env::var("DSXA_XR").ok().and_then(|v| v.parse().ok()).unwrap_or(if pgg >= 4 { 1 } else { 2 });
+                    self.xg.set(Some((r, pgg)));
                 }
                 // outputs zeroed by vgroup: all expert jobs add, so k can be split (gate/up 4 ways, down 2)
-                let esplit = |m: usize| std::env::var(if m < 2 { "DSXA_ESPLIT_GU" } else { "DSXA_ESPLIT_D" }).ok().and_then(|v| v.parse().ok()).unwrap_or(if m < 2 { 4 } else { 2 });
+                let esplit = |m: usize| std::env::var(if m < 2 { "DSXA_ESPLIT_GU" } else { "DSXA_ESPLIT_D" }).ok().and_then(|v| v.parse().ok()).unwrap_or(if pg { 1 } else if m < 2 { 4 } else { 2 });
                 let ej = |m: usize, n: usize, k: usize, xq: u64, xs: u64, ldx: usize, y: u64, ldy: usize, _atomic: i32| crate::verify::VJob {
-                    w: ebase, n: n as i32, k: k as i32, xq, xs, ldx: ldx as i32, y, ldy: ldy as i32, atomic: 1, split: esplit(m), ndyn: ndyn as i32, dyn_: dynb + (m * ndyn * 40 * 4) as u64, fmt: 1, ..Default::default()
+                    w: ebase, n: n as i32, k: k as i32, xq, xs, ldx: ldx as i32, y, ldy: ldy as i32, atomic: 1, split: esplit(m), ndyn: ndyn as i32, dyn_: dynb + (m * ndyn * js * 4) as u64, fmt: 1, ..Default::default()
                 };
                 self.vlaunch("verify experts gu", vec![ej(0, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.gg.ptr, INTER, 0), ej(1, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.uu.ptr, INTER, 0)], self.st.ptr)?;
                 let rtot = t * kk;
@@ -699,9 +725,15 @@ impl Decoder {
                 sj.yatomic = 1;
                 let mut sv = self.as_v(&[sj]);
                 sv[0].atomic = 1;
-                if bt.is_some() { self.bdense_launch("batch shared down", sv)?; } else { self.vlaunch("verify shared down", sv, self.st.ptr)?; }
+                if bt.is_some() {
+                    self.bdense_launch("batch shared down", sv)?;
+                } else if pg {
+                    self.gm(false, &plain, "mm shared down", &[sj])?;
+                } else {
+                    self.vlaunch("verify shared down", sv, self.st.ptr)?;
+                }
                 self.vlaunch("verify experts down", vec![ej(2, D, INTER, pf.hq.ptr, pf.hs.ptr, INTER, pf.y.ptr, D, 1)], self.st.ptr)?;
-                self.xp_njp.set(None);
+                self.xg.set(None);
                 continue;
             }
             let counts: Vec<i32> = g.dtoh(pf.counts.ptr, NE)?;
@@ -902,6 +934,30 @@ impl Decoder {
 }
 
 impl Decoder {
+    /// Logits of every position of the last prompt chunk (prefill eval): final norm per row, head on hipBLAS
+    /// (needs build_bdense), downloaded row by row into `f(row, logits)`.
+    pub fn chunk_logits(&self, t: usize, f: &mut dyn FnMut(usize, &[f32]) -> Result<()>) -> Result<()> {
+        let g = &self.g;
+        let pf = self.pf.as_ref().unwrap();
+        let c = &self.cfg;
+        let last = &self.layers[self.layers.len() - 1];
+        let rows = 64;
+        let (xh, xl, lg) = (g.alloc(rows * D * 2)?, g.alloc(rows * D * 2)?, g.alloc(rows * VOCAB * 4)?);
+        for r0 in (0..t).step_by(rows) {
+            let n = rows.min(t - r0);
+            g.launch("hc_final_b", (n as u32, 1, 1), 256, 0, &[Arg::P(pf.h.at(r0 * HC * D * 4)), Arg::P(pf.mix_f.at(r0 * 80 * 32 * 4)), Arg::B(bytes(&last.hc_ffn)), Arg::P(self.out_norm.ptr), Arg::F(c.hc_eps), Arg::F(c.eps), Arg::I(c.sinkhorn_iters as i32), Arg::P(xh.ptr), Arg::P(xl.ptr)])?;
+            let hj = crate::verify::VJob { w: self.head.w.ptr, n: VOCAB as i32, k: D as i32, fmt: 4, xb: xh.ptr, xl: xl.ptr, ldx: D as i32, ntok: n as i32, y: lg.ptr, ldy: VOCAB as i32, split: 1, mul: 1.0, ..Default::default() };
+            anyhow::ensure!(self.bgemm("chunk head", &[hj])?, "chunk_logits needs build_bdense");
+            let v: Vec<f32> = g.dtoh(lg.ptr, n * VOCAB)?;
+            for i in 0..n {
+                f(r0 + i, &v[i * VOCAB..(i + 1) * VOCAB])?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Decoder {
     /// Batched decode, layer li after the q / kv / compressor projections: window row into each slot's ring,
     /// compressor + indexer keys, indexer top-k per token, sparse attention, inverse RoPE + FP8 for wo_a
     fn batch_attn(&self, b: &crate::batch::Batch, li: usize, t: usize, rf: u64, wscale: f32) -> Result<()> {
@@ -919,14 +975,14 @@ impl Decoder {
                 (t as u32, 1, 1),
                 512,
                 0,
-                &[Arg::P(bp), Arg::P(bs), Arg::I(l.ratio as i32), Arg::P(pf.ckv.ptr), Arg::P(pf.cg.ptr), Arg::P(b.cst[li].as_ref().unwrap().ptr), Arg::P((4 * HD as i64) as u64), Arg::P(l.comp_norm.as_ref().unwrap().ptr), Arg::P(l.idx_wk.as_ref().unwrap().ptr), Arg::P(l.idx_knorm.as_ref().unwrap().ptr), Arg::P(b.comp[li].as_ref().unwrap().ptr), Arg::P((r * HD as i64) as u64), Arg::P(b.idx[li].as_ref().unwrap().ptr), Arg::P((r * ID as i64) as u64), Arg::P(self.rope_fc.ptr), Arg::F(c.eps)],
+                &[Arg::P(bp), Arg::P(bs), Arg::I(l.ratio as i32), Arg::P(pf.ckv.ptr), Arg::P(pf.cg.ptr), Arg::P(b.cst[li].as_ref().unwrap().ptr), Arg::P((4 * HD as i64) as u64), Arg::P(l.comp_norm.as_ref().unwrap().ptr), Arg::P(l.idx_wk.as_ref().unwrap().ptr), Arg::P(l.idx_knorm.as_ref().unwrap().ptr), Arg::P(b.comp[li].as_ref().unwrap().ptr), Arg::P((r * CROW_B as i64) as u64), Arg::P(b.idx[li].as_ref().unwrap().ptr), Arg::P((r * IROW_B as i64) as u64), Arg::P(self.rope_fc.ptr), Arg::F(c.eps)],
             )?;
         }
         let maxp = b.step_pos.iter().copied().max().unwrap_or(0) + 1;
         if l.idx_src {
             let ks = l.idxk_src;
             let kc = b.idx[ks].as_ref().unwrap().ptr;
-            let kstride = (b.rows[ks] * ID) as i64;
+            let kstride = (b.rows[ks] * IROW_B) as i64;
             let after = li > c.cand_layer;
             let lds = b.lds() as i32;
             let chunks = ((maxp / l.ratio.max(1)).max(16384)).div_ceil(1024) as u32;
@@ -943,7 +999,7 @@ impl Decoder {
             let (rows, nrows) = if use_keep { (pf.keep.ptr, pf.nkeep.ptr) } else { (0, 0) };
             g.launch("itopk_b", (t as u32, 1, 1), 1024, 0, &[Arg::P(bp), Arg::I(l.ratio as i32), Arg::P(b.score.ptr), Arg::I(lds), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::I(c.idx_topk as i32), Arg::I(WIN as i32), Arg::P(pf.cidx.ptr), Arg::I(512), Arg::P(pf.ncomp.ptr), Arg::I(0)])?;
         }
-        let (comp, cstride) = if l.ratio > 0 { (b.comp[l.comp_src].as_ref().unwrap().ptr, (b.rows[l.comp_src] * HD) as i64) } else { (0, 0) };
+        let (comp, cstride) = if l.ratio > 0 { (b.comp[l.comp_src].as_ref().unwrap().ptr, (b.rows[l.comp_src] * CROW_B) as i64) } else { (0, 0) };
         g.launch(
             "attn_b",
             (t as u32, 1, 1),

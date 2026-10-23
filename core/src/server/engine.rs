@@ -57,6 +57,25 @@ pub trait Engine: Send {
     }
 }
 
+/// An engine that runs many sequences at once (continuous batching). The worker thread admits queued requests while
+/// `has_room`, then calls `step` in a loop; each step advances every running sequence (prefill chunks and/or one
+/// decoded token) and returns the tokens it produced. The worker enforces stop tokens, `max_new` and disconnects,
+/// and calls `finish` when a sequence ends.
+pub trait BatchEngine: Send {
+    /// Can another sequence start now?
+    fn has_room(&self) -> bool;
+    /// Start sequence `id` after `prompt` (its prefill may run over the following steps).
+    fn start(&mut self, id: u64, prompt: &[u32], p: &GenParams) -> Result<()>;
+    /// Advance every running sequence by one step: (id, token) for each token produced.
+    fn step(&mut self) -> Result<Vec<(u64, u32)>>;
+    /// Sequence `id` is done (stop, length, cancelled or failed): free its slot.
+    fn finish(&mut self, id: u64);
+    /// Prompt tokens of sequence `id` served from a cache (for the log).
+    fn cached_prompt_tokens(&self, _id: u64) -> usize {
+        0
+    }
+}
+
 /// Engine thread -> request handler.
 #[derive(Debug)]
 pub enum Event {
@@ -104,6 +123,31 @@ impl EngineHandle {
                     run_job(engine.as_mut(), job);
                     pend.fetch_sub(1, Ordering::SeqCst);
                 }
+            })?;
+        ready_rx.recv().context("engine thread died during construction")??;
+        Ok(Self { tx, pending })
+    }
+
+    /// Construct a batched engine on a dedicated thread and serve jobs concurrently (continuous batching).
+    pub fn spawn_batch(make: impl FnOnce() -> Result<Box<dyn BatchEngine>> + Send + 'static) -> Result<Self> {
+        let (tx, rx) = std_mpsc::channel::<Job>();
+        let (ready_tx, ready_rx) = std_mpsc::channel::<Result<()>>();
+        let pending = Arc::new(AtomicUsize::new(0));
+        let pend = pending.clone();
+        std::thread::Builder::new()
+            .name("dsx-engine".into())
+            .spawn(move || {
+                let engine = match make() {
+                    Ok(e) => {
+                        let _ = ready_tx.send(Ok(()));
+                        e
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
+                run_batch(engine, rx, pend);
             })?;
         ready_rx.recv().context("engine thread died during construction")??;
         Ok(Self { tx, pending })
@@ -195,6 +239,120 @@ fn run_job(engine: &mut dyn Engine, job: Job) {
         finish,
         "done"
     );
+}
+
+struct Running {
+    job_id: String,
+    prompt_tokens: usize,
+    params: GenParams,
+    tx: mpsc::UnboundedSender<Event>,
+    queued: Instant,
+    started: Instant,
+    first: Option<Instant>,
+    generated: usize,
+}
+
+/// The batched engine thread: admit, step, route tokens, end sequences.
+fn run_batch(mut engine: Box<dyn BatchEngine>, rx: std_mpsc::Receiver<Job>, pend: Arc<AtomicUsize>) {
+    let mut queue: std::collections::VecDeque<Job> = Default::default();
+    let mut running: std::collections::HashMap<u64, Running> = Default::default();
+    let mut next_id = 1u64;
+    let mut done = |engine: &mut dyn BatchEngine, running: &mut std::collections::HashMap<u64, Running>, id: u64, f: Option<Finish>, err: Option<String>| {
+        engine.finish(id);
+        pend.fetch_sub(1, Ordering::SeqCst);
+        if let Some(r) = running.remove(&id) {
+            let total = r.started.elapsed();
+            let ttft = r.first.map(|t| t - r.started).unwrap_or(total);
+            let fin = match (&f, &err) {
+                (_, Some(e)) => {
+                    let _ = r.tx.send(Event::Error(e.clone()));
+                    "Error".to_string()
+                }
+                (Some(f), None) => {
+                    let _ = r.tx.send(Event::Done { finish: *f });
+                    format!("{f:?}")
+                }
+                _ => "?".into(),
+            };
+            let decode = total.saturating_sub(ttft);
+            let tps = if r.generated > 1 { (r.generated - 1) as f64 / decode.as_secs_f64().max(1e-9) } else { 0.0 };
+            tracing::info!(id = %r.job_id, prompt_tokens = r.prompt_tokens, cached_prompt_tokens = engine.cached_prompt_tokens(id), generated = r.generated,
+                queue_ms = (r.started - r.queued).as_millis() as u64, prefill_ms = ttft.as_millis() as u64, decode_ms = decode.as_millis() as u64,
+                decode_tps = format!("{tps:.2}"), finish = fin, running = running.len(), "done");
+        }
+    };
+    loop {
+        // intake: block when there is nothing to do
+        if running.is_empty() && queue.is_empty() {
+            match rx.recv() {
+                Ok(j) => queue.push_back(j),
+                Err(_) => return,
+            }
+        }
+        while let Ok(j) = rx.try_recv() {
+            queue.push_back(j);
+        }
+        // admit
+        while engine.has_room() {
+            let Some(j) = queue.pop_front() else { break };
+            if j.tx.is_closed() {
+                tracing::info!(id = %j.id, "cancelled while queued");
+                pend.fetch_sub(1, Ordering::SeqCst);
+                continue;
+            }
+            if j.params.max_new == 0 {
+                let _ = j.tx.send(Event::Done { finish: Finish::Length });
+                pend.fetch_sub(1, Ordering::SeqCst);
+                continue;
+            }
+            let id = next_id;
+            next_id += 1;
+            let r = Running { job_id: j.id.clone(), prompt_tokens: j.prompt.len(), params: j.params.clone(), tx: j.tx, queued: j.queued, started: Instant::now(), first: None, generated: 0 };
+            running.insert(id, r);
+            if let Err(e) = engine.start(id, &j.prompt, &j.params) {
+                tracing::error!(id = %j.id, "start failed: {e:#}");
+                done(engine.as_mut(), &mut running, id, None, Some(format!("{e:#}")));
+            }
+        }
+        if running.is_empty() {
+            continue;
+        }
+        // disconnects
+        let gone: Vec<u64> = running.iter().filter(|(_, r)| r.tx.is_closed()).map(|(&id, _)| id).collect();
+        for id in gone {
+            done(engine.as_mut(), &mut running, id, Some(Finish::Cancelled), None);
+        }
+        if running.is_empty() {
+            continue;
+        }
+        match engine.step() {
+            Ok(out) => {
+                for (id, tok) in out {
+                    let Some(r) = running.get_mut(&id) else { continue };
+                    r.first.get_or_insert_with(Instant::now);
+                    if r.params.stop_token_ids.contains(&tok) {
+                        done(engine.as_mut(), &mut running, id, Some(Finish::Stop), None);
+                        continue;
+                    }
+                    r.generated += 1;
+                    if r.tx.send(Event::Token(tok)).is_err() {
+                        done(engine.as_mut(), &mut running, id, Some(Finish::Cancelled), None);
+                        continue;
+                    }
+                    if r.generated >= r.params.max_new {
+                        done(engine.as_mut(), &mut running, id, Some(Finish::Length), None);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("engine step failed: {e:#}");
+                let ids: Vec<u64> = running.keys().copied().collect();
+                for id in ids {
+                    done(engine.as_mut(), &mut running, id, None, Some(format!("{e:#}")));
+                }
+            }
+        }
+    }
 }
 
 static REQ: AtomicU64 = AtomicU64::new(0);

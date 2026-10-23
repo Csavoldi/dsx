@@ -37,10 +37,11 @@ extern "C" __global__ void __launch_bounds__(512) kv_b(const float* kv_raw, cons
 }
 
 // Compressor + indexer keys, one token of its own sequence per block (comp_t with T = 1): the previous position's
-// latent comes from the slot's cstate (ratio 2), the compressed row and index key go to the slot's caches.
+// latent comes from the slot's cstate (ratio 2), the compressed row and index key go to the slot's caches as packed
+// FP4 rows (CROW_B / IROW_B bytes; strides in bytes).
 extern "C" __global__ void __launch_bounds__(512) comp_b(const int* bpos, const int* bslot, int ratio, const float* ckv, const float* cgate,
                                                          float* cstate, long long cs_stride, const float* comp_norm, const uint16_t* wk,
-                                                         const float* knorm, uint16_t* comp_cache, long long comp_stride, uint16_t* idx_cache,
+                                                         const float* knorm, uint8_t* comp_cache, long long comp_stride, uint8_t* idx_cache,
                                                          long long idx_stride, const float* rope_fc, float eps) {
     __shared__ float red[16];
     __shared__ float lat[HD];
@@ -92,8 +93,9 @@ extern "C" __global__ void __launch_bounds__(512) comp_b(const int* bpos, const 
             const float sn = sinf(ang), cs = cosf(ang);
             x = (i & 1) ? other * sn + x * cs : x * cs - other * sn;
         }
+        const float sc = fp4_group_scale<32>(x, false);
         x = fake_fp4_lane<32>(x, false);
-        idx_cache[(size_t)s * idx_stride + (size_t)n * ID + i] = (uint16_t)bf16_bits(x);
+        fp4_store_lane<32>(idx_cache + (size_t)s * idx_stride + (size_t)n * IROW_B, i, ID, x, sc, false);
     }
     {
         float x = lat[i];
@@ -104,21 +106,22 @@ extern "C" __global__ void __launch_bounds__(512) comp_b(const int* bpos, const 
             const float sn = sinf(ang), cs = cosf(ang);
             x = (i & 1) ? other * sn + x * cs : x * cs - other * sn;
         }
+        const float sc = fp4_group_scale<16>(x, true);
         x = fake_fp4_lane<16>(x, true);
-        comp_cache[(size_t)s * comp_stride + (size_t)n * HD + i] = (uint16_t)bf16_bits(x);
+        fp4_store_lane<16>(comp_cache + (size_t)s * comp_stride + (size_t)n * CROW_B, i, HD, x, sc, true);
     }
 }
 
 // Indexer scores, block (key chunk, token q) over the token's slot's index keys: score[q][s] for s < (pos+1)/ratio
 // (or its candidate rows rows[q][..nrows[q]])
 extern "C" __global__ void __launch_bounds__(256) iscore_b(const int* bpos, const int* bslot, int ratio, const float* iq, const float* iw,
-                                                           float wscale, const uint16_t* __restrict__ kcs, long long kc_stride,
+                                                           float wscale, const uint8_t* __restrict__ kcs, long long kc_stride,
                                                            const int* rows, const int* nrows, int ldrows, float* score, int lds) {
     __shared__ uint16_t qs[IH][ID + 8];
     __shared__ float ws[IH];
     const int tq = blockIdx.y;
     const int end = rows ? nrows[tq] : (bpos[tq] + 1) / ratio;
-    const uint16_t* kc = kcs + (size_t)bslot[tq] * kc_stride;
+    const uint8_t* kc = kcs + (size_t)bslot[tq] * kc_stride;  // packed FP4 key rows (IROW_B bytes)
     const int tid = threadIdx.x;
     const int chunk0 = blockIdx.x * 1024;
     if (chunk0 >= end) return;
@@ -138,7 +141,14 @@ extern "C" __global__ void __launch_bounds__(256) iscore_b(const int* bpos, cons
 #pragma unroll
         for (int kq = 0; kq < ID / 16; kq++) {
             s4v a = {0, 0, 0, 0};
-            if (row >= 0) a = *reinterpret_cast<const s4v*>(kc + (size_t)row * ID + kq * 16 + 4 * g);
+            if (row >= 0) {
+                const uint8_t* kr = kc + (size_t)row * IROW_B;
+                const int k = kq * 16 + 4 * g;
+                const uint32_t cw = *reinterpret_cast<const uint16_t*>(kr + k / 2);
+                const float sc = fp4_scale_val(kr[ID / 2 + k / 32], false);
+#pragma unroll
+                for (int j = 0; j < 4; j++) a[j] = (short)(__float_as_uint(e2m1_val((cw >> (4 * j)) & 0xF) * sc) >> 16);
+            }
             const s4v b0 = *reinterpret_cast<const s4v*>(&qs[c][kq * 16 + 4 * g]);
             const s4v b1 = *reinterpret_cast<const s4v*>(&qs[16 + c][kq * 16 + 4 * g]);
             acc0 = mfma_bf16(a, b0, acc0);
@@ -190,16 +200,16 @@ extern "C" __global__ void __launch_bounds__(1024) icand_b(const int* bpos, int 
 }
 
 // Sparse attention, block per token: the window from its slot's ring (kv_b wrote pos first), compressed rows from its
-// slot's comp cache (cidx[t][..ncomp[t]] - woff)
+// slot's packed FP4 comp cache (cidx[t][..ncomp[t]] - woff; byte stride comp_stride)
 extern "C" __global__ void __launch_bounds__(1024) attn_b(const int* bpos, const int* bslot, float* __restrict__ q,
                                                           const uint16_t* __restrict__ rings, long long ring_stride,
-                                                          const uint16_t* __restrict__ comps, long long comp_stride,
+                                                          const uint8_t* __restrict__ comps, long long comp_stride,
                                                           const int* __restrict__ cidx, const int* ncomp, int ldc, int woff,
                                                           float scale, const float* sinks) {
     const int t = blockIdx.x, pos = bpos[t], s = bslot[t];
     const int lo = max(0, pos - (WIN - 1));
-    attn_core(t, lo, pos - lo + 1, 0, true, q, rings + (size_t)s * ring_stride, comps ? comps + (size_t)s * comp_stride : nullptr,
-              cidx, comps ? ncomp[t] : 0, ldc, woff, scale, sinks);
+    attn_core(t, lo, pos - lo + 1, 0, true, q, rings + (size_t)s * ring_stride, comps ? (const uint16_t*)(comps + (size_t)s * comp_stride) : nullptr,
+              cidx, comps ? ncomp[t] : 0, ldc, woff, scale, sinks, true);
 }
 
 // after attn_b: inverse RoPE at each token's position, FP8 per 32 (+ bf16) for wo_a (attn_m_out per token)
@@ -248,5 +258,53 @@ extern "C" __global__ void __launch_bounds__(1024) argmax_b(const float* logits,
         for (int w = 1; w < 16; w++)
             if (bv[w] > best || (bv[w] == best && bi[w] < besti)) { best = bv[w]; besti = bi[w]; }
         out[blockIdx.x] = besti;
+    }
+}
+
+// bf16 cache rows (single-sequence state, values already FP4 x scale) -> packed FP4 rows of a slot. One thread per
+// group of G values: any scale that represents every value exactly is fine (the decode reproduces the values), so
+// try amax / {6, 4, 3, 2, 1.5, 1, 0.5} under the scale's format. *bad counts groups with no exact scale.
+extern "C" __global__ void pack_fp4_rows(const uint16_t* src, int nrows, int n, int G, int e4m3s, uint8_t* dst, int rowb, int* bad) {
+    const int gi = blockIdx.x * blockDim.x + threadIdx.x, gpr = n / G;
+    if (gi >= nrows * gpr) return;
+    const int r = gi / gpr, g = gi % gpr;
+    const uint16_t* v = src + (size_t)r * n + g * G;
+    uint8_t* row = dst + (size_t)r * rowb;
+    float amax = 0.f;
+    for (int k = 0; k < G; k++) amax = fmaxf(amax, fabsf(bf16_to_f32(v[k])));
+    float s = e4m3s ? ldexpf(1.f, -9) : ldexpf(1.f, -126);
+    if (amax > 0.f) {
+        const float cand[7] = {6.f, 4.f, 3.f, 2.f, 1.5f, 1.f, 0.5f};
+        bool found = false;
+        for (int c = 0; c < 7 && !found; c++) {
+            const float t = amax / cand[c];
+            int ex;
+            bool ok = e4m3s ? (e4m3_round(t) == t) : (frexpf(t, &ex) == 0.5f);
+            for (int k = 0; k < G && ok; k++) {
+                const float x = bf16_to_f32(v[k]) / t;
+                ok = fabsf(x) <= 6.f && e2m1_round(x) * t == bf16_to_f32(v[k]);
+            }
+            if (ok) { s = t; found = true; }
+        }
+        if (!found) atomicAdd(bad, 1);
+    }
+    for (int k = 0; k < G; k += 2) {
+        const uint32_t lo = e2m1_code(bf16_to_f32(v[k]) / s), hi = e2m1_code(bf16_to_f32(v[k + 1]) / s);
+        row[(g * G + k) / 2] = (uint8_t)(lo | (hi << 4));
+    }
+    row[n / 2 + g] = (uint8_t)fp4_scale_byte(s, e4m3s != 0);
+}
+
+// packed FP4 rows of a slot -> bf16 cache rows (single-sequence state), one thread per group of G values
+extern "C" __global__ void unpack_fp4_rows(const uint8_t* src, int nrows, int n, int G, int e4m3s, int rowb, uint16_t* dst) {
+    const int gi = blockIdx.x * blockDim.x + threadIdx.x, gpr = n / G;
+    if (gi >= nrows * gpr) return;
+    const int r = gi / gpr, g = gi % gpr;
+    const uint8_t* row = src + (size_t)r * rowb;
+    const float s = fp4_scale_val(row[n / 2 + g], e4m3s != 0);
+    uint16_t* d = dst + (size_t)r * n + g * G;
+    for (int k = 0; k < G; k++) {
+        const uint32_t c = (row[(g * G + k) / 2] >> (4 * (k & 1))) & 0xF;
+        d[k] = (uint16_t)(__float_as_uint(e2m1_val(c) * s) >> 16);
     }
 }

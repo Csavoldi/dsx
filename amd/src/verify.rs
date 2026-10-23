@@ -78,7 +78,7 @@ impl Decoder {
                     j.atomic = 1;
                     j.zero = 1;
                 }
-                let rows_per_block = if self.xp_njp.get().is_some() && j.ndyn > 0 { 64 * xr_tiles() } else { 64 };
+                let rows_per_block = match self.xg.get() { Some((r, _)) if j.ndyn > 0 => 64 * r, _ => 64 };
                 j.blocks = ((j.n as usize).div_ceil(rows_per_block) * j.split as usize * j.ndyn.max(1) as usize) as i32;
                 blocks += j.blocks as u32;
             }
@@ -96,16 +96,9 @@ impl Decoder {
             let dense = chunk.iter().all(|j| j.ndyn == 0 && (j.fmt == 0 || j.fmt == 4));
             let experts = chunk.iter().all(|j| j.ndyn > 0 || (1..=3).contains(&j.fmt));
             let kn = if dense { "vgemv_d" } else if experts { "vgemv_x" } else { "vgemv" };
-            // batched decode: R row tiles per wave (one set of activation gathers for all of them)
-            let r = if let (Some(_), true) = (self.xp_njp.get(), chunk.iter().all(|j| j.ndyn > 0)) {
-                if std::env::var_os("DSXA_XS").is_some() {
-                    // activation slice staged in LDS: the largest slice of the chunk
-                    let kn = chunk.iter().map(|j| ((j.k as usize / 128).div_ceil(j.split as usize)) * 128).max().unwrap();
-                    let shm = 16 * (kn + 8) + 16 * (kn / 32 + 1) * 4;
-                    self.g.launch(&format!("vgemv_xs{}", xr_tiles()), (blocks, 1, 1), 256, shm as u32, &[Arg::B(b)])
-                } else {
-                    self.g.launch(&format!("vgemv_xr{}", xr_tiles()), (blocks, 1, 1), 256, 0, &[Arg::B(b)])
-                }
+            // batched decode / prompt chunks: R row tiles x G token groups per wave
+            let r = if let (Some((rt, gg)), true) = (self.xg.get(), chunk.iter().all(|j| j.ndyn > 0)) {
+                self.g.launch(&format!("vgemv_xg{rt}{gg}"), (blocks, 1, 1), 256, 0, &[Arg::B(b)])
             } else {
                 self.g.launch(kn, (blocks, 1, 1), 256, 0, &[Arg::B(b), Arg::P(pos0), Arg::P(self.rope_f.ptr), Arg::P(self.rope_fc.ptr)])
             };

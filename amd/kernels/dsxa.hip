@@ -812,6 +812,57 @@ template <int G> DEV float fake_fp4_lane(float v, bool e4m3s) {
     return e2m1_round(fminf(fmaxf(v / s, -6.f), 6.f)) * s;
 }
 
+// ---- packed FP4 rows (batched decode slots): the cache values are already FP4 x scale (fake_fp4_lane), stored as
+// e2m1 nibbles (low nibble = even index) + one scale byte per group. Decoding reproduces the bf16 values exactly.
+//   compressed KV row (HD = 512, group 16, E4M3 scale as its FNUZ byte at half value): [256 codes][32 scales] = 288 B
+//   indexer key row (ID = 128, group 32, E8M0 scale byte): [64 codes][4 scales] + 4 pad = 72 B
+#define CROW_B 288
+#define IROW_B 72
+// e2m1 nibble of a value already on the grid (|v| in {0, .5, 1, 1.5, 2, 3, 4, 6})
+DEV uint32_t e2m1_code(float v) {
+    const float a = fabsf(v);
+    const uint32_t m = a < 0.25f ? 0u : a < 0.75f ? 1u : a < 1.25f ? 2u : a < 1.75f ? 3u : a < 2.5f ? 4u : a < 3.5f ? 5u : a < 5.f ? 6u : 7u;
+    return m | (v < 0.f ? 8u : 0u);
+}
+DEV float e2m1_val(uint32_t c) {
+    const float mag[8] = {0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
+    const float m = mag[c & 7];
+    return (c & 8) ? -m : m;
+}
+// scale of fake_fp4_lane's group (same formula)
+template <int G> DEV float fp4_group_scale(float v, bool e4m3s) {
+    const float a = group_max<G>(fabsf(v));
+    if (e4m3s) return e4m3_round(fmaxf(a, 6.f * ldexpf(1.f, -9)) / 6.f);
+    return pow2_ceil(fmaxf(a, 6.f * ldexpf(1.f, -126)) / 6.f);
+}
+DEV uint32_t fp4_scale_byte(float s, bool e4m3s) {
+    if (e4m3s) return (uint32_t)__builtin_amdgcn_cvt_pk_fp8_f32(s * 0.5f, 0.f, 0, false) & 0xFFu;
+    return (__float_as_uint(s) >> 23) & 0xFFu;
+}
+DEV float fp4_scale_val(uint32_t b, bool e4m3s) {
+    if (e4m3s) return 2.f * __builtin_amdgcn_cvt_f32_fp8(b, 0);
+    return __uint_as_float(b << 23);
+}
+// Store lane i's fake-FP4 value x (scale s of its group of G lanes) into a packed row: lane pairs share a byte.
+template <int G> DEV void fp4_store_lane(uint8_t* row, int i, int n, float x, float s, bool e4m3s) {
+    const uint32_t c = e2m1_code(x / s);
+    const uint32_t hi = __shfl_xor(c, 1);
+    if ((i & 1) == 0) row[i >> 1] = (uint8_t)(c | (hi << 4));
+    if ((i % G) == 0) row[n / 2 + i / G] = (uint8_t)fp4_scale_byte(s, e4m3s);
+}
+// 8 consecutive values (k = 8q .. 8q+7, within one scale group) of a packed row as bf16 bits, 4 u32
+DEV u4v fp4_row_bf16x8(const uint8_t* row, int n, int G, int k0, bool e4m3s) {
+    const uint32_t cw = *reinterpret_cast<const uint32_t*>(row + k0 / 2);
+    const float s = fp4_scale_val(row[n / 2 + k0 / G], e4m3s);
+    uint32_t o[4];
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+        const float a = e2m1_val((cw >> (8 * j)) & 0xF) * s, b = e2m1_val((cw >> (8 * j + 4)) & 0xF) * s;
+        o[j] = (__float_as_uint(a) >> 16) | (__float_as_uint(b) & 0xFFFF0000u);
+    }
+    return u4v{o[0], o[1], o[2], o[3]};
+}
+
 // Per-layer attention bookkeeping after the projections (one block, 512 threads):
 //   kv: rmsnorm(kv_raw, kv_norm), rope at pos, fake_fp8 per 32, store bf16 into the window ring.
 //   compressor (kv-source layers): ratio 1: latent = rmsnorm(ckv); ratio 2: keep (ckv, cgate) in slot pos%2 and pool
@@ -1382,11 +1433,7 @@ extern "C" __global__ void advance(State* st, const int* next) {
 
 // ------------------------------------------------------------------ load-time re-quantization of MXFP4 experts
 
-DEV float e2m1_val(uint32_t c) {
-    const float m[8] = {0.f, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
-    const float v = m[c & 7];
-    return (c & 8) ? -v : v;
-}
+// e2m1_val: with the packed FP4 row helpers above
 DEV float fnuz_round_pos(float x, uint32_t* code) {
     const uint32_t c = (uint32_t)__builtin_amdgcn_cvt_pk_fp8_f32(x, 0.f, 0, false) & 0xFF;
     *code = c;

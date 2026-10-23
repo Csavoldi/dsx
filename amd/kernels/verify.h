@@ -464,6 +464,134 @@ DEV void vgemv_xs_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
 VGEMV_XS(1)
 VGEMV_XS(2)
 
+// Expert jobs of up to 16*G tokens (bgroup jt = 16*G): R 16-row tiles per wave, each weight fragment decoded once and
+// multiplied into G token groups. Prompt chunks (~32 tokens per expert per 2048 tokens) read each expert once.
+template <int R, int G>
+DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t cb2) {
+    const int lane = threadIdx.x & 63, wv = threadIdx.x >> 6;
+    constexpr int JT = 16 * G;
+    {
+        const int per = J.blocks / J.ndyn;
+        const int* d = J.dyn + (size_t)(b / per) * (8 + 2 * JT);
+        b %= per;
+        J.fmt = d[0];
+        J.ntok = d[1];
+        if (J.ntok == 0) return;
+        J.woff = (long long)(uint32_t)d[2] | (long long)d[3] << 32;
+        J.soff = (long long)(uint32_t)d[4] | (long long)d[5] << 32;
+        J.mul = __int_as_float(d[6]);
+        J.rows = d + 8;
+        J.orows = d + 8 + JT;
+    }
+    const int RB = (J.n + 64 * R - 1) / (64 * R);
+    const int rb = b % RB, sl = b / RB;
+    const int rt0 = (rb * 4 + wv) * R;
+    if (rt0 * 16 >= J.n) return;
+    const int KU = J.k / 128;
+    const int u0 = KU * sl / J.split, u1 = KU * (sl + 1) / J.split;
+    const int col = lane & 15, g8 = 8 * (lane >> 4);
+    const uint8_t* xq[G];
+    const float* xs[G];
+    float lm[G];
+#pragma unroll
+    for (int gi = 0; gi < G; gi++) {
+        const int tok = gi * 16 + col;
+        const bool live = tok < J.ntok;
+        const int xrow = live ? J.rows[tok] : 0;
+        xq[gi] = J.xq + (size_t)xrow * J.ldx;
+        xs[gi] = J.xs + (size_t)xrow * (J.ldx / 32);
+        lm[gi] = live ? 1.f : 0.f;
+    }
+    const char* base = (const char*)J.w;
+    const int NDW = J.fmt == 1 ? 4 : (J.fmt == 2 ? 3 : 2);
+    const uint32_t tlo = J.fmt == 2 ? cb3lo : cb2, thi = J.fmt == 2 ? cb3hi : 0u;
+    f4 acc[R][G];
+#pragma unroll
+    for (int r = 0; r < R; r++)
+#pragma unroll
+        for (int gi = 0; gi < G; gi++) acc[r][gi] = f4{0, 0, 0, 0};
+    struct Unit { uint32_t w[R][4]; u4v s[R]; };
+    Unit cu, nu;
+    auto ld = [&](int u, Unit& o) {
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            const int rt = min(rt0 + r, J.n / 16 - 1);
+            const uint32_t* wp = (const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u) * 64 * NDW + lane * NDW;
+#pragma unroll
+            for (int q = 0; q < 4; q++) o.w[r][q] = q < NDW ? __builtin_nontemporal_load(wp + q) : 0u;
+            o.s[r] = ((const u4v*)(base + J.soff))[((size_t)rt * KU + u) * 4 + (lane >> 4)];
+        }
+    };
+    if (u0 < u1) ld(u0, cu);
+    for (int u = u0; u < u1; u++) {
+        if (u + 1 < u1) ld(u + 1, nu);
+        uint64_t xv[G][4];
+        float xsv[G][4];
+#pragma unroll
+        for (int gi = 0; gi < G; gi++)
+#pragma unroll
+            for (int m = 0; m < 4; m++) {
+                xv[gi][m] = lm[gi] != 0.f ? *reinterpret_cast<const uint64_t*>(xq[gi] + (4 * u + m) * 32 + g8) : 0ull;
+                xsv[gi][m] = xs[gi][4 * u + m] * lm[gi];
+            }
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            const uint32_t ss[4] = {cu.s[r].x, cu.s[r].y, cu.s[r].z, cu.s[r].w};
+#pragma unroll
+            for (int m = 0; m < 4; m++) {
+                uint64_t a;
+                if (J.fmt == 1) a = fp4x8_to_fp8(cu.w[r][m]);
+                else {
+                    const uint32_t dl = cu.w[r][m >> 1];
+                    const int sh = 4 * (m & 1);
+                    uint32_t s0 = (dl >> sh) & 0x03030303u, s1 = (dl >> (sh + 2)) & 0x03030303u;
+                    if (J.fmt == 2) {
+                        s0 |= ((cu.w[r][2] >> (2 * m)) & 0x01010101u) << 2;
+                        s1 |= ((cu.w[r][2] >> (2 * m + 1)) & 0x01010101u) << 2;
+                    }
+                    a = (uint64_t)perm(thi, tlo, s1) << 32 | perm(thi, tlo, s0);
+                }
+                float ws[4];
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    const uint32_t bb = (ss[j] >> (8 * m)) & 0xFFu;
+                    ws[j] = J.fmt == 1 ? __uint_as_float(bb << 23) : fp8_to_f32(bb, 0);
+                }
+#pragma unroll
+                for (int gi = 0; gi < G; gi++) {
+                    const f4 dd = mfma_fp8(a, xv[gi][m], f4{0, 0, 0, 0});
+#pragma unroll
+                    for (int j = 0; j < 4; j++) acc[r][gi][j] += dd[j] * (ws[j] * xsv[gi][m]);
+                }
+            }
+        }
+        cu = nu;
+    }
+#pragma unroll
+    for (int gi = 0; gi < G; gi++) {
+        const int tok = gi * 16 + col;
+        if (tok >= J.ntok) break;
+        const int orow = J.orows[tok];
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            const int rt = rt0 + r;
+            if (rt * 16 >= J.n) break;
+            float* yp = J.y + (size_t)orow * J.ldy + rt * 16 + 4 * (lane >> 4);
+            for (int j = 0; j < 4; j++) atomicAdd(yp + j, acc[r][gi][j] * J.mul);
+        }
+    }
+}
+#define VGEMV_XG(R, G)                                                                                        \
+    extern "C" __global__ void __launch_bounds__(256) vgemv_xg##R##G(VJobs js) {                              \
+        int b = blockIdx.x, ji = 0;                                                                           \
+        while (ji < js.n - 1 && b >= js.j[ji].blocks) b -= js.j[ji++].blocks;                                \
+        vgemv_xg_impl<R, G>(js.j[ji], b, js.cb3lo, js.cb3hi, js.cb2);                                         \
+    }
+VGEMV_XG(2, 1)
+VGEMV_XG(2, 2)
+VGEMV_XG(1, 4)
+VGEMV_XG(2, 4)
+
 #define VGEMV_XR(R)                                                                                           \
     extern "C" __global__ void __launch_bounds__(256) vgemv_xr##R(VJobs js) {                                 \
         int b = blockIdx.x, ji = 0;                                                                           \
@@ -562,20 +690,19 @@ extern "C" __global__ void vgroup(int T, int K, const int* sel, const float* wts
     }
 }
 
-// Batched decode (B independent tokens): device grouping of N = T*K (token, pick) pairs, up to BG_PAIRS, by expert.
-// One job per 16 of an expert's pairs (the hottest experts get several), in the vgroup job layout, so vgemv_x runs them
-// unchanged: [fmt, ntok, woff lo/hi, soff lo/hi, mul bits, pad, rows[16], orows[16]]; jobs [3][BG_JOBS] (gate, up, down),
-// unused ones with ntok 0. All blocks zero the k-split outputs (gate/up rows [N][INTER], y [T][D]); block 0 groups.
-// Launch: grid >= 1, block 1024.
+// Device grouping of N = T*K (token, pick) pairs (up to BG_PAIRS) by expert, for batched decode and prompt chunks.
+// One job per `jt` of an expert's pairs (16, 32 or 64; the hottest experts get several). Job record (JS = 8 + 2*jt ints):
+// [fmt, ntok, woff lo/hi, soff lo/hi, mul bits, pad, rows[jt], orows[jt]]; jobs [3][maxj] (gate, up, down), unused
+// ones with ntok 0. With jt = 16 this is vgroup's layout (vgemv_x reads it). All blocks zero the k-split outputs
+// (gate/up rows [N][INTER], y [T][D]); block 0 groups. npairs[0] = N, npairs[1] = job count. Launch: block 1024.
 #ifndef BG_PAIRS
-#define BG_PAIRS 2048
+#define BG_PAIRS 12288
 #endif
-#define BG_JOBS (NE + BG_PAIRS / 16)
 extern "C" __global__ void __launch_bounds__(1024) bgroup(int T, int K, const int* sel, const float* wts, const ExpertMat* tab, int* dyn,
-                                                          float* wrow, int* npairs, float* gg, float* uu, float* y) {
+                                                          float* wrow, int* npairs, float* gg, float* uu, float* y, int jt, int maxj) {
     __shared__ int cnt[NE], base[NE + 1];
     __shared__ int rank[BG_PAIRS];
-    const int N = T * K, i = threadIdx.x;
+    const int N = T * K, i = threadIdx.x, JS = 8 + 2 * jt;
     {
         const int gi = blockIdx.x * blockDim.x + i, gs = gridDim.x * blockDim.x;
         for (int q = gi; q < N * INTER; q += gs) { gg[q] = 0.f; uu[q] = 0.f; }
@@ -584,44 +711,42 @@ extern "C" __global__ void __launch_bounds__(1024) bgroup(int T, int K, const in
     if (blockIdx.x != 0) return;
     if (i == 0) *npairs = N;
     for (int e = i; e < NE; e += blockDim.x) cnt[e] = 0;
-    // npairs[1]: the job count (vgemv_xp)
     __syncthreads();
     for (int p = i; p < N; p += blockDim.x) {
         wrow[p] = wts[p];
         rank[p] = atomicAdd(&cnt[sel[p]], 1);
     }
     __syncthreads();
-    if (i == 0) {   // job base per expert: one job per started 16 pairs
+    if (i == 0) {   // job base per expert: one job per started jt pairs
         int b = 0;
-        for (int e = 0; e < NE; e++) { base[e] = b; b += (cnt[e] + 15) >> 4; }
+        for (int e = 0; e < NE; e++) { base[e] = b; b += (cnt[e] + jt - 1) / jt; }
         base[NE] = b;
+        npairs[1] = b;
     }
     __syncthreads();
     const int nj = base[NE];
-    if (i == 0) npairs[1] = nj;
-    // headers (all three matrices); unused slots ntok 0
-    for (int q = i; q < 3 * BG_JOBS; q += blockDim.x) {
-        const int m = q / BG_JOBS, j = q % BG_JOBS;
-        int* d = dyn + (size_t)q * 40;
+    for (int q = i; q < 3 * maxj; q += blockDim.x) {
+        const int m = q / maxj, j = q % maxj;
+        int* d = dyn + (size_t)q * JS;
         if (j >= nj) { d[1] = 0; continue; }
-        int lo = 0, hi = NE - 1;   // expert of job j: the last e with base[e] <= j (and a non-empty range)
+        int lo = 0, hi = NE - 1;   // expert of job j: the last e with base[e] <= j
         while (lo < hi) { const int mid = (lo + hi + 1) >> 1; if (base[mid] <= j) lo = mid; else hi = mid - 1; }
         const int e = lo, ch = j - base[e];
         const ExpertMat em = tab[e * 3 + m];
         d[0] = em.fmt == E_FP4 ? 1 : (em.fmt == E_CB3 ? 2 : 3);
-        d[1] = min(16, cnt[e] - 16 * ch);
+        d[1] = min(jt, cnt[e] - jt * ch);
         d[2] = (int)(em.woff & 0xFFFFFFFF); d[3] = (int)(em.woff >> 32);
         d[4] = (int)(em.soff & 0xFFFFFFFF); d[5] = (int)(em.soff >> 32);
         d[6] = __float_as_int(em.mul);
     }
-    // members: pair p goes to job base[e] + rank/16, column rank%16
+    // members: pair p goes to job base[e] + rank/jt, column rank%jt
     for (int p = i; p < N; p += blockDim.x) {
-        const int e = sel[p], j = base[e] + (rank[p] >> 4), c = rank[p] & 15;
+        const int e = sel[p], j = base[e] + rank[p] / jt, c = rank[p] % jt;
         for (int m = 0; m < 3; m++) {
-            int* d = dyn + (size_t)(m * BG_JOBS + j) * 40;
+            int* d = dyn + (size_t)(m * maxj + j) * JS;
             // gate/up: activation row = token, output row = pair; down: activation row = pair, output row = token
             d[8 + c] = m < 2 ? p / K : p;
-            d[24 + c] = m < 2 ? p : p / K;
+            d[8 + jt + c] = m < 2 ? p : p / K;
         }
     }
 }
