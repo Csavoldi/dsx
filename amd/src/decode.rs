@@ -837,6 +837,9 @@ impl Decoder {
         let cb2 = g.upload(&CB2)?;
         let mut off = 0usize;
         let mut nslot = 0usize;
+        // pinned staging for a layer whose tiles are all host-made (FP4 or export): filled on all cores, then one DMA
+        // (pageable copies go through one CPU thread at ~2 GB/s)
+        let mut pin: (usize, usize) = (0, 0);
         for l in 0..n_layers {
             // host side, all of the layer's matrices in parallel: FP4 tiles, or the raw bytes for GPU re-quantization
             let items: Vec<(usize, usize, i32)> = (0..ne).flat_map(|e| (0..3).map(move |m| (e, m, 0))).map(|(e, m, _)| (e, m, fmt_of(l, e))).collect();
@@ -848,23 +851,64 @@ impl Decoder {
                     if fmt != E_FP4 && st.is_export() && st.get(&name.replace(".weight", ".cb")).is_ok() {
                         // device tiles straight from the export (codes then scales); shapes from the matrix role
                         let (n, k) = if mi == 2 { (D, INTER) } else { (INTER, D) };
-                        let cb = st.bytes(st.get(&name.replace(".weight", ".cb"))?).to_vec();
+                        let cb = st.read(st.get(&name.replace(".weight", ".cb"))?);
                         return Ok((n, k, cb, vec![]));
                     }
                     let (n, kh) = load::shape2(st, &name)?;
                     let k = kh * 2;
-                    let w = st.bytes(st.get(&name)?);
-                    let s = st.bytes(st.get(&name.replace(".weight", ".scale"))?);
+                    let w = st.read(st.get(&name)?);
+                    let s = st.read(st.get(&name.replace(".weight", ".scale"))?);
                     if fmt == E_FP4 {
-                        let (c, sc) = load::tile_fp4(w, s, n, k);
+                        let (c, sc) = load::tile_fp4(&w, &s, n, k);
                         Ok((n, k, c, sc))
                     } else {
-                        Ok((n, k, w.to_vec(), s.to_vec()))
+                        Ok((n, k, w, s))
                     }
                 })
                 .collect();
             let mut table = vec![ExpertMat::default(); ne * 3];
-            for (it, pr) in items.iter().zip(prepared) {
+            let prepared: Vec<(usize, usize, Vec<u8>, Vec<u8>)> = prepared.into_iter().collect::<Result<_>>()?;
+            if prepared.iter().zip(&items).all(|(p, it)| it.2 == E_FP4 || p.3.is_empty()) {
+                let lstart = off;
+                let mut copies: Vec<(usize, usize, usize)> = vec![];
+                for (it, (n, k, a, b)) in items.iter().zip(&prepared) {
+                    let (e, mi, fmt) = *it;
+                    let em = &mut table[e * 3 + mi];
+                    em.fmt = fmt;
+                    em.woff = off as i64;
+                    copies.push((a.as_ptr() as usize, a.len(), off - lstart));
+                    if fmt == E_FP4 {
+                        off += a.len();
+                        em.soff = off as i64;
+                        copies.push((b.as_ptr() as usize, b.len(), off - lstart));
+                        off += b.len();
+                        em.mul = 1.0;
+                    } else {
+                        let bits = if fmt == E_CB3 { 3 } else { 2 };
+                        em.soff = (off + n * k * bits / 8) as i64;
+                        off += a.len();
+                        em.mul = st.cb[&name(l, e, ["w1", "w3", "w2"][mi]).replace(".weight", ".cb")].1;
+                    }
+                }
+                let total = off - lstart;
+                if total > pin.1 {
+                    if pin.0 != 0 {
+                        g.host_free(pin.0 as *mut u8)?;
+                    }
+                    pin = (g.host_alloc(total + total / 8)? as usize, total + total / 8);
+                }
+                let dst = pin.0;
+                copies.par_iter().for_each(|&(src, len, rel)| unsafe { std::ptr::copy_nonoverlapping(src as *const u8, (dst + rel) as *mut u8, len) });
+                g.htod_async(arena.at(lstart), dst as *const u8, total)?;
+                g.htod(tables[l], &table)?;
+                etab.push(table.clone());
+                g.sync()?;
+                if l % 4 == 3 || l + 1 == n_layers {
+                    eprintln!("experts: layer {l} done, {:.1} GB, {:.0} s", off as f64 / 1e9, t0.elapsed().as_secs_f32());
+                }
+                continue;
+            }
+            for (it, pr) in items.iter().zip(prepared.into_iter().map(Ok::<_, anyhow::Error>)) {
                 let (e, mi, fmt) = *it;
                 let (n, k, a, b) = pr?;
                 let em = &mut table[e * 3 + mi];
@@ -913,6 +957,9 @@ impl Decoder {
             if l % 4 == 3 || l + 1 == n_layers {
                 eprintln!("experts: layer {l} done, {:.1} GB, {:.0} s", off as f64 / 1e9, t0.elapsed().as_secs_f32());
             }
+        }
+        if pin.0 != 0 {
+            g.host_free(pin.0 as *mut u8)?;
         }
         Ok((etab, off))
     }

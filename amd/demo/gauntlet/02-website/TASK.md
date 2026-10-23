@@ -1,0 +1,1 @@
+Build a polished static marketing website for a fictional coffee roaster called Ember & Oak: index.html with a hero, product cards, an about section and a contact form, plus styles.css (responsive, dark and light themes) and a small script.js. No frameworks, no external assets.

@@ -21,6 +21,7 @@ unsafe extern "C" {
     fn hipMalloc(p: *mut *mut c_void, n: usize) -> hipError_t;
     fn hipFree(p: *mut c_void) -> hipError_t;
     fn hipHostMalloc(p: *mut *mut c_void, n: usize, flags: c_uint) -> hipError_t;
+    fn hipHostFree(p: *mut c_void) -> hipError_t;
     fn hipMemcpy(dst: *mut c_void, src: *const c_void, n: usize, kind: c_int) -> hipError_t;
     fn hipMemcpyAsync(dst: *mut c_void, src: *const c_void, n: usize, kind: c_int, s: hipStream_t) -> hipError_t;
     fn hipMemsetAsync(dst: *mut c_void, v: c_int, n: usize, s: hipStream_t) -> hipError_t;
@@ -328,6 +329,10 @@ impl Gpu {
         let mut p = std::ptr::null_mut();
         ck(unsafe { hipHostMalloc(&mut p, bytes, 0) }, "hipHostMalloc")?;
         Ok(p as *mut u8)
+    }
+
+    pub fn host_free(&self, p: *mut u8) -> Result<()> {
+        ck(unsafe { hipHostFree(p as *mut c_void) }, "hipHostFree")
     }
 
     pub fn begin_capture(&self) -> Result<()> {

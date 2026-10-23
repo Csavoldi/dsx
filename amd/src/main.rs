@@ -12,6 +12,7 @@ mod verify;
 mod batch;
 mod runner;
 mod spec;
+mod telemetry;
 mod dspark;
 
 use anyhow::{Context, Result};
@@ -107,6 +108,15 @@ enum Cmd {
         /// batched runner: context per slot (default: --ctx)
         #[arg(long)]
         batch_ctx: Option<usize>,
+        /// admin dashboard and `/stats` (JSON, Volta's format) on this port, on --host; 0 = off (batched runner only)
+        #[arg(long, default_value_t = 0)]
+        admin_port: u16,
+        /// sampling temperature for requests that don't set one (0 = greedy)
+        #[arg(long, default_value_t = 1.0)]
+        temperature: f32,
+        /// top-p for requests that don't set one
+        #[arg(long, default_value_t = 1.0)]
+        top_p: f32,
         /// require this key on every API request (`Authorization: Bearer <key>` or `x-api-key: <key>`);
         /// `openssl rand -hex 32` makes one. Health checks and the web UI's files stay open.
         #[arg(long, env = "DSX_API_KEY")]
@@ -1205,7 +1215,7 @@ fn main() -> Result<()> {
             let dec = Decoder::load(&model, 4096, &read_rank(&rank)?, &[], None)?;
             dec.export(&model, &out)
         }
-        Cmd::Serve { model, rank, ctx, host, port, max_tokens, api_key, slots, batch_ctx } => serve::serve(model, read_rank(&rank)?, ctx, host, port, max_tokens, api_key, slots, batch_ctx.unwrap_or(ctx)),
+        Cmd::Serve { model, rank, ctx, host, port, max_tokens, api_key, slots, batch_ctx, admin_port, temperature, top_p } => serve::serve(model, read_rank(&rank)?, ctx, host, port, max_tokens, api_key, slots, batch_ctx.unwrap_or(ctx), admin_port, temperature, top_p),
         Cmd::Dev { model, rank, ctx, cmd } => dev(&model, &read_rank(&rank)?, ctx, &cmd),
         Cmd::Check { model, ids, n, rank, ref_cache } => {
             // ---- reference: tokens fed, logits per position, routed experts

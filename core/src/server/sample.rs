@@ -43,68 +43,93 @@ impl Sampler {
         Self::new(p.temperature, p.top_p, p.seed)
     }
 
-    pub fn sample(&mut self, logits: &[f32]) -> u32 {
+    /// The sampling distribution: (token, weight) pairs and their total weight, or None for greedy. Only tokens within
+    /// 30 temperature-scaled logits of the max are candidates (each other token weighs < e^-30 of the top one: under
+    /// 1.2e-8 of the mass over the whole vocabulary). With top_p < 1 the support is the nucleus, heaviest first.
+    fn dist(&self, logits: &[f32]) -> Option<(Vec<(u32, f64)>, f64)> {
         if self.temperature <= 0.0 || !self.temperature.is_finite() {
-            return argmax(logits);
+            return None;
         }
         let mx = logits.iter().copied().filter(|v| !v.is_nan()).fold(f32::NEG_INFINITY, f32::max);
         if !mx.is_finite() {
-            return argmax(logits);
+            return None;
         }
+        let th = mx - 30.0 * self.temperature;
         let inv_t = 1.0 / self.temperature as f64;
-        let w = |l: f32| if l.is_nan() { 0.0 } else { ((l - mx) as f64 * inv_t).exp() };
+        let mut c: Vec<(u32, f64)> = logits.iter().enumerate().filter(|&(_, &l)| l >= th).map(|(i, &l)| (i as u32, ((l - mx) as f64 * inv_t).exp())).collect();
+        let sum: f64 = c.iter().map(|x| x.1).sum();
         let top_p = self.top_p as f64;
         if !(top_p < 1.0) {
-            // plain temperature sampling: one pass for the sum, one for the pick
-            let sum: f64 = logits.iter().map(|&l| w(l)).sum();
-            let mut r = self.rng.next_f64() * sum;
-            let mut last = 0;
-            for (i, &l) in logits.iter().enumerate() {
-                let p = w(l);
-                if p > 0.0 {
-                    last = i;
-                    r -= p;
-                    if r < 0.0 {
-                        return i as u32;
-                    }
-                }
-            }
-            return last as u32;
+            return Some((c, sum));
         }
         // nucleus: grow a sorted top-k until it covers top_p of the mass (usually a few dozen tokens)
-        let sum: f64 = logits.iter().map(|&l| w(l)).sum();
         let target = top_p.max(0.0) * sum;
-        let mut idx: Vec<u32> = (0..logits.len() as u32).collect();
-        let key = |i: &u32| { let l = logits[*i as usize]; if l.is_nan() { f32::NEG_INFINITY } else { l } };
-        let mut k = 64.min(idx.len());
-        let (cut, mass) = loop {
-            if k < idx.len() {
-                idx.select_nth_unstable_by(k - 1, |a, b| key(b).total_cmp(&key(a)));
+        let mut k = 64.min(c.len());
+        loop {
+            if k < c.len() {
+                c.select_nth_unstable_by(k - 1, |a, b| b.1.total_cmp(&a.1));
             }
-            idx[..k].sort_unstable_by(|a, b| key(b).total_cmp(&key(a)));
+            c[..k].sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
             let mut acc = 0.0;
-            let mut found = None;
-            for (j, &i) in idx[..k].iter().enumerate() {
-                acc += w(logits[i as usize]);
+            for j in 0..k {
+                acc += c[j].1;
                 if acc >= target {
-                    found = Some(j + 1);
-                    break;
+                    c.truncate(j + 1);
+                    return Some((c, acc));
                 }
             }
-            match found {
-                Some(c) => break (c, acc),
-                None if k == idx.len() => break (k, acc),
-                None => k = (k * 4).min(idx.len()),
+            if k == c.len() {
+                return Some((c, acc));
             }
-        };
+            k = (k * 4).min(c.len());
+        }
+    }
+
+    pub fn sample(&mut self, logits: &[f32]) -> u32 {
+        let Some((c, mass)) = self.dist(logits) else { return argmax(logits) };
         let mut r = self.rng.next_f64() * mass;
-        for &i in &idx[..cut] {
-            r -= w(logits[i as usize]);
+        for &(i, w) in &c {
+            r -= w;
             if r < 0.0 {
                 return i;
             }
         }
-        idx[cut - 1]
+        c.last().map(|x| x.0).unwrap_or_else(|| argmax(logits))
+    }
+}
+
+impl Sampler {
+    /// Speculative sampling against a deterministic draft token `d` (prompt lookup or an argmax draft): accept `d`
+    /// with its probability under this sampler's distribution (temperature, top-p); otherwise draw from that
+    /// distribution with `d` removed and renormalized. The result is distributed exactly as `sample(logits)`.
+    /// Returns (accepted, token).
+    pub fn accept_or_resample(&mut self, logits: &[f32], d: u32) -> (bool, u32) {
+        let Some((c, mass)) = self.dist(logits) else {
+            let a = argmax(logits);
+            return (a == d, a);
+        };
+        let wd = c.iter().find(|x| x.0 == d).map(|x| x.1).unwrap_or(0.0);
+        if wd > 0.0 && self.rng.next_f64() < wd / mass {
+            return (true, d);
+        }
+        // residual: the distribution without d
+        let rest = mass - wd;
+        if rest <= 0.0 {
+            return (true, d);
+        }
+        let mut r = self.rng.next_f64() * rest;
+        let mut last = d;
+        for &(i, w) in &c {
+            if i == d {
+                continue;
+            }
+            last = i;
+            r -= w;
+            if r < 0.0 {
+                return (false, i);
+            }
+        }
+        (false, last)
     }
 }
 
@@ -121,6 +146,27 @@ pub fn argmax(logits: &[f32]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speculative_matches_sampling() {
+        // accept_or_resample's token distribution equals sample's, whatever the draft
+        let l = logits();
+        for (t, p) in [(1.0f32, 1.0f32), (0.7, 0.9)] {
+            let mut a = Sampler::new(t, p, Some(7));
+            let mut b = Sampler::new(t, p, Some(9));
+            let n = 200_000;
+            let ha = hist(&mut a, &l, n);
+            let mut hb = std::collections::HashMap::new();
+            for k in 0..n {
+                let d = [17u32, 400, 3, 5][k % 4];
+                *hb.entry(b.accept_or_resample(&l, d).1).or_insert(0usize) += 1;
+            }
+            for tok in [17u32, 400, 3, 999] {
+                let (x, y) = (*ha.get(&tok).unwrap_or(&0) as f64 / n as f64, *hb.get(&tok).unwrap_or(&0) as f64 / n as f64);
+                assert!((x - y).abs() < 0.006, "t {t} p {p} token {tok}: {x} vs {y}");
+            }
+        }
+    }
 
     fn logits() -> Vec<f32> {
         // probabilities at T=1 ~ softmax([3, 2, 1, 0, -1, ...])
