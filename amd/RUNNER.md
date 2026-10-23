@@ -37,3 +37,22 @@ teacher (Lucebox KL equal to decode), so the runner adds a scheduler, memory pla
 5. Prefill throughput at long prompts (dense on hipBLASLt, grouped expert GEMM, indexer).
 
 Measure each step on the box (beval KL, bbench / long-context benches), commit by path, push.
+
+## Next items: budgets (2026-10-23, from the B=8 distinct-session profile: 22.1 ms per step)
+
+1. Dense products for 1-16 tokens. Measured 4.75 ms per step (wo_b 0.85, router+shared 0.95, wo_a 0.77, q_b 0.77,
+   q_a/kv 0.56, shared down 0.44, head 0.41) for ~8.0 GB of FP8 / BF16 weights: ~1.7 TB/s. Floor at 5 TB/s: 1.6 ms.
+   Bottleneck: bytes in flight. vgemv_d runs at 13% occupancy, 6% VALU busy; ~1.7 waves per SIMD x 2 KB in flight
+   is ~14 KB per CU against ~40 KB needed at ~2 us HBM latency. Deeper prefetch (VDU 4) and more waves did not help;
+   unconditional loads were slower.
+   Predicted gain: 2.5-3 ms per step (~12%) with a kernel that keeps >= 40 KB per CU in flight and no k-split
+   zeroing. Confirming measurement first: a standalone microbenchmark of the wo_b shape (5120 x 8192 FP8, 8 tokens)
+   on the MI325X. Kill if it does not reach 3.5 TB/s.
+2. Small kernels. prep_t 1.67 ms (240 launches), hc_step 1.07, hc_mix_t 1.01, rope / kv / attn_out / route / bgroup
+   ~1.5: ~5.3 ms in ~600 launches for under 100 MB of traffic (floor < 0.1 ms; ~1.5-3 us per launch minimum).
+   Predicted gain: ~2 ms by staging the activation (norm + FP8 quantization) inside the dense products' blocks, as
+   the decode path's gemv_jobs does (removes the 160 prep_t launches before dense products), and merging hc_mix_t
+   into hc_step. Confirm with the same profile (launch count and per-kernel time). Kill if the fused products lose
+   more than they save.
+3. Expert kernels (9.4 ms at B=8): 59% VALU busy, 38% occupancy. Gains need fewer VALU ops per weight (codebook
+   decode ~1.75 ops per weight, scales ~0.5 after packed math). No item yet that passes the budget rule.
