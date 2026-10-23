@@ -526,6 +526,52 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         std::fs::write("/root/plogit.bin", l.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
                         println!("plogit {n}: {:.2} s ({:.0} tok/s), top5 {:?}, KL vs previous {:?}", dt, n as f64 / dt, &ix[..5], rel);
                     }
+                    "bsweep" => {
+                        // bsweep CTX PLEN STEPS B1,B2,..: one PLEN-token prompt prefilled once, copied into max(B) slots, then
+                        // STEPS timed batched steps at each B (tok/s per session and total) with a one-step kernel profile
+                        let bctx: usize = w[1].parse()?;
+                        let plen: usize = w[2].parse()?;
+                        let steps: usize = w[3].parse()?;
+                        let bs: Vec<usize> = w[4].split(',').map(|x| x.parse().unwrap()).collect();
+                        let bmax = *bs.iter().max().unwrap();
+                        let mut b = dec.new_batch(bmax, bctx)?;
+                        // `distinct` (5th argument): every slot its own prompt (eval text at different offsets), so sessions route
+                        // like independent ones; otherwise one prompt copied into every slot
+                        let distinct = w.get(5) == Some(&"distinct");
+                        let ev: Vec<u32> = std::fs::read("/data/models/lucebox/eval/heldout.i32").map(|b| b.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as u32).collect()).unwrap_or_default();
+                        let mut first = 0;
+                        for s in 0..bmax {
+                            if s == 0 || distinct {
+                                dec.reset()?;
+                                let pr: Vec<u32> = if distinct && !ev.is_empty() { (0..plen).map(|i| ev[(s * 997 + i) % ev.len()]).collect() } else { (0..plen).map(|i| ((i * 7919 + 13) % 120000) as u32).collect() };
+                                first = dec.prefill(&pr)?;
+                            }
+                            dec.load_slot(&mut b, s)?;
+                        }
+                        for &bsz in &bs {
+                            let slots: Vec<usize> = (0..bsz).collect();
+                            let mut toks: Vec<u32> = (0..bsz).map(|i| (first + i as u32 * 31) % 120000).collect();
+                            toks = dec.batch_step(&mut b, &slots, &toks)?;
+                            dec.g.sync()?;
+                            let t0 = Instant::now();
+                            for _ in 0..steps {
+                                toks = dec.batch_step(&mut b, &slots, &toks)?;
+                            }
+                            let st = t0.elapsed().as_secs_f64() / steps as f64;
+                            dec.g.prof_start();
+                            let r = dec.batch_step(&mut b, &slots, &toks);
+                            let p = dec.g.prof_end()?;
+                            toks = r?;
+                            let _ = &toks;
+                            let tot: f32 = p.iter().map(|x| x.1).sum();
+                            let ntop = if std::env::var_os("DSXA_PROF_ALL").is_some() { p.len() } else { 6 };
+                            let top: Vec<String> = p.iter().take(ntop).map(|(n, t, k)| format!("{n} {:.2}/{k}", t / 1e3)).collect();
+                            println!("B={bsz:<3} ctx~{plen}: {:.1} ms/step, {:.1} tok/s per session, {:.0} total | kernels {:.1} ms in {} launches: {}", st * 1e3, 1.0 / st, bsz as f64 / st, tot / 1e3, p.iter().map(|x| x.2).sum::<usize>(), top.join(", "));
+                            for s in 0..bsz {
+                                b.pos[s] -= steps + 2;
+                            }
+                        }
+                    }
                     "rbench" => {
                         // rbench SLOTS CTX N PROMPT GEN [TURNS]: N requests of PROMPT synthetic tokens (distinct per request),
                         // GEN greedy tokens each, through the batched runner; TURNS > 1 sends each conversation's
@@ -599,7 +645,9 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         let mut b = dec.new_batch(bsz, ctx)?;
                         dec.reset()?;
                         let pr: Vec<u32> = (0..plen).map(|i| ((i * 7919 + 13) % 120000) as u32).collect();
+                        let tp = Instant::now();
                         let first = dec.prefill(&pr)?;
+                        println!("prefill {plen} tokens: {:.1} s ({:.0} tok/s)", tp.elapsed().as_secs_f64(), plen as f64 / tp.elapsed().as_secs_f64());
                         for s in 0..bsz {
                             dec.load_slot(&mut b, s)?;
                         }

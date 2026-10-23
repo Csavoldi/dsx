@@ -213,11 +213,21 @@ extern "C" __global__ void __launch_bounds__(256) mm(const MmJob* __restrict__ j
 //   mode 3: bf16(silu(min(g,lim)) * clamp(u) * wt[r])     (expert down input; wt null = 1)
 //   mode 4: src as is (already final)
 // Writes FP8 codes/scales [r][n] and (ob) bf16 [r][n].
+struct ZeroList {
+    float* p[6];
+    int n[6];
+};
 extern "C" __global__ void __launch_bounds__(256) prep_t(int mode, const float* __restrict__ src, const float* __restrict__ src2,
                                                          int lds, const float* nw, const float* part, const float* wt,
                                                          int n, float eps, float lim, uint8_t* oq, float* os, uint16_t* ob,
-                                                         uint16_t* obq) {
+                                                         uint16_t* obq, ZeroList zl) {
     __shared__ float red[16];
+    {
+        // clear the next products' k-split outputs (all blocks, grid-stride), saving their own zeroing launches
+        const int gb = blockIdx.y * gridDim.x + blockIdx.x, nb = gridDim.x * gridDim.y;
+        for (int z = 0; z < 6; z++)
+            for (int i = gb * 256 + threadIdx.x; i < zl.n[z]; i += nb * 256) zl.p[z][i] = 0.f;
+    }
     const int r = blockIdx.x;
     const float* x = src + (size_t)r * lds;
     const float* x2 = src2 ? src2 + (size_t)r * lds : nullptr;
@@ -865,7 +875,8 @@ extern "C" __global__ void __launch_bounds__(256) mm2(const MmJob* __restrict__ 
 // attn_core: query t (its q row), window rows lo .. lo+nwin-1 read from lin at row p - wsub or, ring, p % WIN, then nc compressed rows comp[cidx[t][..] - woff]
 __device__ __forceinline__ void attn_core(int t, int lo, int nwin, int wsub, bool ring, float* __restrict__ q, const uint16_t* __restrict__ lin,
                                           const uint16_t* __restrict__ comp, const int* __restrict__ cidx, int nc, int ldc,
-                                          int woff, float scale, const float* sinks, bool cpk = false) {
+                                          int woff, float scale, const float* sinks, bool cpk = false, int rbeg = 0,
+                                          int rend = 1 << 30, float* part = nullptr) {
     __shared__ uint16_t rows[32][HD + 8];
     __shared__ float sp[2][64][33];
     __shared__ uint16_t ph[64][32 + 8], pl[64][32 + 8];
@@ -896,8 +907,9 @@ __device__ __forceinline__ void attn_core(int t, int lo, int nwin, int wsub, boo
 #pragma unroll
     for (int i = 0; i < 8; i++) o[i] = f4{0, 0, 0, 0};
     if (tid < 64) { hm[tid] = -INFINITY; hl[tid] = 0.f; }
-    const int total = nwin + nc;
-    for (int r0 = 0; r0 < total; r0 += 32) {
+    // rows [rbeg, rend) of the window + compressed rows (split attention: `part` gets the unnormalized partial)
+    const int total = min(nwin + nc, rend);
+    for (int r0 = rbeg; r0 < total; r0 += 32) {
         __syncthreads();
         if (tid < 32) {
             const int rr = r0 + tid;
@@ -1003,6 +1015,17 @@ __device__ __forceinline__ void attn_core(int t, int lo, int nwin, int wsub, boo
         }
     }
     __syncthreads();
+    if (part) {
+        // partial: o [64][512] unnormalized, then m [64], l [64]
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            const int h = 16 * oht + g4 + j;
+#pragma unroll
+            for (int i = 0; i < 8; i++) part[(size_t)h * HD + 16 * (odt0 + i) + col] = o[i][j];
+        }
+        if (tid < 64) { part[NH * HD + tid] = hm[tid]; part[NH * HD + 64 + tid] = hl[tid]; }
+        return;
+    }
     // ---- normalize with the sink, write over the query's q row (heads 16*oht + g4 + j, dims 16*(odt0+i) + col)
 #pragma unroll
     for (int j = 0; j < 4; j++) {

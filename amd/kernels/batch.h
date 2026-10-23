@@ -212,6 +212,49 @@ extern "C" __global__ void __launch_bounds__(1024) attn_b(const int* bpos, const
               cidx, comps ? ncomp[t] : 0, ldc, woff, scale, sinks, true);
 }
 
+// Split attention for small batches: block (token, split) takes rows [32 * ATTN_CPB * split, +32 * ATTN_CPB) of the
+// token's window + compressed rows and writes an unnormalized partial (o [64][512], m [64], l [64]) to
+// part[t][split]; attn_merge_b combines the splits with the sink and writes O / L over the token's q row.
+#define ATTN_CPB 2
+#define ATTN_SPLITS 10   // (128 + 512) / (32 * ATTN_CPB)
+#define ATTN_PART (NH * HD + 128)
+extern "C" __global__ void __launch_bounds__(1024) attn_bs(const int* bpos, const int* bslot, float* __restrict__ q,
+                                                           const uint16_t* __restrict__ rings, long long ring_stride,
+                                                           const uint8_t* __restrict__ comps, long long comp_stride,
+                                                           const int* __restrict__ cidx, const int* ncomp, int ldc, int woff,
+                                                           float scale, const float* sinks, float* part) {
+    const int t = blockIdx.x, sp = blockIdx.y, pos = bpos[t], s = bslot[t];
+    const int lo = max(0, pos - (WIN - 1));
+    const int rbeg = sp * 32 * ATTN_CPB;
+    float* pp = part + ((size_t)t * ATTN_SPLITS + sp) * ATTN_PART;
+    const int nwin = pos - lo + 1, nc = comps ? ncomp[t] : 0;
+    if (rbeg >= nwin + nc) {
+        if (threadIdx.x < 64) { pp[NH * HD + threadIdx.x] = -INFINITY; pp[NH * HD + 64 + threadIdx.x] = 0.f; }
+        return;
+    }
+    attn_core(t, lo, nwin, 0, true, q, rings + (size_t)s * ring_stride, comps ? (const uint16_t*)(comps + (size_t)s * comp_stride) : nullptr,
+              cidx, nc, ldc, woff, scale, sinks, true, rbeg, rbeg + 32 * ATTN_CPB, pp);
+}
+// block (token, head): combine the splits' partials, add the sink, write round_bf16(O / L) over q
+extern "C" __global__ void __launch_bounds__(512) attn_merge_b(float* __restrict__ q, const float* __restrict__ part, const float* sinks) {
+    const int t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
+    const float* pp = part + (size_t)t * ATTN_SPLITS * ATTN_PART;
+    float M = -INFINITY;
+    for (int s = 0; s < ATTN_SPLITS; s++) M = fmaxf(M, pp[s * ATTN_PART + NH * HD + h]);
+    float L = 0.f, o = 0.f;
+    if (M != -INFINITY) {
+        for (int s = 0; s < ATTN_SPLITS; s++) {
+            const float m = pp[s * ATTN_PART + NH * HD + h];
+            if (m == -INFINITY) continue;
+            const float e = expf(m - M);
+            L += pp[s * ATTN_PART + NH * HD + 64 + h] * e;
+            o += pp[s * ATTN_PART + (size_t)h * HD + d] * e;
+        }
+    }
+    L += M == -INFINITY ? 1.f : expf(sinks[h] - M);
+    q[((size_t)t * NH + h) * HD + d] = round_bf16(o / L);
+}
+
 // after attn_b: inverse RoPE at each token's position, FP8 per 32 (+ bf16) for wo_a (attn_m_out per token)
 extern "C" __global__ void __launch_bounds__(256) attn_out_b(const int* bpos, float* __restrict__ o, const float* rf, uint8_t* oq, float* os,
                                                              uint16_t* obq) {

@@ -46,6 +46,8 @@ pub struct Batch {
     pub(crate) logits: Buf,
     pub(crate) next: Buf,
     pub(crate) bad: Buf,
+    /// split attention partials [token <= 128][10 splits][64 * 512 + 128] f32
+    pub(crate) apart: Buf,
 }
 
 impl Batch {
@@ -109,6 +111,7 @@ impl Decoder {
             logits: g.alloc_zeroed(BMAX * VOCAB * 4)?,
             next: g.alloc_zeroed(BMAX * 4)?,
             bad: g.alloc_zeroed(4)?,
+            apart: g.alloc(128 * 10 * (NH * HD + 128) * 4)?,
         })
     }
 

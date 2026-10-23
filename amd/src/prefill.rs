@@ -313,12 +313,24 @@ impl Decoder {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prep(&self, mode: i32, src: u64, src2: u64, lds: usize, nw: u64, part: u64, wt: u64, n: usize, rows: usize, oq: u64, os: u64, ob: u64, obq: u64) -> Result<()> {
+        self.prep_z(mode, src, src2, lds, nw, part, wt, n, rows, oq, os, ob, obq, &[])
+    }
+
+    /// prep_t that also clears `zero` (pointer, floats) ranges: the outputs of the k-split products that follow it,
+    /// which then skip their own zeroing launch (Decoder::pz)
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prep_z(&self, mode: i32, src: u64, src2: u64, lds: usize, nw: u64, part: u64, wt: u64, n: usize, rows: usize, oq: u64, os: u64, ob: u64, obq: u64, zero: &[(u64, usize)]) -> Result<()> {
+        let mut zl = vec![0u8; 72];
+        for (k, &(p, cnt)) in zero.iter().take(6).enumerate() {
+            zl[k * 8..k * 8 + 8].copy_from_slice(&p.to_le_bytes());
+            zl[48 + k * 4..48 + k * 4 + 4].copy_from_slice(&(cnt as i32).to_le_bytes());
+        }
         self.g.launch(
             "prep_t",
             (rows as u32, n.div_ceil(1024) as u32, 1),
             256,
             0,
-            &[Arg::I(mode), Arg::P(src), Arg::P(src2), Arg::I(lds as i32), Arg::P(nw), Arg::P(part), Arg::P(wt), Arg::I(n as i32), Arg::F(self.cfg.eps), Arg::F(self.cfg.swiglu_limit), Arg::P(oq), Arg::P(os), Arg::P(ob), Arg::P(obq)],
+            &[Arg::I(mode), Arg::P(src), Arg::P(src2), Arg::I(lds as i32), Arg::P(nw), Arg::P(part), Arg::P(wt), Arg::I(n as i32), Arg::F(self.cfg.eps), Arg::F(self.cfg.swiglu_limit), Arg::P(oq), Arg::P(os), Arg::P(ob), Arg::P(obq), Arg::B(zl)],
         )
     }
 
@@ -378,6 +390,12 @@ impl Decoder {
     }
 
     fn gm(&self, verify: bool, plain: &dyn Fn(&str) -> bool, label: &str, jobs: &[MmJob]) -> Result<()> {
+        let r = self.gm_inner(verify, plain, label, jobs);
+        self.pz.set(false);
+        r
+    }
+
+    fn gm_inner(&self, verify: bool, plain: &dyn Fn(&str) -> bool, label: &str, jobs: &[MmJob]) -> Result<()> {
         if self.pf.as_ref().unwrap().bmode.get() && !plain(label) && std::env::var_os("DSXA_BMM").is_none() {
             return self.bdense_launch(label, self.as_v(jobs));
         }
@@ -537,7 +555,18 @@ impl Decoder {
                 g.launch("mh_t", (20, t as u32, 1), 256, 0, &[Arg::P(pf.h.ptr), Arg::P(pf.mh.ptr), Arg::I((3 * D) as i32), Arg::I((slot * D) as i32)])?;
             }
             // ---- attention projections
-            self.prep(0, pf.xr_a.ptr, 0, D, l.attn_norm.ptr, pf.xss_a.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr, pf.aqb.ptr)?;
+            // small token counts (k-split products): this prep clears the outputs of q_a/kv/comp and wo_a
+            let zsmall = t < 32 && std::env::var_os("DSXA_NOPZ").is_none();
+            let opt = |b: &Option<crate::load::DMat>| b.is_some();
+            let mut zs: Vec<(u64, usize)> = vec![];
+            if zsmall {
+                zs = vec![(pf.qraw.ptr, t * QL), (pf.kvraw.ptr, t * HD), (pf.r.ptr, t * 8192)];
+                if opt(&l.comp_wkv) { zs.push((pf.ckv.ptr, t * HD)); }
+                if opt(&l.comp_wgate) { zs.push((pf.cg.ptr, t * HD)); }
+                if opt(&l.idx_proj) { zs.push((pf.iw.ptr, t * IH)); }
+            }
+            self.prep_z(0, pf.xr_a.ptr, 0, D, l.attn_norm.ptr, pf.xss_a.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr, pf.aqb.ptr, &zs)?;
+            self.pz.set(zsmall);
             let mut jobs = vec![MmJob::dense(&l.wq_a, 0, pf.aq.ptr, pf.as_.ptr, D, pf.qraw.ptr, QL), MmJob::dense(&l.wkv, 0, pf.aq.ptr, pf.as_.ptr, D, pf.kvraw.ptr, HD)];
             let mut bf = |m: &crate::load::DMat, y: u64, ldy: usize| {
                 let mut j = MmJob::dense(m, 4, 0, 0, D, y, ldy);
@@ -558,7 +587,9 @@ impl Decoder {
             }
             self.gm(vk, &plain, "mm q_a/kv/comp", &jobs)?;
             // q_b (+ indexer q) from rmsnorm(qr)
-            self.prep(1, pf.qraw.ptr, 0, QL, l.q_norm.ptr, 0, 0, QL, t, pf.aq.ptr, pf.as_.ptr, 0, pf.aqb.ptr)?;
+            let zs: Vec<(u64, usize)> = if zsmall { vec![(pf.q.ptr, t * NH * HD), (pf.iq.ptr, t * IH * ID)] } else { vec![] };
+            self.prep_z(1, pf.qraw.ptr, 0, QL, l.q_norm.ptr, 0, 0, QL, t, pf.aq.ptr, pf.as_.ptr, 0, pf.aqb.ptr, &zs)?;
+            self.pz.set(zsmall);
             let mut jobs = vec![MmJob::dense(&l.wq_b, 0, pf.aq.ptr, pf.as_.ptr, QL, pf.q.ptr, NH * HD)];
             if let Some(m) = &l.idx_wq_b {
                 jobs.push(MmJob::dense(m, 0, pf.aq.ptr, pf.as_.ptr, QL, pf.iq.ptr, IH * ID));
@@ -668,14 +699,19 @@ impl Decoder {
                     j
                 })
                 .collect();
+            self.pz.set(zsmall); // r was cleared by this layer's first prep
             self.gm(vk, &plain, "mm wo_a", &jobs)?;
-            self.prep(2, pf.r.ptr, 0, 8192, 0, 0, 0, 8192, t, pf.aq.ptr, pf.as_.ptr, 0, pf.aqb.ptr)?;
+            let zs: Vec<(u64, usize)> = if zsmall { vec![(pf.a.ptr, t * D)] } else { vec![] };
+            self.prep_z(2, pf.r.ptr, 0, 8192, 0, 0, 0, 8192, t, pf.aq.ptr, pf.as_.ptr, 0, pf.aqb.ptr, &zs)?;
+            self.pz.set(zsmall);
             let mut j = MmJob::dense(&l.wo_b, 0, pf.aq.ptr, pf.as_.ptr, 8192, pf.a.ptr, D);
             j.ntok = t as i32;
             self.gm(vk, &plain, "mm wo_b", &[j])?;
             // ---- ffn
             hc(pf.a.ptr, false, pf.mix_a.ptr, &l.hc_attn, pf.mix_a.ptr, &l.hc_attn, l.hc_ffn_fn.ptr, pf.mix_f.ptr, pf.xr_f.ptr, pf.xss_f.ptr, None)?;
-            self.prep(0, pf.xr_f.ptr, 0, D, l.ffn_norm.ptr, pf.xss_f.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr, pf.aqb.ptr)?;
+            let zs: Vec<(u64, usize)> = if zsmall { vec![(pf.logits.ptr, t * NE), (pf.sg.ptr, t * INTER), (pf.su.ptr, t * INTER)] } else { vec![] };
+            self.prep_z(0, pf.xr_f.ptr, 0, D, l.ffn_norm.ptr, pf.xss_f.ptr, 0, D, t, pf.aq.ptr, pf.as_.ptr, pf.ab.ptr, pf.aqb.ptr, &zs)?;
+            self.pz.set(zsmall);
             let ne_l = if draft { dsx.unwrap().ne } else { NE };
             let mut gj = MmJob::dense(&l.gate, 4, 0, 0, D, pf.logits.ptr, ne_l);
             gj.xb = pf.ab.ptr;
@@ -701,7 +737,9 @@ impl Decoder {
                 let pgg: usize = if pg { std::env::var("DSXA_PG").ok().and_then(|v| v.parse().ok()).unwrap_or(2) } else { 1 };
                 let jt = 16 * pgg;
                 let js = 8 + 2 * jt;
-                let (ndyn, dynb) = if pg { (NE + (t * kk).div_ceil(jt), pf.gdyn.ptr) } else if let Some(b) = bt { (crate::batch::BG_JOBS, b.dyn_.ptr) } else { (48, pf.dyn_.ptr) };
+                // job slots: at most one per expert touched (<= picks) plus one per jt picks
+                let maxj = NE.min(t * kk) + (t * kk).div_ceil(jt);
+                let (ndyn, dynb) = if pg { (maxj, pf.gdyn.ptr) } else if let Some(b) = bt { (maxj.min(crate::batch::BG_JOBS), b.dyn_.ptr) } else { (48, pf.dyn_.ptr) };
                 if bt.is_some() || pg {
                     g.launch("bgroup", (64, 1, 1), 1024, 0, &[Arg::I(t as i32), Arg::I(kk as i32), Arg::P(pf.sel.ptr), Arg::P(pf.wts.ptr), Arg::P(l.experts.ptr), Arg::P(dynb), Arg::P(pf.wrow.ptr), Arg::P(pf.fill.ptr), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.y.ptr), Arg::I(jt as i32), Arg::I(ndyn as i32)])?;
                 } else {
@@ -1000,6 +1038,19 @@ impl Decoder {
             g.launch("itopk_b", (t as u32, 1, 1), 1024, 0, &[Arg::P(bp), Arg::I(l.ratio as i32), Arg::P(b.score.ptr), Arg::I(lds), Arg::P(rows), Arg::P(nrows), Arg::I(16384), Arg::I(c.idx_topk as i32), Arg::I(WIN as i32), Arg::P(pf.cidx.ptr), Arg::I(512), Arg::P(pf.ncomp.ptr), Arg::I(0)])?;
         }
         let (comp, cstride) = if l.ratio > 0 { (b.comp[l.comp_src].as_ref().unwrap().ptr, (b.rows[l.comp_src] * CROW_B) as i64) } else { (0, 0) };
+        // small batches: each token's rows split over ATTN_SPLITS blocks, then merged (one block per token leaves
+        // the GPU nearly idle: ~155 us per layer for a single token)
+        let split_max: usize = std::env::var("DSXA_ATTN_SPLIT").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize).min(128);
+        if t <= split_max {
+            g.launch(
+                "attn_bs",
+                (t as u32, 10, 1),
+                1024,
+                0,
+                &[Arg::P(bp), Arg::P(bs), Arg::P(pf.q.ptr), Arg::P(b.rings[li].ptr), Arg::P((ring_stride) as u64), Arg::P(comp), Arg::P((cstride) as u64), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::P(b.apart.ptr)],
+            )?;
+            g.launch("attn_merge_b", (t as u32, NH as u32, 1), 512, 0, &[Arg::P(pf.q.ptr), Arg::P(b.apart.ptr), Arg::P(l.sinks.ptr)])?;
+        } else {
         g.launch(
             "attn_b",
             (t as u32, 1, 1),
@@ -1007,6 +1058,7 @@ impl Decoder {
             0,
             &[Arg::P(bp), Arg::P(bs), Arg::P(pf.q.ptr), Arg::P(b.rings[li].ptr), Arg::P((ring_stride) as u64), Arg::P(comp), Arg::P((cstride) as u64), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr)],
         )?;
+        }
         g.launch("attn_out_b", (t as u32, (NH / 8) as u32, 1), 256, 0, &[Arg::P(bp), Arg::P(pf.q.ptr), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])
     }
 }

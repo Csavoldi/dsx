@@ -74,9 +74,10 @@ impl Decoder {
                     j.split = s as i32;
                 }
                 if j.split > 1 && j.atomic == 0 {
-                    // k-split partial sums accumulate: zero this job's output rows first (vzero)
+                    // k-split partial sums accumulate: zero this job's output rows first (vzero), unless the prep before
+                    // this product already cleared them (Decoder::pz)
                     j.atomic = 1;
-                    j.zero = 1;
+                    j.zero = (!self.pz.get()) as i32;
                 }
                 let rows_per_block = match self.xg.get() { Some((r, _)) if j.ndyn > 0 => 64 * r, _ => 64 };
                 j.blocks = ((j.n as usize).div_ceil(rows_per_block) * j.split as usize * j.ndyn.max(1) as usize) as i32;
@@ -134,7 +135,7 @@ impl Decoder {
                 }
                 if j.split > 1 && j.atomic == 0 {
                     j.atomic = 1;
-                    j.zero = 1;
+                    j.zero = (!self.pz.get()) as i32;
                 }
                 j.blocks = ((j.n as usize).div_ceil(64) * j.split as usize) as i32;
                 blocks += j.blocks as u32;

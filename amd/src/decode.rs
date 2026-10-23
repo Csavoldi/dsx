@@ -351,6 +351,8 @@ pub struct Decoder {
     pub(crate) blas: Option<crate::hip::blas::Handle>,
     /// grouped expert launch in progress (batched step / prompt chunk): vgemv_xg{R}{G} tiles and token groups
     pub(crate) xg: std::cell::Cell<Option<(usize, usize)>>,
+    /// the outputs of the next dense product were cleared by the prep before it (no vzero); reset by gm
+    pub(crate) pz: std::cell::Cell<bool>,
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
@@ -758,6 +760,7 @@ impl Decoder {
             bdense: vec![],
             blas: None,
             xg: std::cell::Cell::new(None),
+            pz: std::cell::Cell::new(false),
             pos: 0,
             dump: None,
             etab: vec![],

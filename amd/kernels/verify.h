@@ -9,6 +9,10 @@
 #ifndef VXU
 #define VXU 1  // expert k-units in flight per wave (verify)
 #endif
+typedef float f2v __attribute__((ext_vector_type(2)));
+#ifndef XG_NOX1
+#define XG_NOX1 1  // 0: one-token batched expert jobs column-rotated (faster at B=1 only; more VGPRs)
+#endif
 
 struct VJob {
     const void* w;      // tiles
@@ -490,6 +494,31 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
     const int KU = J.k / 128;
     const int u0 = KU * sl / J.split, u1 = KU * (sl + 1) / J.split;
     const int col = lane & 15, g8 = 8 * (lane >> 4);
+    if (J.ntok == 1 && !XG_NOX1) {
+        // one token: column-rotated tiles (16 k-blocks per MFMA, scales applied once per 16), as single-token decode
+        const char* base = (const char*)J.w;
+        const int xrow = J.rows[0];
+        const uint8_t* xq1 = J.xq + (size_t)xrow * J.ldx + u0 * 128;
+        const float* xs1 = J.xs + (size_t)xrow * (J.ldx / 32) + u0 * 4;
+        const int S = u1 - u0;
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+            const int rt = rt0 + r;
+            if (rt * 16 >= J.n) break;
+            const u4v* sp = (const u4v*)(base + J.soff) + ((size_t)rt * KU + u0) * 4 + (lane >> 4);
+            f4 acc;
+            if (J.fmt == 1) acc = wave_x1g<0, X1U>((const uint32_t*)((const u4v*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 + lane), sp, S, xq1, xs1, 0u, 0u, lane);
+            else if (J.fmt == 2) acc = wave_x1g<3, X1U>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 3 + lane * 3, sp, S, xq1, xs1, cb3lo, cb3hi, lane);
+            else acc = wave_x1g<2, X1U>((const uint32_t*)(base + J.woff) + ((size_t)rt * KU + u0) * 64 * 2 + lane * 2, sp, S, xq1, xs1, cb2, 0u, lane);
+#pragma unroll
+            for (int j = 0; j < 4; j++) acc[j] = group_sum<16>(acc[j]);
+            if (col == 0) {
+                float* yp = J.y + (size_t)J.orows[0] * J.ldy + rt * 16 + 4 * (lane >> 4);
+                for (int j = 0; j < 4; j++) atomicAdd(yp + j, acc[j] * J.mul);
+            }
+        }
+        return;
+    }
     const uint8_t* xq[G];
     const float* xs[G];
     float lm[G];
@@ -537,6 +566,21 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
 #pragma unroll
         for (int r = 0; r < R; r++) {
             const uint32_t ss[4] = {cu.s[r].x, cu.s[r].y, cu.s[r].z, cu.s[r].w};
+            // the unit's 16 row scales (rows j, k-blocks m) as wsc[m][j]: packed FP8 -> f32 conversions (2 per
+            // instruction) for the codebooks, exponent shifts for MXFP4; the products below use packed f32 math
+            f4 wsc[4];
+            if (J.fmt == 1) {
+#pragma unroll
+                for (int m = 0; m < 4; m++)
+#pragma unroll
+                    for (int j = 0; j < 4; j++) wsc[m][j] = __uint_as_float(((ss[j] >> (8 * m)) & 0xFFu) << 23);
+            } else {
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    const f2v lo = __builtin_amdgcn_cvt_pk_f32_fp8(ss[j], false), hi = __builtin_amdgcn_cvt_pk_f32_fp8(ss[j], true);
+                    wsc[0][j] = lo[0]; wsc[1][j] = lo[1]; wsc[2][j] = hi[0]; wsc[3][j] = hi[1];
+                }
+            }
 #pragma unroll
             for (int m = 0; m < 4; m++) {
                 uint64_t a;
@@ -551,17 +595,10 @@ DEV void vgemv_xg_impl(VJob J, int b, uint32_t cb3lo, uint32_t cb3hi, uint32_t c
                     }
                     a = (uint64_t)perm(thi, tlo, s1) << 32 | perm(thi, tlo, s0);
                 }
-                float ws[4];
-#pragma unroll
-                for (int j = 0; j < 4; j++) {
-                    const uint32_t bb = (ss[j] >> (8 * m)) & 0xFFu;
-                    ws[j] = J.fmt == 1 ? __uint_as_float(bb << 23) : fp8_to_f32(bb, 0);
-                }
 #pragma unroll
                 for (int gi = 0; gi < G; gi++) {
                     const f4 dd = mfma_fp8(a, xv[gi][m], f4{0, 0, 0, 0});
-#pragma unroll
-                    for (int j = 0; j < 4; j++) acc[r][gi][j] += dd[j] * (ws[j] * xsv[gi][m]);
+                    acc[r][gi] += dd * (wsc[m] * xsv[gi][m]);
                 }
             }
         }
@@ -717,11 +754,20 @@ extern "C" __global__ void __launch_bounds__(1024) bgroup(int T, int K, const in
         rank[p] = atomicAdd(&cnt[sel[p]], 1);
     }
     __syncthreads();
-    if (i == 0) {   // job base per expert: one job per started jt pairs
-        int b = 0;
-        for (int e = 0; e < NE; e++) { base[e] = b; b += (cnt[e] + jt - 1) / jt; }
-        base[NE] = b;
-        npairs[1] = b;
+    // job base per expert (one job per started jt pairs): exclusive scan over NE <= 1024 threads
+    int v = i < NE ? (cnt[i] + jt - 1) / jt : 0;
+    {
+        __shared__ int sc[1024];
+        sc[i] = v;
+        __syncthreads();
+        for (int o = 1; o < 1024; o <<= 1) {
+            const int a = i >= o ? sc[i - o] : 0;
+            __syncthreads();
+            sc[i] += a;
+            __syncthreads();
+        }
+        if (i < NE) base[i] = sc[i] - v;
+        if (i == NE - 1) { base[NE] = sc[i]; npairs[1] = sc[i]; }
     }
     __syncthreads();
     const int nj = base[NE];
