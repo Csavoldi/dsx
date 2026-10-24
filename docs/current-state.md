@@ -81,7 +81,9 @@ Exactness comparisons additionally require `DSX_ADAPT=0` and equal resident expe
 can change rounding even when weight bytes are unchanged. Cooler 8-thread quality checks are not production-thread
 timing measurements.
 
-## Quality and the open decode check
+<a id="quality-and-the-open-decode-check"></a>
+
+## Quality and decode validation
 
 The published 0.196 quality figure is a prefill-path result with deferral off. Its output gains were selected on the
 same eval, so it is not an independent quality estimate. Later decode checks use different sequence counts,
@@ -97,9 +99,20 @@ Base KL was 0.160876; the integrated arm was 0.170395, with top-1 0.832845 → 0
 at equal residency gave the same result. Thus that window did not attribute the shift to FP8 storage.
 
 The fused q_b rotation differed by one ulp in ~700/4096 rotated values on sm_86 despite a matching sm_120 bench.
-It is disabled by default. The planned default-flags comparison and individual T16 GEMV isolation were not completed
-before the final serving switch. The final deployment report kept the KL caveat open. Disabling q_b fusion must
-not be presented as proof that the entire default integration matches the base numerics.
+It is disabled by default. The default-flags comparison was not completed before the final serving switch, so the
+deployment report kept the KL caveat open.
+
+The [October 24 validation](../bench/results/2026-10-24-102/README.md) subsequently compared complete logits from
+the current defaults against f1f53e4, with adaptation disabled, rank-3 deferral and equal residency (GPU0 1568,
+GPU1 2794). All **132,253,440 F32 values** matched bit-for-bit across 1023 positions and a 129280-token vocabulary;
+both files have SHA-256 `fbce05f045b49ad822fc54119f0b91178531a0333b2e4dcefcfb04fe4c1d54e2`.
+Both arms scored KL 0.160876 and top-1 0.832845. Separate unmodified-binary checks also matched without deferral:
+KL 0.137649 and top-1 0.837732. These results clear the default integration on that sample, not every experimental
+flag or all possible inputs. The older window-35 arm remains a distinct historical measurement.
+
+A diagnostic control enabling only `DSX_QB_ROPE=1` reproduced window 35's KL 0.170395, top-1 0.822092 and
+NLL 2.318534 exactly. The optional fused rotation is therefore sufficient to reproduce that shift in this setup;
+the production default keeps it off.
 
 The original FP8 projection kernel had a separate deterministic KL change from summation order. Its replacement,
 `gemv_fp8b32_o`, preserves F16 arithmetic order; window 35 confirmed equal F16/FP8 KL at equal placement. That fix
@@ -120,9 +133,10 @@ is merged, but optional conversion remains off. Persistent gather threads remove
 
 ## Remaining work
 
-The first correctness task is the default-flags, fixed-residency comparison against the old base on sm_86, followed
-by individual kernel isolation. It requires a coordinated hardware window; the scripts in the results directory
-stop the server and should not be launched as unattended cleanup.
+The default-flags, fixed-residency comparison against the old base passed on the October 24 sample. Verification
+still uses a different execution path from ordinary decode: multi-position blocks bypass deferral, and their
+logits require separate correctness and quality checks. Oracle upper bounds and rollback diagnostics are recorded
+in the October 24 results. Hardware scripts require a coordinated window and must not be run as unattended cleanup.
 
 Subsequent proposals include profiling the adaptive-cache scan, combining T16 gate/up launch work and improving
 multi-conversation prefix reuse. Lower-bit dense weights are estimates, not implemented gains. Requantization is

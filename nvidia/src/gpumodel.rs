@@ -1103,6 +1103,14 @@ impl<'m> GpuModel<'m> {
         self.gemv_rows_t(w, 0, w.rows, x, y, t)
     }
 
+    /// Benchmark control: finish pending swaps and freeze the current expert placement.
+    /// Does not change model state or the normal serving path unless explicitly called.
+    pub fn freeze_residency_for_validation(&mut self) -> Result<()> {
+        self.adapt_flush()?;
+        self.adapt = 0;
+        Ok(())
+    }
+
     /// seconds the CPU expert worker has spent computing (0 without a worker)
     pub fn cpu_busy_s(&self) -> f64 {
         self.worker.as_ref().map_or(0.0, |w| w.busy_ns.load(std::sync::atomic::Ordering::Relaxed) as f64 * 1e-9)

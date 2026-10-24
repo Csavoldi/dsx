@@ -35,6 +35,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 name = "dsx-server"
 path = "src/bin/server.rs"
 
+[[bin]]
+name = "oracle-bench"
+path = "src/bin/oracle-bench.rs"
+required-features = ["cuda"]
+
 [features]
 default = []
 cuda = ["dep:cudarc"]

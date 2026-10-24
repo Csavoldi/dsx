@@ -1,0 +1,350 @@
+//! Fixed-token verification upper bounds and rollback diagnostics. Does not run a draft model.
+use anyhow::{Result, ensure};
+use clap::Parser;
+use dsx::{
+    gpumodel::{GpuModel, Placement},
+    model::Model,
+};
+use serde_json::{Value, json};
+use std::{path::PathBuf, time::Instant};
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long)]
+    model: PathBuf,
+    #[arg(long)]
+    rank: PathBuf,
+    #[arg(long)]
+    ids: PathBuf,
+    /// Consume these exact continuation IDs rather than generating a different path for each placement.
+    #[arg(long)]
+    continuation: Option<PathBuf>,
+    #[arg(long, default_value_t = 128)]
+    steps: usize,
+    #[arg(long, default_value_t = 131072)]
+    ctx: usize,
+    #[arg(long, default_value_t = 4096)]
+    chunk: usize,
+    #[arg(long, default_value_t = 104.0)]
+    arena_gb: f64,
+    #[arg(long, default_value_t=-1.5, allow_negative_numbers=true)]
+    main_gb: f64,
+    #[arg(long, default_value_t=-1.0, allow_negative_numbers=true)]
+    aux_gb: f64,
+    #[arg(long, default_value_t = 3)]
+    rounds: usize,
+    #[arg(long, default_value = "1,2,3,4,6,8", value_delimiter = ',')]
+    widths: Vec<usize>,
+    #[arg(long, default_value_t = 16)]
+    rollback_steps: usize,
+    #[arg(long, default_value_t = 16)]
+    warmup: usize,
+    /// Optional Nsight capture range: "step" or "verifyN". Requires --rounds 1.
+    #[arg(long)]
+    trace_path: Option<String>,
+    /// Save the serial reference logits for a cross-placement comparison.
+    #[arg(long)]
+    dump_reference: Option<PathBuf>,
+    /// Compare the same forced continuation against another placement's serial logits.
+    #[arg(long)]
+    compare_reference: Option<PathBuf>,
+    /// Run one fixed-token stream without restoring state, suitable for profiling the adaptive cache policy.
+    #[arg(long)]
+    serial_probe: bool,
+    /// Warm with the exact continuation, then freeze placement for matched optimistic upper bounds.
+    #[arg(long)]
+    warm_cache_oracle: bool,
+}
+
+fn top(x: &[f32]) -> u32 {
+    x.iter()
+        .enumerate()
+        .fold(
+            (0, f32::NEG_INFINITY),
+            |a, (i, &v)| if v > a.1 { (i, v) } else { a },
+        )
+        .0 as u32
+}
+fn hash_logits(rows: &[Vec<f32>]) -> String {
+    // Stable diagnostic fingerprint; complete source/binary receipts use SHA-256 outside this process.
+    let mut h = 0xcbf29ce484222325u64;
+    for row in rows {
+        for x in row {
+            for b in x.to_bits().to_le_bytes() {
+                h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    format!("{h:016x}")
+}
+fn difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Value {
+    let (mut changed, mut values, mut nonfinite, mut max_abs, mut top_changes) =
+        (0usize, 0usize, 0usize, 0f64, 0usize);
+    let (mut kl_sum, mut kl_max) = (0f64, 0f64);
+    for (x, y) in a.iter().zip(b) {
+        top_changes += usize::from(top(x) != top(y));
+        let prior_changed = changed;
+        for (&u, &v) in x.iter().zip(y) {
+            values += 1;
+            changed += usize::from(u.to_bits() != v.to_bits());
+            if !u.is_finite() || !v.is_finite() {
+                nonfinite += 1;
+            } else {
+                max_abs = max_abs.max((u as f64 - v as f64).abs());
+            }
+        }
+        if changed != prior_changed && x.iter().chain(y).all(|v| v.is_finite()) {
+            let mx = x.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+            let my = y.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+            let sx = x.iter().map(|&v| (v as f64 - mx).exp()).sum::<f64>();
+            let sy = y.iter().map(|&v| (v as f64 - my).exp()).sum::<f64>();
+            let lzx = mx + sx.ln();
+            let lzy = my + sy.ln();
+            let kl = x
+                .iter()
+                .zip(y)
+                .map(|(&u, &v)| (u as f64 - lzx).exp() * (u as f64 - v as f64 + lzy - lzx))
+                .sum::<f64>()
+                .max(0.);
+            kl_sum += kl;
+            kl_max = kl_max.max(kl);
+        }
+    }
+    json!({"rows":a.len().min(b.len()),"values":values,"changed_bits_values":changed,"nonfinite_values":nonfinite,"max_abs_logit_difference":max_abs,"top1_changed_rows":top_changes,"mean_full_vocab_kl_reference_to_candidate":kl_sum/a.len().min(b.len()).max(1) as f64,"max_row_full_vocab_kl":kl_max})
+}
+fn emit(x: Value) {
+    println!("{}", x);
+}
+fn read_ids(path: &std::path::Path) -> Result<Vec<u32>> {
+    Ok(std::fs::read_to_string(path)?
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(str::parse)
+        .collect::<std::result::Result<_, _>>()?)
+}
+fn main() -> Result<()> {
+    let a = Args::parse();
+    ensure!(
+        a.steps > 0 && a.widths.iter().all(|&n| (1..=8).contains(&n)),
+        "steps > 0 and widths 1..=8 required"
+    );
+    ensure!(
+        a.trace_path.is_none() || a.rounds == 1,
+        "trace capture requires one round"
+    );
+    let ids = read_ids(&a.ids)?;
+    let forced = a.continuation.as_deref().map(read_ids).transpose()?;
+    ensure!(
+        forced.as_ref().is_none_or(|x| x.len() >= a.steps),
+        "continuation file must contain at least steps IDs"
+    );
+    ensure!(
+        !ids.is_empty() && ids.len() + a.warmup + a.steps + 8 < a.ctx,
+        "prompt and continuation must fit context"
+    );
+    let m = Model::load(&a.model, None)?;
+    let mut gm = GpuModel::with_placement(
+        &m,
+        -1,
+        a.ctx,
+        Placement {
+            gpu0_gb: a.main_gb,
+            aux_gb: a.aux_gb,
+            arena_gb: a.arena_gb,
+            prefill_chunk: a.chunk,
+            rank: Some(a.rank.clone()),
+        },
+    )?;
+    let pb = gm.pb.take().expect("prefill buffers");
+    let start = Instant::now();
+    let mut lg = gm.prefill(&pb, &ids)?;
+    emit(json!({"event":"prefill","tokens":ids.len(),"elapsed_s":start.elapsed().as_secs_f64()}));
+    for _ in 0..a.warmup {
+        let next = top(&lg);
+        lg = gm.step(next)?;
+    }
+    if a.serial_probe {
+        let tokens = forced
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--serial-probe requires --continuation"))?;
+        if let Some(p) = gm.prof.as_mut() {
+            p.clear();
+        }
+        if let Some(p) = gm.evprof.as_mut() {
+            p.clear();
+        }
+        let cpu = gm.cpu_busy_s();
+        let picks = gm.cpu_picks();
+        let start = Instant::now();
+        let mut result = Vec::with_capacity(a.steps);
+        for &tk in &tokens[..a.steps] {
+            result.push(gm.step(tk)?);
+        }
+        gm.g.sync()?;
+        let elapsed = start.elapsed().as_secs_f64();
+        let after = gm.cpu_picks();
+        emit(
+            json!({"event":"serial_probe","tokens":a.steps,"elapsed_s":elapsed,"effective_tok_s":a.steps as f64/elapsed,"cpu_forward_s":gm.cpu_busy_s()-cpu,"routed_picks":after.0-picks.0,"cpu_picks":after.1-picks.1,"adapt_swaps":gm.adapt_swaps,"stage_profile":gm.prof,"event_profile":gm.evprof,"adapt":std::env::var("DSX_ADAPT").ok(),"defer":std::env::var("DSX_DEFER").ok(),"logit_fingerprint":hash_logits(&result)}),
+        );
+        return Ok(());
+    }
+    gm.g.sync()?;
+    let root = gm.snapshot()?;
+    let initial_logits = lg;
+    let mut tokens = Vec::with_capacity(a.steps);
+    let mut reference = Vec::with_capacity(a.steps);
+    let mut lg = initial_logits.clone();
+    // Produce a representative continuation once. Every timing arm subsequently consumes these exact IDs.
+    for i in 0..a.steps {
+        let next = forced.as_ref().map_or_else(|| top(&lg), |x| x[i]);
+        tokens.push(next);
+        lg = gm.step(next)?;
+        reference.push(lg.clone());
+    }
+    if a.warm_cache_oracle {
+        gm.freeze_residency_for_validation()?;
+        gm.restore(&root)?;
+        reference.clear();
+        for &tk in &tokens {
+            reference.push(gm.step(tk)?);
+        }
+        emit(
+            json!({"event":"cache_oracle","warmup_tokens":tokens.len(),"timed_adaptation":false,"limit":"Placement was warmed using the exact future continuation; this is an optimistic cache upper bound."}),
+        );
+    }
+    if let Some(path) = &a.dump_reference {
+        use std::io::Write;
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        for row in &reference {
+            for value in row {
+                out.write_all(&value.to_le_bytes())?;
+            }
+        }
+        out.flush()?;
+    }
+    if let Some(path) = &a.compare_reference {
+        let bytes = std::fs::read(path)?;
+        let cols = reference[0].len();
+        ensure!(
+            bytes.len() >= a.steps * cols * 4,
+            "comparison reference too short"
+        );
+        let values: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let prior: Vec<Vec<f32>> = values
+            .chunks_exact(cols)
+            .take(a.steps)
+            .map(|r| r.to_vec())
+            .collect();
+        emit(
+            json!({"event":"placement_reference_comparison","reference":path,"difference":difference(&prior,&reference)}),
+        );
+    }
+    emit(
+        json!({"event":"reference","tokens":tokens,"logit_fingerprint":hash_logits(&reference),"defer":std::env::var("DSX_DEFER").ok(),"adapt":std::env::var("DSX_ADAPT").ok(),"ctx":a.ctx,"warmup":a.warmup,"cpu_threads":std::env::var("DSX_CPU_THREADS").ok(),"oracle_semantics":"Fixed reference IDs, forced full acceptance: an upper bound, not a valid sampled speculative generation run"}),
+    );
+    for round in 0..a.rounds {
+        let mut modes = vec![0usize];
+        modes.extend(&a.widths);
+        if round % 2 == 1 {
+            modes.reverse();
+        }
+        for width in modes {
+            gm.restore(&root)?;
+            gm.g.sync()?;
+            if let Some(p) = gm.prof.as_mut() {
+                p.clear();
+            }
+            if let Some(p) = gm.evprof.as_mut() {
+                p.clear();
+            }
+            let cpu = gm.cpu_busy_s();
+            let picks = gm.cpu_picks();
+            let split = gm.cpu_split_s();
+            let trace_name = if width == 0 {
+                "step".to_string()
+            } else {
+                format!("verify{width}")
+            };
+            let tracing = a.trace_path.as_deref() == Some(trace_name.as_str());
+            if tracing {
+                unsafe {
+                    dsx::gpu::check(cudarc::driver::sys::cuProfilerStart(), "cuProfilerStart")?;
+                }
+            }
+            let start = Instant::now();
+            let mut result = Vec::with_capacity(tokens.len());
+            let mut calls = 0usize;
+            let mut call_s = Vec::new();
+            let mut commit_s = 0.;
+            if width == 0 {
+                for &tk in &tokens {
+                    let t = Instant::now();
+                    result.push(gm.step(tk)?);
+                    call_s.push(t.elapsed().as_secs_f64());
+                    calls += 1;
+                }
+            } else {
+                for chunk in tokens.chunks(width) {
+                    let t = Instant::now();
+                    let rows = gm.verify_spec(&pb, chunk)?;
+                    call_s.push(t.elapsed().as_secs_f64());
+                    let t = Instant::now();
+                    gm.keep(chunk.len())?;
+                    commit_s += t.elapsed().as_secs_f64();
+                    result.extend(rows);
+                    calls += 1;
+                }
+            }
+            gm.g.sync()?;
+            let elapsed = start.elapsed().as_secs_f64();
+            let after = gm.cpu_picks();
+            let after_split = gm.cpu_split_s();
+            if tracing {
+                unsafe {
+                    dsx::gpu::check(cudarc::driver::sys::cuProfilerStop(), "cuProfilerStop")?;
+                }
+            }
+            // Differences and fingerprints are computed outside the timed interval.
+            emit(
+                json!({"event":"timing","round":round,"path":if width==0{"step"}else{"forced_accept_verify"},"width":width,"tokens":tokens.len(),"calls":calls,"elapsed_s":elapsed,"effective_tok_s":tokens.len() as f64/elapsed,"verify_or_step_call_s":call_s,"keep_host_s":commit_s,"cpu_forward_s":gm.cpu_busy_s()-cpu,"routed_picks":after.0-picks.0,"cpu_picks":after.1-picks.1,"cpu_split_s":[after_split[0]-split[0],after_split[1]-split[1],after_split[2]-split[2]],"difference_from_serial_reference":difference(&reference,&result),"logit_fingerprint":hash_logits(&result),"stage_profile":gm.prof,"event_profile":gm.evprof}),
+            );
+        }
+    }
+    // Verify a known position followed by deliberately arbitrary suffixes, discard the suffix, and continue.
+    // Each run must agree with the other dummy run; differences from step also expose cross-path numerics.
+    if a.rollback_steps > 0 {
+        let n = a.rollback_steps.min(tokens.len());
+        for width in [2usize, 4, 8] {
+            let mut previous: Option<Vec<Vec<f32>>> = None;
+            for dummy in [11u32, 4242u32] {
+                gm.restore(&root)?;
+                gm.g.sync()?;
+                let start = Instant::now();
+                let mut result = Vec::new();
+                let mut commits = Vec::new();
+                for &tk in &tokens[..n] {
+                    let mut block = vec![dummy; width];
+                    block[0] = tk;
+                    let mut out = gm.verify_spec(&pb, &block)?;
+                    let t = Instant::now();
+                    gm.keep(1)?;
+                    gm.g.sync()?;
+                    commits.push(t.elapsed().as_secs_f64());
+                    result.push(out.remove(0));
+                }
+                let elapsed = start.elapsed().as_secs_f64();
+                emit(
+                    json!({"event":"rollback","width":width,"dummy":dummy,"tokens":n,"elapsed_s":elapsed,"keep_sync_s":commits,"difference_from_serial_reference":difference(&reference[..n],&result),"difference_between_dummy_runs":previous.as_ref().map(|p|difference(p,&result)),"logit_fingerprint":hash_logits(&result)}),
+                );
+                previous = Some(result);
+            }
+        }
+    }
+    gm.restore(&root)?;
+    gm.g.sync()?;
+    emit(json!({"event":"done"}));
+    Ok(())
+}

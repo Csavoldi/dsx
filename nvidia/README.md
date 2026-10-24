@@ -1,7 +1,7 @@
 # dsx: the NVIDIA runner
 
 The current default model is T16 v1. [Current state](../docs/current-state.md) records integrated kernels,
-configuration switches, benchmark provenance and the open static-residency decode check. Without `--features cuda`,
+configuration switches, benchmark provenance and static-residency decode validation. Without `--features cuda`,
 GPU subcommands such as `gen`, `eval` and `cmp` are absent; the CPU reference and GGUF tools remain available.
 
 DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200 (or one RTX 5090).

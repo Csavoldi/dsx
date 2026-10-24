@@ -576,6 +576,17 @@ fn main() -> Result<()> {
                     steps += len - 1;
                     t_steps += ts.elapsed().as_secs_f64();
                 }
+                // Validation only: preserve complete logits after timing, without changing the execution path.
+                if let Some(prefix) = std::env::var_os("DSX_EVAL_DUMP") {
+                    use std::io::Write;
+                    let path = format!("{}.seq{sq}.f32", std::path::PathBuf::from(prefix).display());
+                    let mut dst = std::io::BufWriter::new(std::fs::File::create(&path)?);
+                    for row in &lg {
+                        for value in row { dst.write_all(&value.to_le_bytes())?; }
+                    }
+                    dst.flush()?;
+                    eprintln!("validation logits: {path}, {} rows x {}", lg.len(), lg.first().map_or(0, Vec::len));
+                }
                 for p in from.saturating_sub(1)..len - 1 {
                     let l = &lg[p];
                     let mx = l.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
