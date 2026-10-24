@@ -1,0 +1,50 @@
+== reload /root/experiment-base.hsaco
+reloaded /root/experiment-base.hsaco
+== bsweep 8192 4000 256 4 distinct
+B=4   ctx~4000: 16.1 ms/step, 62.2 tok/s per session, 249 total | kernels 16.8 ms in 1050 launches: verify experts gu 2.95/40, verify experts down 1.77/40, prep_t 1.64/240, attn_bs 1.35/40, hc_mix_t 1.03/83, hc_step 0.99/83, mm router+shared 0.93/40, mm wo_b 0.77/40, mm q_b 0.75/40, mm wo_a 0.68/40, iscore_b 0.52/9, mm q_a/kv/comp 0.47/40, route_t 0.40/40, batch shared down 0.36/40, batch head 0.35/1, bgroup 0.30/40, attn_out_b 0.30/40, attn_merge_b 0.29/40, rope_b 0.29/48, kv_b 0.23/40, itopk_b 0.14/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/hc-candidate.hsaco
+reloaded /root/hc-candidate.hsaco
+== bsweep 8192 4000 256 4 distinct
+B=4   ctx~4000: 16.0 ms/step, 62.6 tok/s per session, 250 total | kernels 16.2 ms in 1050 launches: verify experts gu 2.70/40, prep_t 1.64/240, verify experts down 1.61/40, attn_bs 1.35/40, hc_mix_t 1.03/83, mm router+shared 0.92/40, hc_step 0.80/83, mm wo_b 0.77/40, mm q_b 0.75/40, mm wo_a 0.69/40, iscore_b 0.52/9, mm q_a/kv/comp 0.48/40, route_t 0.39/40, batch shared down 0.36/40, batch head 0.35/1, attn_out_b 0.31/40, attn_merge_b 0.30/40, bgroup 0.29/40, rope_b 0.29/48, kv_b 0.23/40, itopk_b 0.14/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/experiment-base.hsaco
+reloaded /root/experiment-base.hsaco
+== bsweep 8192 4000 256 4 distinct
+B=4   ctx~4000: 16.1 ms/step, 62.0 tok/s per session, 248 total | kernels 17.2 ms in 1050 launches: verify experts gu 3.20/40, verify experts down 1.88/40, prep_t 1.64/240, attn_bs 1.33/40, hc_mix_t 1.03/83, hc_step 0.99/83, mm router+shared 0.92/40, mm wo_b 0.78/40, mm q_b 0.75/40, mm wo_a 0.68/40, iscore_b 0.52/9, mm q_a/kv/comp 0.47/40, route_t 0.39/40, batch shared down 0.37/40, batch head 0.35/1, attn_out_b 0.31/40, attn_merge_b 0.30/40, bgroup 0.29/40, rope_b 0.29/48, kv_b 0.23/40, itopk_b 0.15/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, embed_t 0.01/1, hc_final_b 0.01/1
+== reload /root/hc-candidate.hsaco
+reloaded /root/hc-candidate.hsaco
+== bsweep 8192 4000 256 4 distinct
+B=4   ctx~4000: 15.9 ms/step, 62.9 tok/s per session, 251 total | kernels 16.6 ms in 1050 launches: verify experts gu 2.91/40, verify experts down 1.77/40, prep_t 1.65/240, attn_bs 1.35/40, hc_mix_t 1.03/83, mm router+shared 0.92/40, hc_step 0.80/83, mm wo_b 0.78/40, mm q_b 0.75/40, mm wo_a 0.69/40, iscore_b 0.52/9, mm q_a/kv/comp 0.47/40, route_t 0.40/40, batch shared down 0.37/40, batch head 0.36/1, attn_out_b 0.30/40, attn_merge_b 0.30/40, bgroup 0.29/40, rope_b 0.29/48, kv_b 0.24/40, itopk_b 0.14/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/experiment-base.hsaco
+reloaded /root/experiment-base.hsaco
+== bsweep 8192 4000 256 4 distinct
+B=4   ctx~4000: 16.0 ms/step, 62.4 tok/s per session, 250 total | kernels 16.5 ms in 1050 launches: verify experts gu 2.77/40, verify experts down 1.66/40, prep_t 1.65/240, attn_bs 1.35/40, hc_mix_t 1.02/83, hc_step 0.99/83, mm router+shared 0.93/40, mm wo_b 0.77/40, mm q_b 0.75/40, mm wo_a 0.69/40, iscore_b 0.52/9, mm q_a/kv/comp 0.48/40, route_t 0.39/40, batch shared down 0.36/40, batch head 0.35/1, bgroup 0.31/40, attn_out_b 0.30/40, attn_merge_b 0.29/40, rope_b 0.29/48, kv_b 0.23/40, itopk_b 0.15/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/hc-candidate.hsaco
+reloaded /root/hc-candidate.hsaco
+== bsweep 8192 4000 256 4 distinct
+B=4   ctx~4000: 15.8 ms/step, 63.2 tok/s per session, 253 total | kernels 16.7 ms in 1050 launches: verify experts gu 3.02/40, verify experts down 1.79/40, prep_t 1.63/240, attn_bs 1.35/40, hc_mix_t 1.04/83, mm router+shared 0.92/40, hc_step 0.80/83, mm wo_b 0.78/40, mm q_b 0.75/40, mm wo_a 0.68/40, iscore_b 0.52/9, mm q_a/kv/comp 0.47/40, route_t 0.39/40, batch shared down 0.36/40, batch head 0.35/1, attn_out_b 0.31/40, bgroup 0.30/40, attn_merge_b 0.30/40, rope_b 0.29/48, kv_b 0.23/40, itopk_b 0.14/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/experiment-base.hsaco
+reloaded /root/experiment-base.hsaco
+== bsweep 8192 4000 256 4 distinct
+B=4   ctx~4000: 16.0 ms/step, 62.6 tok/s per session, 250 total | kernels 17.0 ms in 1050 launches: verify experts gu 3.07/40, verify experts down 1.84/40, prep_t 1.68/240, attn_bs 1.34/40, hc_mix_t 1.03/83, hc_step 1.00/83, mm router+shared 0.94/40, mm wo_b 0.77/40, mm q_b 0.75/40, mm wo_a 0.68/40, iscore_b 0.52/9, mm q_a/kv/comp 0.47/40, route_t 0.40/40, batch shared down 0.37/40, batch head 0.35/1, attn_out_b 0.30/40, attn_merge_b 0.29/40, bgroup 0.29/40, rope_b 0.29/48, kv_b 0.23/40, itopk_b 0.14/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/hc-candidate.hsaco
+reloaded /root/hc-candidate.hsaco
+== bsweep 8192 4000 256 4 distinct
+B=4   ctx~4000: 15.9 ms/step, 63.1 tok/s per session, 252 total | kernels 16.7 ms in 1050 launches: verify experts gu 2.97/40, verify experts down 1.78/40, prep_t 1.64/240, attn_bs 1.34/40, hc_mix_t 1.03/83, mm router+shared 0.94/40, hc_step 0.80/83, mm wo_b 0.77/40, mm q_b 0.75/40, mm wo_a 0.69/40, iscore_b 0.53/9, mm q_a/kv/comp 0.48/40, route_t 0.39/40, batch shared down 0.37/40, batch head 0.35/1, attn_out_b 0.30/40, attn_merge_b 0.29/40, bgroup 0.29/40, rope_b 0.29/48, kv_b 0.24/40, itopk_b 0.14/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/experiment-base.hsaco
+reloaded /root/experiment-base.hsaco
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1119 (6 s, 18.1 ms/step)
+pos 512: kl 0.0851 (11 s, 18.4 ms/step)
+pos 768: kl 0.0766 (17 s, 18.5 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 18.62, "replicas": [{"ppl": 8.8586, "kl_top256": 0.075210, "top1_agree": 0.883187}]}
+== reload /root/hc-candidate.hsaco
+reloaded /root/hc-candidate.hsaco
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1160 (5 s, 18.0 ms/step)
+pos 512: kl 0.0874 (11 s, 18.2 ms/step)
+pos 768: kl 0.0777 (17 s, 18.3 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 18.42, "replicas": [{"ppl": 8.8246, "kl_top256": 0.075337, "top1_agree": 0.879888}]}
+== bveval /data/models/lucebox/eval 4 4
+{"k": 4, "tokens": 4092, "ppl": 7.9906, "kl_top256": 0.081886, "top1_agree": 0.886119, "s": 8.0}
+== reload /root/experiment-base.hsaco
+reloaded /root/experiment-base.hsaco

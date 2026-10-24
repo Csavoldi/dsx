@@ -1,0 +1,65 @@
+{
+  "baseline_commit": "fb849d7673c57eae7a69f3822ff5601da0ea010e",
+  "hardware": "DigitalOcean single MI325X rental8",
+  "placement": {
+    "mxfp4": 3378,
+    "cb3": 11982,
+    "cb2": 0
+  },
+  "scope": "B4 distinct 4000-token heldout prefixes, 256 greedy decode steps; four interleaved pairs; no prefill in timed interval",
+  "base_ms": [
+    16.1,
+    16.1,
+    16.0,
+    16.0
+  ],
+  "candidate_ms": [
+    16.0,
+    15.9,
+    15.8,
+    15.9
+  ],
+  "median_base_ms": 16.05,
+  "median_candidate_ms": 15.9,
+  "speedup_percent": 0.9433962264151052,
+  "hc_profile_base_ms": 0.99,
+  "hc_profile_candidate_ms": 0.8,
+  "heldout": {
+    "tokens": 8184,
+    "base_kl_top256": 0.07521,
+    "candidate_kl_top256": 0.075337,
+    "base_ppl": 8.8586,
+    "candidate_ppl": 8.8246,
+    "candidate_verify4_tokens": 4092,
+    "candidate_verify4_kl_top256": 0.081886
+  },
+  "synthetic": {
+    "cases": 72,
+    "bitwise_equal": true,
+    "batches": [
+      1,
+      4,
+      8
+    ],
+    "tokens_per_block": [
+      1,
+      4
+    ],
+    "mixd": [
+      false,
+      true
+    ],
+    "graph": [
+      false,
+      true
+    ],
+    "pmix_modes": [
+      "both",
+      "pmix null",
+      "premix null"
+    ]
+  },
+  "base_code_object_sha256": "9e25ff4acb3168e0c4c57c4ef6a1a1c64b80d76e1cd3c5d702921791b5b667b0",
+  "candidate_code_object_sha256": "0bc214db85a5b3a945d8454356763ea3209cbbeec26f6f407be91b75ddc87fb4",
+  "note": "A/B code objects also contain opt-in separate expert entry points; that experiment was disabled for both sides and rejected. The only A/B change is the hc_step mixd guard. Whole-model results are screening on this rental, not a universal coding speed guarantee."
+}

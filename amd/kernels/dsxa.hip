@@ -220,7 +220,7 @@ extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h0
             reduce_mix(pmix, ln, m0);
             hc_finish16(m0, pa, hc_eps, eps, iters, ln, nullptr, post, comb);
         }
-        if (w == 1) {
+        if (w == 1 && !xo.mixd) {
             if (premix) {
                 reduce_mix(premix, ln, m1);
                 hc_finish16(m1, prea, hc_eps, eps, iters, ln, pre, nullptr, nullptr);
