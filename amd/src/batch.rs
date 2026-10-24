@@ -282,7 +282,10 @@ impl Decoder {
         let n = self.cfg.engram_ngram;
         let (mut bp, mut bs, mut prev, mut tails, mut flat) = (vec![], vec![], vec![], vec![], vec![]);
         for (&s, v) in slots.iter().zip(toks) {
-            let mut h = b.hist[s].clone();
+            // After appending the first token, only the preceding n - 1
+            // mapped tokens can contribute to any Engram n-gram below.
+            let hist = &b.hist[s];
+            let mut h = hist[hist.len().saturating_sub(n.saturating_sub(1))..].to_vec();
             for (j, &tk) in v.iter().enumerate() {
                 bp.push((b.pos[s] + j) as i32);
                 bs.push(s as i32);
