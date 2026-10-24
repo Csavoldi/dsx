@@ -25,8 +25,9 @@ routed experts in **T16**, dsx's own trellis format: exllamav3's bitshift trelli
 CPUs, quantized from DeepSeek's original weights. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engine
 for this model.
 
-**In short:** at the same size as dsx-ud, T16's experts give 28% lower KL against the FP8 model (0.194 vs 0.272), about
-the quality of Project Maya's 178 GB Maya-S in 141 GB, and they decode faster on both the CPU and the GPU.
+At roughly the same model size excluding Engram, the default IQ4_NL package measured KL 0.196 against dsx-ud's
+0.272. The Q6_K alternative measured 0.194, close to Maya-S's 0.195 on this eval. T16's CPU and GPU expert kernels
+were also measured faster than DSX's Unsloth codebook kernels; the speed and quality protocols are described below.
 
 ## Which build
 
@@ -41,6 +42,10 @@ All run on [dsx](https://github.com/lxe/dsx) and were measured on the same eval
 ([Lucebox 1017](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF), 8 x 1,024 tokens against the FP8
 model's top-256 log-probs).
 
+The table retains the original model-release measurements; quality was measured without expert deferral. Decode
+speeds were not all measured with the same runtime revision. For the later NVIDIA kernel integration, current
+switches and the unresolved decode exactness check, see [measurement status](https://github.com/lxe/dsx/blob/main/docs/current-state.md).
+
 ## At a glance
 
 | | |
@@ -49,7 +54,7 @@ model's top-256 log-probs).
 | Experts | T16 trellis: 1.5 / 1.5 / 2 bits (gate / up / down) in layers 0-19, 2 / 2 / 2.5 in layers 20-39; ~1.9 bpw |
 | Quality vs FP8 | KL 0.196 · top-1 80.9% · perplexity 9.54 (FP8: 8.56); with the Q6_K Engram table: 0.194 · 81.4% · 9.60 |
 | Speed, 2x RTX 3090 | 34.9 tok/s decode, 36.8 with `--defer-rank 3` · ~530 tok/s prefill (3K prompt) |
-| Hardware | 2x 24 GB NVIDIA GPU (RTX 3090 / 4090 / 5090), 128 GB RAM, AVX2 CPU (AVX-VNNI for the fast CPU kernel), ~305 GB NVMe ([details](#hardware)) |
+| Hardware | 2x 24 GB NVIDIA GPU (RTX 3090 / 4090 / 5090), 128 GB RAM, AVX2 CPU (AVX-VNNI for the fast CPU kernel), ~255 GB NVMe ([details](#hardware)) |
 | Runtime | [dsx](https://github.com/lxe/dsx) from 2026-10-22 or later (T16 support) |
 
 ## Quality
@@ -65,7 +70,8 @@ Measured on [Lucebox's 1017 eval set](https://huggingface.co/Lucebox/DeepSeek-V4
 | Project Maya Maya-S, llama.cpp | 178 GB | 0.195 | 82.0% | 9.49 |
 | Unsloth UD-IQ1_M as shipped, llama.cpp | ~140 GB | 0.275 | 78.8% | 10.11 |
 
-Through the decode path (one token at a time, as in generation; 2 x 1,023 tokens of the same set):
+Historical release measurements through the decode path (one token at a time; 2 x 1,023 tokens of the same set,
+without deferral). Later integrated-kernel checks have a separate unresolved KL shift; see the status link above:
 
 | | KL ↓ | Top-1 ↑ | Perplexity ↓ |
 |---|---:|---:|---:|
@@ -91,7 +97,9 @@ Hadamard rotations, LDLQ error feedback with each expert's input Hessian), with 
 5. **The bit layout** above, sized to match Unsloth's UD-IQ1_M.
 
 Calibration: 635K tokens (coding-agent sessions, agent and code prompts, the model's own reasoning traces, Wikipedia in
-five languages, code, chat). A v2 on a broader 1.2M-token set is being quantized now.
+five languages, code, chat). The calib5 requant completed on 575×2048 = 1,177,600 fit tokens. It scored KL ~0.202
+and top-1 81.3% with v1's gains reused, versus v1's 0.196 / 80.9%, so it did not replace v1. Agentic-quality gains
+were not established. The gains were selected on this eval; independent gain tuning remains unmeasured.
 
 ## Speed
 
@@ -131,7 +139,9 @@ hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --revision q6k-engram --local-d
 # then --model dsx-t16-q6k/DeepSeek-V4.1-Flash-1017-dsx-t16-00001-of-00004.gguf (4 shards; dsx loads the rest)
 ```
 
-The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-rank 3` for the best quality. Open
+The Engram table and the tokenizer are read from the GGUF. Leave out `--defer-rank 3` to avoid delayed expert
+injection. In a later fixed-token T16 decode eval, R=3 raised KL from ~0.208 to 0.237; those decode/deferral figures
+use a different protocol from the prefill quality table. Open
 `http://localhost:8090/` for the web UI, or point any OpenAI-compatible client at `http://localhost:8090/v1`.
 
 ## Hardware

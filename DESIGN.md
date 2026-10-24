@@ -1,11 +1,14 @@
 # dsx design
 
-One model (DeepSeek-V4.1-Flash-1017), one quant format, one class of machine: two 24 GB GPUs, 128 GB of RAM, an NVMe
-drive. The performance model behind these choices is in [FINDINGS.md](FINDINGS.md), section 3.
+The NVIDIA runner targets DeepSeek-V4.1-Flash-1017 on desktop GPUs and RAM. Its default downloadable model uses
+T16 routed experts, Q8_0 dense weights and an IQ4_NL Engram lookup table; it also reads the older scalar and Unsloth IQ
+formats. The reference machine has two 24 GB GPUs, 128 GB of RAM and an NVMe drive. The performance model behind
+these choices is in [FINDINGS.md](FINDINGS.md), section 3.
 
 ## Principles
 
-1. **No experts on disk.** A read from NVMe costs ~7× the same read from RAM; VRAM + RAM hold the whole expert pool.
+1. **Fit the expert pool in VRAM and RAM.** A read from NVMe costs ~7× the same read from RAM. The measured T16
+   reference configuration covers every expert; smaller configurations can fall back to the GGUF.
 2. **The CPU computes RAM experts in place** during decode. GPUs take RAM experts only during prefill, where one copy
    serves a whole chunk.
 3. **VRAM holds the hottest experts**, ranked by measured routing frequency; the main GPU's share adapts to the
@@ -14,8 +17,9 @@ drive. The performance model behind these choices is in [FINDINGS.md](FINDINGS.m
    the main one; other GPUs are expert stores. A store whose link is at least half as fast swaps experts like the main
    GPU's cache and takes a share of prefill's expert stream; a slower one (GPU1 on a PCIe 3.0 x4 slot) keeps a fixed
    set and carries only activations.
-5. **Quant formats fit the kernels:** CPU unpacking keeps up with RAM bandwidth (AVX2 / AVX-VNNI), GPU experts run on
-   int8 `mma.sync`.
+5. **Quant formats fit the kernels:** the T16 CPU path uses AVX-VNNI integer dot products, while its GPU decode path uses
+   staged trellis loads and `dp4a`. Other supported expert formats use their own CPU and GPU paths, including int8
+   `mma.sync` tiles. Throughput depends on bit rate and processor; see [docs/t16.md](docs/t16.md).
 6. **Exact routing.** A routing bias exists for experiments, off by default.
 
 ## Memory layout
@@ -25,11 +29,15 @@ drive. The performance model behind these choices is in [FINDINGS.md](FINDINGS.m
 | GPU0 (24 GB, x16) | dense weights (Q8_0, ~8 GB), KV cache and indexer keys, adaptive expert cache (~11 GB), prefill buffers |
 | GPU1 (24 GB, x4) | fixed set of hot experts (~23 GB) |
 | GPU1 (24 GB, x16) | adaptive expert cache (~23 GB), prefill buffers and four staging buffers for its share of the stream |
-| RAM (~110 GB; ~135 GB with an x16 GPU1) | hugepage-backed, CUDA-registered arena: every expert the CPU computes, plus copies of the adaptive caches' experts, laid out per (layer, expert) |
-| NVMe | the GGUF (loaded once; the coldest experts are read from it on demand) and the Engram tables |
+| RAM (~110 GB; ~135 GB with an x16 GPU1) | CUDA-registered arena, requesting huge pages with a 4 KiB fallback: CPU experts plus backing copies of adaptive caches' experts |
+| NVMe | the GGUF and Engram lookup table; file-only experts are read on demand if the selected arena and GPU stores do not cover them |
 
-With GPU1 on x16 the arena also holds copies of GPU1's experts (an adaptive cache evicts back to RAM), so at
-`--arena-gb 110` ~3,500 cold experts stay in the file; 150+ GB of RAM fits `--arena-gb 135`.
+The recorded T16 x16+x4 placement has no file-only experts. See [placement counts](docs/placement.md) for the
+configuration and how backing copies are counted.
+
+A fast-linked adaptive GPU1 also needs arena backing copies. If that would leave more than 5% of expert bytes in
+the file, automatic placement keeps it fixed while still allowing its prefill stream. Forcing it adaptive can
+create file-only experts; the historical 110/135 GB arena comparison is in [FINDINGS §8c](FINDINGS.md#8c-two-gpus-on-x16-links-gpu1-as-a-second-cache-and-a-second-stream).
 
 ## Decode
 
@@ -58,6 +66,9 @@ arena and repacked on a side stream.
   computes its larger resident set). The host enqueues the GPUs' expert work round-robin, since a CUDA stream accepts
   only ~1K queued operations before the host blocks.
 - Attention uses a tensor-core kernel for long chunks, and Engram rows are deduplicated per chunk.
+- For chunks up to 512 tokens, a cost model assigns some nonresident experts to the CPU while the GPUs stream the
+  rest. Large prefill chunks stream all nonresident experts; the CPU split and its controls are in
+  [docs/placement.md](docs/placement.md).
 
 ## Server
 
@@ -73,9 +84,12 @@ arena and repacked on a side stream.
 
 ## Quantization
 
-Per-expert tiers (ternary 1.75, Q2_0 2.25, Q3_K 3.44 bpw) allocated by measured error under one budget shared across
-layers; GPTQ with Hessians from a layer-streaming calibration pass through DeepSeek's `model.py`, on calibration text
-that includes the full model's own reasoning traces. Experts are quantized in a 128-block Hadamard-rotated basis
-(GGUF key `dsx.expert_rot`; the engine rotates their inputs to match) and their group scales refit by least squares
-after GPTQ. Native CUDA kernels handle GPTQ and the scale search, batched over experts. Details:
-[quant/README.md](quant/README.md); techniques and their measured effects: [docs/techniques.md](docs/techniques.md).
+T16 experts use ExLlamaV3's Viterbi/LDLQ quantizer with Hadamard-128 transforms, sigma_reg=2 damping, a 16-bit
+computed codebook and column-major positions within 16×16 tiles. Layers 0–19 use 1.5/1.5/2 bits for gate/up/down;
+layers 20–39 use 2/2/2.5. Output gains are baked into the stored scales. Those gains were selected on the reported
+evaluation set, which limits the independence of its quality figures. The shipped lookup table is IQ4_NL; the
+separate Engram projection matrices remain F16 unless the optional runtime FP8 conversion is enabled.
+
+The older dsx-2bit pipeline uses per-expert ternary, Q2_0 and Q3_K tiers with GPTQ, Hadamard rotation and scale refit.
+dsx-ud instead uses Unsloth's routed-expert bytes unchanged. Details: [quant/README.md](quant/README.md),
+[T16 format](docs/t16-format.md), [measurements and open checks](docs/current-state.md).

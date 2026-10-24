@@ -3,11 +3,22 @@
 What dsx does to fit DeepSeek-V4.1-Flash-1017 into a desktop and run it fast, with measured effects, and how that
 compares with other engines for this model family. Measurements: [FINDINGS.md](../FINDINGS.md).
 
+## Current T16 implementation
+
+The default model uses T16 v1 (1.5–2.5 bpw experts, Q8_0 dense, IQ4_NL Engram lookup table). Its trellis codebook,
+column-major tile positions, damped LDLQ and baked-in output gains are described in [T16 experiments](t16.md).
+The later runtime integrates staged T16 GEMVs and small-kernel/launch changes; [current state](current-state.md)
+records the measured gains, defaults and the unresolved fixed-residency decode check. The output gains were chosen
+on the reported evaluation set. The calib5 requant completed but did not lower its general-text KL.
+
+The tables below retain the earlier scalar and Unsloth experiments. Their speed and quality numbers belong to
+those builds, not the current T16 integration.
+
 ## Quantization (build v4b, 148 GB)
 
 | Technique | Source | Measured effect |
 |---|---|---|
-| Per-expert tiers: ternary PTQ1_0 (1.75 bpw), Q2_0 (2.25), Q3_K (3.44); dense Q8_0; Engram unquantized | [Xolotl](https://github.com/Indras-Mirror/Xolotl) GSQ formats | basis of every build |
+| Per-expert tiers: ternary PTQ1_0 (1.75 bpw), Q2_0 (2.25), Q3_K (3.44); dense Q8_0; Engram unquantized | [Xolotl](https://github.com/Indras-Mirror/Xolotl) GSQ formats | basis of the historical scalar builds |
 | One bit budget across layers 2-36, tiers picked by output error per byte | dsx (v2) | KL 0.462 → 0.395 at the same size |
 | GPTQ per expert, Hessians from a layer-by-layer calibration pass through DeepSeek's reference `model.py` | [GPTQ](https://arxiv.org/abs/2210.17323); Xolotl pipeline | — |
 | Native batched CUDA GPTQ, scale search and H^-1 | dsx | 159 → 70 s per layer |
@@ -25,14 +36,14 @@ IQ formats for the dsx-ud build (Unsloth UD-IQ1_M's experts, KL 0.270 at 142 GB)
 | IQ1_S's +-1/8 shift as one madd per 256 weights against per-16 activation sums | dsx | IQ1_S CPU 28 -> 35 GB/s |
 | One GGUF from dsx's dense weights and another GGUF's routed experts (`quant/hybrid_gguf.py`) | dsx | KL 0.270 vs 0.275 for the same experts in llama.cpp |
 
-## Runtime (2x RTX 3090 + 128 GB DDR4: ~29 tok/s decode, 300-470 tok/s prefill)
+## Historical scalar runtime (2x RTX 3090 + 128 GB DDR4)
 
 | Technique | Measured effect |
 |---|---|
 | Hottest experts in VRAM, ranked by routing counts on calibration text | — |
 | Adaptive main-GPU cache: up to 8 replacements per token by decayed usage | prose picks served from VRAM 15% → 70% |
 | Automatic GPU roles (up to 6 GPUs) by measured host link; slow links keep a fixed set ([placement](placement.md)) | same speed as hand placement |
-| CPU computes RAM experts in place from a hugepage arena (AVX2, AVX-VNNI, AVX-512 VNNI kernels) | 30-35 GB/s, the RAM ceiling |
+| CPU computes RAM experts in place from a hugepage arena (AVX2, AVX-VNNI, AVX-512 VNNI kernels) | early kernels: 30-35 GB/s; later RAM read tests reached ~42.4 GB/s |
 | No host synchronization inside a token: per-layer flags in mapped memory, GPU streams wait with `cuStreamWaitValue32` | — |
 | One core per spinning thread (CPU-expert coordinator off the launch thread's core) | 12.5 → 20.3 tok/s |
 | Tiled split-K decode attention | 276 → 21 µs per layer |
@@ -47,9 +58,10 @@ IQ formats for the dsx-ud build (Unsloth UD-IQ1_M's experts, KL 0.270 at 142 GB)
 | Opt-in expert deferral (`--defer-rank 3`, after [KTransformers](https://madsys.cs.tsinghua.edu.cn/publication/ktransformers-unleashing-the-full-potential-of-cpu/gpu-hybrid-inference-for-moe-models/SOSP25-chen.pdf)): the CPU's experts ranked 3-5 enter the residual one layer later, with their own layer's output weights | decode 29.9 → 35.9 tok/s; KL 0.369 → 0.383 |
 | Prefix reuse across turns; vision weights streamed from RAM | — |
 
-## Compared with other engines
+## Historical comparison with other engines
 
-From each project's source and docs as of October 2026; "?" = not verified. vLLM and llama.cpp entries describe their
+Snapshot from the original October 2026 investigation; it describes dsx-2bit and contemporaneous external sources,
+not a current feature audit of those projects. "?" = not verified. vLLM and llama.cpp entries describe their
 general capabilities, not a V4.1-specific audit.
 
 | | dsx | Xolotl (on Strata) | llama.cpp (V4.1 PR #30817) | vLLM | DeepInfer |

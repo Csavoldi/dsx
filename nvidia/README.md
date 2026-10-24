@@ -1,5 +1,9 @@
 # dsx: the NVIDIA runner
 
+The current default model is T16 v1. [Current state](../docs/current-state.md) records integrated kernels,
+configuration switches, benchmark provenance and the open static-residency decode check. Without `--features cuda`,
+GPU subcommands such as `gen`, `eval` and `cmp` are absent; the CPU reference and GGUF tools remain available.
+
 DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200 (or one RTX 5090).
 Rust + CUDA (cudarc driver API, one nvcc fatbin for sm_86 and sm_120). Config, readers, block formats, the CPU
 reference and the server are in [`../core`](../core) (re-exported as `dsx::model`, `dsx::server`, ...). Plan and
@@ -17,11 +21,14 @@ cargo test --release -p dsx --features cuda     # + GPU kernel tests (gemv vs CP
 
 | | |
 |---|---|
-| `dsx ref --model DIR -ids ...` | CPU reference forward, token by token, exact model.py semantics (FP8/FP4 checkpoint dir, or a GGUF + `--engram DIR`) |
+| `dsx ref --model DIR --ids ...` | CPU reference forward, token by token, exact model.py semantics (FP8/FP4 checkpoint dir, or a GGUF + `--engram DIR`) |
 | `dsx cmp --model M --ids ...` | GPU decode next to the CPU reference, per-token logit diff; `--no-ref -n N` decodes greedily; `--main-gb/--aux-gb/--arena-gb` place experts |
 | `dsx gen --model GGUF --engram DIR --ids @file -n N` | chunked prefill, then decode; `--check` reruns the prompt token by token and compares; `--bench-verify T` / `--check-verify T` time / check T-token verify passes |
 | `dsx eval --model GGUF --engram DIR --eval DIR` | KL / top-1 / perplexity on Lucebox's eval set (`--decode`: token by token; `--from N`: positions N+) |
 | `dsx spec --model DIR --ids ...` | DSpark (the checkpoint's draft stack) acceptance on the CPU reference |
+| `dsx merge FIRST_SHARD OUTPUT` | join split GGUFs and verify tensor bytes |
+| `dsx split INPUT PREFIX --shards N` | split a GGUF and verify tensor bytes |
+| `dsx score --model GGUF --tokenizer FILE --request JSON --continuation TEXT` | use `dsx score --help` for request/continuation teacher-forced scoring arguments |
 
 Debug: `DSX_DUMP=dir` (per-layer residual streams, ref vs GPU), `DSX_ROUTES=1` (expert picks), `DSX_PROF=1` (time per section),
 `DSX_SYNC_MOE=1` (old host-synchronous expert path), `DSX_MOE_DEVICE=1` (device-driven expert kernels in the sync path),

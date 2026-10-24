@@ -1,5 +1,10 @@
 # T16 decode GEMV: what caps it (5090, ncu, 2026-10-23)
 
+This note records the intermediate profiling sequence on the RTX 5090. The two-warp split below failed and is not
+the shipped kernel. Subsequent shared-activation staging and loop-invariant offset changes produced the integrated
+kernel (93979a9): 95.4 → 54.2 µs per six-expert layer call at K1.5/2 on the 5090. On the 3090 the model-level gain
+was ~1.1%, not the microbenchmark's 43%. [Current state](current-state.md) records the integration's open KL check.
+
 Kernel: `t16d_gemv_K2` (t16.cuh), one warp per (pick, pair of 16-column tiles, k-split s), 4 warps a block; a decode
 layer call (6 picks) launches 432 blocks for gate / up (S = 4) and 720 for down (S = 3). S stays: it fixes the order
 of the float sum over 256-groups, and the output must stay bit-identical (`gpu_t16 t16_decode_bits`).

@@ -15,8 +15,8 @@ Models this size usually need a datacenter. dsx runs
 **[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)** (DeepSeek, MIT license;
 a 552 B mixture of experts plus a 196 B Engram memory) on a desktop with two RTX 3090s, 128 GB of RAM and an NVMe
 drive. It's an engine written in Rust and CUDA for this one model. The experts each token uses most stay on the GPUs,
-the next ones in RAM where the CPU computes them, and the GPUs and CPU hand each layer back and forth without stalling
-each other.
+the next ones in RAM where the CPU computes them. The GPUs and CPU compute their assigned experts in parallel,
+and the main GPU waits for the partial results before combining them. Optional expert deferral reduces that wait.
 
 - **Fast:** ~35 tokens/s writing the answer and ~530 tokens/s reading a 3,000-token prompt on two RTX 3090s.
 - **Close to the original:** the same next token as the FP8 model 81% of the time on the Lucebox eval, with dsx's own T16 experts.
@@ -35,16 +35,26 @@ tokenizer is stored in the GGUF; the vision tower is `vision.safetensors` beside
 
 Against the FP8 model on the [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) eval
 (8 x 1,024 tokens), it picks the same next token 80.9% of the time, with KL 0.196 and perplexity 9.54 (FP8: 8.56).
+These are prefill-path measurements with deferral off. The T16 output gains were selected on this eval, so the
+figures are somewhat optimistic. They do not certify the numerics of every later kernel revision; see
+[measurement status](docs/current-state.md#quality-and-the-open-decode-check).
+
 The branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) has the same
 model with a Q6_K Engram table: a 302 GB download in 4 shards, KL 0.194 and 81.4%. That is 28% lower KL than [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud), the same size with
 [Unsloth](https://github.com/unslothai/unsloth)'s [UD-IQ1_M](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)
-experts (KL 0.272), which dsx also runs.
+experts (KL 0.272), which dsx also runs. The model sizes excluding Engram are ~141 GB and ~142 GB respectively.
 
 ## How fast is it?
 
-On two RTX 3090s (24 GB each) with an i7-12700K and 128 GB of DDR4, dsx writes **34.9 tokens/s** with T16 and 36.8 with
-`--defer-rank 3`. It reads a 3,000-token prompt at ~530 tokens/s. On the same PC, Unsloth's UD-IQ1_M runs at 12 tokens/s
-in llama.cpp.
+The published T16 v1 runs on two RTX 3090s (24 GB each), an i7-12700K and 128 GB of DDR4 measured 34.9 tokens/s
+without deferral and 36.8 with `--defer-rank 3` after a 3K prompt. A later prefill improvement reached ~530 tokens/s
+on a 3,000-token prompt. These are dated measurements, with different builds for the decode and prefill rows.
+
+The October 23 integrated kernels measured 33.86 → 37.03 tokens/s in an interleaved teacher-forced decode comparison
+with deferral and optional FP8 Engram projections enabled. That FP8 conversion is off by default. The 41 tokens/s
+free-generation result used different generated text and is not a controlled speed comparison. Context size, routing
+and cache warm-up affect serving speed; [measurement status](docs/current-state.md) records the configurations,
+quality caveats and raw logs. Unsloth's UD-IQ1_M measured ~12 tokens/s in the earlier llama.cpp comparison on this PC.
 
 ## Quick start
 
@@ -68,7 +78,9 @@ CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
   --host 0.0.0.0 --port 8090
 ```
 
-`--defer-rank 3` trades a little quality for speed; leave it out for the best quality.
+`--defer-rank 3` adds low-ranked CPU expert outputs one layer late. On the recorded T16 decode eval it raised KL
+from about 0.208 to 0.237; leave it out to avoid that approximation. The quality figures above were measured
+without deferral.
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI client at `http://localhost:8090/v1` (Anthropic
 clients at `http://localhost:8090`):
@@ -192,7 +204,7 @@ With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and poin
 
 | | |
 |---|---|
-| `--defer-rank R` | add the CPU's lower-ranked experts (router rank R or lower, 0 = best of 6) one layer later instead of waiting for them. `--defer-rank 3` on 2x RTX 3090: dsx-t16 34.9 → 36.8 tok/s; dsx-ud 27-29.5 → 32-36 tok/s, KL 0.269 → 0.284 against the FP8 model. Off by default because outputs change slightly |
+| `--defer-rank R` | add the CPU's lower-ranked experts (router rank R or lower, 0 = best of 6) one layer later instead of waiting for them. T16 decode eval: KL ~0.208 → 0.237 at R=3; R=2/1 raised it to 0.260/0.306 and were rejected. Off by default; the quick start opts into R=3. Speed depends on build and text; see [measurement status](docs/current-state.md) |
 
 Settings by machine (the flags are explained in [docs/placement.md](docs/placement.md)):
 
@@ -215,6 +227,7 @@ Thinking is on by default, at high effort. A request turns it off or sets the ef
 
 | | |
 |---|---|
+| [docs/current-state.md](docs/current-state.md) | current NVIDIA defaults, release and benchmark provenance, known limitations |
 | [docs/placement.md](docs/placement.md) | where the experts go (VRAM, RAM, disk) and how to tune it |
 | [DESIGN.md](DESIGN.md) | how a token runs: the per-layer handoff between GPUs and CPU, prefill, the server |
 | [nvidia/README.md](nvidia/README.md) | the `dsx` command-line tools (`gen`, `eval`, `cmp`, `ref`, `spec`) and debug switches |
@@ -241,8 +254,10 @@ more memory than two GPUs have, so dsx spreads them over everything the PC has a
 to run.
 
 - **Hot experts on the GPUs, the rest in RAM:** a ranking from calibration text says which experts the model picks
-  most. The hottest fill the GPUs, the next ~110 GB go into RAM, where the CPU computes them, and the few coldest stay
-  in the file on the SSD. On two RTX 3090s, about three of every four expert picks land on a GPU.
+  most. Fixed GPU stores hold their own experts; adaptive GPU caches keep backing copies in the RAM arena. The
+  current T16 placement on the measured two-3090 system fits every expert in VRAM or RAM, with no file-only experts.
+  Smaller arenas can leave cold experts in the GGUF for the CPU to read on demand. The GPU share of picks varies
+  with the conversation and placement.
 - **It follows your conversation:** after every token, dsx counts which experts were used and swaps a few hot ones
   from RAM onto the main GPU in the background, replacing ones that went cold. A coding session and a chat about
   history end up with different experts on the card.
@@ -256,9 +271,10 @@ to run.
   CPU and the other GPUs through shared memory. Each computes its own experts in parallel, and the main GPU adds the
   results. The handoff takes about 6 µs and never waits on the operating system.
 - **Fast CPU kernels:** the experts in RAM run on hand-written AVX2 / AVX-VNNI kernels across the CPU's performance
-  cores, from memory locked in large pages so the CPU reads it at full speed.
+  cores. The RAM arena is CUDA-registered and requests huge pages; allocation can fall back to 4 KiB pages under
+  memory pressure, which lowers measured host-to-GPU copy bandwidth.
 - **Optional deferral:** `--defer-rank 3` lets the CPU's least important experts finish one layer late instead of
-  holding up the GPU: 15-20% faster decode for a small change in the output.
+  holding up the GPU. It changes the residual computation; its measured quality cost is described above.
 - **Long prompts:** prompts are read in chunks of 4,096 tokens. The experts no GPU holds stream from RAM while the
   GPUs compute, over every fast link at once, and the other GPUs work on the same chunk in parallel.
 - **Picks up where you left off:** the last conversation stays on the GPU, so the next message only reads the new

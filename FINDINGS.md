@@ -5,19 +5,23 @@ what limits it? This document collects the analysis, measurements and results be
 [DESIGN.md](DESIGN.md). Hardware microbenchmarks: [bench/RESULTS.md](bench/RESULTS.md). Speed model:
 [roofline.py](roofline.py).
 
-## Summary
+## Current NVIDIA state
 
-| | |
+The default download is T16 v1: one ~252 GB GGUF with Q8_0 dense weights and an IQ4_NL Engram lookup table.
+The October 23 integration is on main (af2c154 code, 76a5d0a documentation). The reference server uses deferral rank 3
+and the GGUF's F16 Engram projections; runtime FP8 conversion remains opt-in.
+
+| Measurement | Result and conditions |
 |---|---|
-| Decode | ~29 tok/s on 2x RTX 3090 + 128 GB DDR4, exact routing (v4) |
-| Prefill | 301 tok/s (3K tokens), 470 tok/s (8K tokens) (v4) |
-| Quality | KL 0.270, top-1 79.0%, perplexity 10.13 vs the FP8 model's 8.56 with Unsloth UD-IQ1_M's experts (142 GB, dsx-ud); dsx's own quant v4b: KL 0.373, top-1 74.4% (148 GB) |
-| Limit | the experts the CPU computes from RAM (33-36 GB/s on DDR4-3200), then the dense half on GPU0 |
+| Published T16 v1 quality | prefill-path KL 0.196, top-1 80.9%, perplexity 9.54; deferral off; output gains selected on this eval |
+| Integrated decode A/B | 33.86 → 37.03 tok/s; teacher-forced 1×1023 steps, defer=3, two interleaved rounds; candidate includes optional FP8 Engram |
+| Prefill | ~529 tok/s for 3K tokens after vectorized dequant and hugepage arena changes; earlier build |
+| Open correctness check | static-residency decode KL 0.160876 → 0.170395 in window 35; cause not isolated, not a new release-quality score |
 
-The levers that mattered, in order: keep every expert in VRAM or RAM (none on disk); rank VRAM residency by measured
-expert hotness and let it follow the conversation; one CPU core per spinning thread; a parallel decode-attention kernel;
-a quant whose bit budget is shared across layers, calibrated on the model's own reasoning; Hadamard-rotated experts with
-refit scales.
+[Current state](docs/current-state.md) separates published model quality, later kernel timings, defaults and open
+checks. Section 9b gives the integrated changes; earlier sections retain the builds and measurements that motivated
+them. Their v1–v7 names refer to the older scalar quants, not T16 release versions. The earlier dsx-ud and scalar
+results are historical comparisons, not the current default.
 
 ## 1. The model
 
@@ -38,9 +42,9 @@ included. A V4.1 quant is not a 1017 quant.
 
 | Part | Parameters | Placement in dsx |
 |---|---:|---|
-| Routed experts | 544B (15,360 × 35.4M) | quantized; VRAM, RAM, a few on disk |
+| Routed experts | 544B (15,360 × 35.4M) | quantized; VRAM and RAM, file fallback if capacity is insufficient |
 | Dense (attention, shared expert, routers, embeddings, head) | ~8B | GPU0, Q8_0 |
-| Engram tables | 196B, 2 × 384M rows | disk, read per token (~48 rows of 264 bytes per table) |
+| Engram tables | 196B, 2 × 384M rows | mmap lookup table on disk; selected rows gathered per token |
 
 ## 2. Target hardware
 
@@ -425,13 +429,14 @@ scan 154 us, 8 swap launches ~120 us, prologue). LM head 0.82 ms (703 MB at 853 
 | Z | kv / compressor / indexer branch on the par stream beside q_b | +0.1% (0.04 ms) | not checked alone | off (DSX_PAR_ATTN=1): under the 0.1 ms bar |
 | W | closing hc_post inside o_b's GEMV and combine_post | ~0 | yes (bench) | off (DSX_FUSE4=1) |
 | T | Dev 4: cp.async T16 decode GEMV | +1.1% | Dev 4's hash test (5090) | on |
-| E | Dev 4: FP8 engram wkv with gemv_fp8b32_o (DSX_ENGRAM_FP8=1) | +1.7% | yes on .102 (window 35: KL equal to F16 at the same GPU0 experts) | opt-in; candidate default |
+| E | Dev 4: FP8 engram wkv with gemv_fp8b32_o (DSX_ENGRAM_FP8=1) | +1.7% | yes on .102 (window 35: KL equal to F16 at the same GPU0 experts) | opt-in; F16 retained as default |
 
 **Exactness.** Window 35 (adapt 0, same 1568 GPU0 experts): base KL 0.160876; integrate with Y-Z-W-T on 0.170395 (+0.0095);
 FP8 engram changes nothing beyond that. The fused q_b RoPE is the one kernel found inexact on the 3090; Z and T were
-not checked alone. Next: rerun the adapt-0 pair with DSX_QB_ROPE off (expected equal to base), then with T and Z
-separately. Make rope's rotation explicit (__fmaf_rn / __fmul_rn) in rope itself so fused and unfused kernels share
-it on every arch.
+not checked alone. The planned default-flags comparison with DSX_QB_ROPE off, followed by T and Z separately, was not completed
+before the final serving switch; the final deployment report kept this caveat open. Do not assume disabling q_b
+fusion resolved the shift. A possible follow-up is to make rotation explicit (__fmaf_rn / __fmul_rn) in both paths
+and verify it on sm_86. See [current checks](docs/current-state.md#quality-and-the-open-decode-check).
 
 **Lessons.** FMA contraction of the same expression differs between kernels and between sm_86 and sm_120: write the
 form out with intrinsics, and check bit-equality on the 3090, not only the 5090. KL with the adaptive cache on takes a
@@ -448,7 +453,10 @@ launches) needs a profile of the scan before changing it. GPU0 still waits ~3.9 
 
 ## 10. Open problems
 
-- Quality per byte: KL 0.373 at 148 GB against Unsloth's 0.361 at ~122 GB (codebook formats, more bits in late layers
+Current checks are listed in [docs/current-state.md](docs/current-state.md#remaining-work). The items below include
+older proposals; they are not an active job queue or authorization to requantize.
+
+- Historical scalar-quant quality per byte: KL 0.373 at 148 GB against Unsloth's 0.361 at ~122 GB (codebook formats, more bits in late layers
   and down projections), and the gap to 2.5 bpw (0.253) at a size that fits 128 GB + 48 GB.
 - A disk tier for RAM-limited machines: batched direct reads, one read per expert, next-layer prefetch (as in
   [colibri](https://github.com/JustVugg/colibri)).

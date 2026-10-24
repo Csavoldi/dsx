@@ -1,16 +1,21 @@
 # Expert placement
 
-Every routed expert (40 layers x 384) lives in exactly one place that computes it during decode. On 2x RTX 3090 with
-128 GB of RAM:
+Each routed expert (40 layers × 384 = 15,360) is computed by one device in a decode step. An expert cached on an
+adaptive GPU also keeps a backing copy in the RAM arena, so resident-entry counts cannot simply be added.
 
-| Where | Experts | Computed by |
-|---|---|---|
-| Main GPU | ~1,050 (10.5 GB), next to the dense weights | itself; an adaptive cache |
-| Other GPU | ~2,190 (23 GB) | itself, on activations shipped to it |
-| RAM arena (hugepages) | ~12,600 (110 GB) | 14 CPU threads |
-| The GGUF file | the ~550 coldest | the CPU, through the page cache |
+The recorded T16 v1 serving placement (October 23, af2c154, IQ4_NL lookup table, F16 Engram projections,
+128K context, chunk 4096, 110 GB arena budget) is:
 
-About 74% of decode's expert picks are served from VRAM there; the CPU's share sets decode speed.
+| Storage | Entries | Decode role |
+|---|---:|---|
+| Main GPU | 1,239 (10.5 GB) | adaptive expert cache; backing copies remain in the arena |
+| Second GPU, PCIe x4 | 2,757 (23.3 GB) | fixed expert store; no arena backing required |
+| RAM arena | 12,603 (107.8 GB) | CPU experts plus the main GPU's backing copies |
+| File-only experts | 0 | none for this configuration |
+
+The unique count is 2,757 + 12,603 = 15,360. Context length, free VRAM, quantization and chunk size change these counts.
+The CPU share of routed picks depends on the text; with deferral, GPU0's dense work and CPU/GPU overlap also limit
+speed. See [current state](current-state.md) for benchmark conditions.
 
 ## GPU roles
 
@@ -40,7 +45,9 @@ Experts an adaptive GPU may evict keep a copy in the arena, so the arena is size
 
 ## Prefill
 
-Each chunk streams the experts no GPU holds from the arena over PCIe while the previous expert computes; the other
+For chunks of at most 512 tokens, the CPU can compute a cost-selected subset of nonresident experts in 16-row
+windows while the GPU streams the rest (`DSX_PREFILL_CPU=0` disables this; `DSX_PREFILL_CPU_MAX_N` sets the cap).
+Longer chunks stream all experts no GPU holds from the arena over PCIe while the previous expert computes; the other
 GPUs run their own experts on the chunk's activations in parallel. A fast-linked expert GPU also takes part of the
 stream into its own staging buffers, so both links carry the arena: each streamed expert goes to the GPU whose queued
 copies finish first, counting the main GPU's link twice (`DSX_STREAM_MAIN_W`), because the other GPU also computes its
@@ -61,13 +68,15 @@ with run-to-run noise in the startup measurement.
 | `DSX_AUX_ADAPTIVE=1` / `0` | force the other GPUs adaptive / fixed regardless of their link |
 | `DSX_AUX_STREAM=1` / `0` | force the other GPUs to take / not take a share of prefill's expert stream regardless of their link |
 | `DSX_STREAM_MAIN_W=x` | weight of the main GPU's link when the stream is split (default 2) |
+| `DSX_PREFILL_CPU=0` | disable CPU assistance for short prefill chunks (enabled by default) |
+| `DSX_PREFILL_CPU_MAX_N=N` | largest chunk eligible for CPU assistance (default 512) |
 
 `--gpu0-gb` and `--gpu1-gb` still work as aliases of `--main-gb` and `--aux-gb`.
 
 ## What takes the main GPU's memory
 
-Besides ~8 GB of dense weights and 1.5 GB of headroom, these come out of the main GPU's expert cache (RTX 3090,
-v4b):
+The following is a historical v4b scalar-quant sweep on the RTX 3090, not the current T16 expert counts. Besides
+~8 GB of dense weights and 1.5 GB of headroom, these buffers came out of that build's main-GPU expert cache:
 
 | Setting | Experts on the main GPU |
 |---|---:|

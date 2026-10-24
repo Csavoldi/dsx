@@ -1,5 +1,10 @@
 # dsx-amd batched runner: plan
 
+Status: implementation and measurement log through rental 7, October 23, 2026. The rental ended and the droplet
+and account SSH key were deleted (see [rental ledger](box/RENTALS.md)); no runner service remains from that demo.
+Budget figures below describe those completed runs. Proposed next items are not running jobs or renewed rental
+authorization. The original single-sequence path is documented separately in [README.md](README.md).
+
 Goal (lxe, 2026-10-23): a Volta / pocket-engine style batched inference runner for DeepSeek-V4.1-Flash on one
 MI325X, with maximum throughput for one session and for many sessions at up to 256K context. Budget $100 of
 DigitalOcean time (amd/box/RENTALS.md).

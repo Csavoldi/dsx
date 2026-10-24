@@ -23,7 +23,7 @@ tags:
 DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in 270 GB, built to run entirely from the HBM of one AMD Instinct
 MI325X with exact routing. Most routed experts keep the checkpoint's own MXFP4 weights; the least-used ones get a fitted
 3-bit codebook. Runs on [**dsx**](https://github.com/lxe/dsx)'s AMD runner (`amd/`, Rust + HIP). For a desktop with NVIDIA GPUs, see
-[dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud).
+[dsx-t16](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16).
 
 ## Which build
 
@@ -37,6 +37,10 @@ MI325X with exact routing. Most routed experts keep the checkpoint's own MXFP4 w
 All four run on [dsx](https://github.com/lxe/dsx) and were measured on the same eval
 ([Lucebox 1017](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF), 8 x 1,024 tokens against the FP8
 model's top-256 log-probs).
+
+The table retains the original model-release measurements; quality was measured without expert deferral. Decode
+speeds were not all measured with the same runtime revision. For the later NVIDIA kernel integration, current
+switches and the unresolved decode exactness check, see [measurement status](https://github.com/lxe/dsx/blob/main/docs/current-state.md).
 
 ## At a glance
 

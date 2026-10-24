@@ -1,5 +1,9 @@
 # Hardware microbenchmarks
 
+These are the original scalar-quant and synthetic microbenchmarks. Later T16 measurements found a ~42.4 GB/s RAM
+read ceiling; the results below are not a new measurement of the integrated engine. Compare only matching kernels,
+thread counts and power limits. [Current state](../docs/current-state.md) indexes the later model benchmarks.
+
 Reference machine: i7-12700K, 128 GB DDR4-3200 (dual channel), RTX 3090 on PCIe 4.0 x16 + RTX 3090 on PCIe 3.0 x4.
 Sources: `membw.c`, `qdot.c` (synthetic weights, real kernels), `pcie.cu`, and `nvidia/src/bin/cpubench.rs`.
 
@@ -7,7 +11,7 @@ Sources: `membw.c`, `qdot.c` (synthetic weights, real kernels), `pcie.cu`, and `
 
 | Test | Result | Takeaway |
 |---|---:|---|
-| RAM read bandwidth | **39.5 GB/s** (2 threads already 38.5) | the decode bottleneck |
+| RAM read bandwidth | **39.5 GB/s** (2 threads already 38.5) | early read test; later tests reached 42.4 GB/s |
 | Host-to-device, GPU0, pinned 4 KB pages | 13 GB/s | the IOMMU halves DMA from small pages |
 | Host-to-device, GPU0, hugepage memory + `cudaHostRegister` | **24.7 GB/s** | the RAM arena must be hugepage-backed |
 | Host-to-device, GPU1 (PCIe 3.0 x4) | 3.3 GB/s | GPU1 holds a fixed expert set |

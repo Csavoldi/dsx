@@ -1,9 +1,17 @@
 # Quantization pipeline
 
+The default model uses T16 v1, quantized with the patched ExLlamaV3 pipeline in `t16/`. See
+[the format](../docs/t16-format.md), [experiments](../docs/t16.md) and [current results](../docs/current-state.md).
+`t16/t16_qworker.py` fits expert matrices, `t16/t16_gguf.py` writes the v1 GGUF blobs, and `t16/t16_ref.py` inspects
+and decodes them. Pod scripts in this directory create billable resources and are not part of ordinary inference;
+old budgets and completed-run scripts are historical records, not standing authorization.
+
+The sections below document the older dsx-2bit v4b scalar pipeline and its rental tools.
+
 How [DeepSeek-V4.1-Flash-1017-dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit) was made. Built on the V4.1 tools of
 [Xolotl](https://github.com/Indras-Mirror/Xolotl) (MIT, Niko1221 and the Strata contributors), commit `7375e305`.
 
-The published build is v4b. Each build changed one thing; its script runs it end to end on one machine (paths in the
+The published dsx-2bit build is v4b; it is not the recommended T16 download. Each build changed one thing; its script runs it end to end on one machine (paths in the
 scripts are the build machine's):
 
 | Build | What changed | Script |

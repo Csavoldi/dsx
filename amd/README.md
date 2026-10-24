@@ -1,5 +1,11 @@
 # dsx-amd: the MI325X runner
 
+This page describes the original single-sequence path and its model-release measurements. The later batched
+scheduler is selected with `serve --slots N --batch-ctx C`; it adds prompt-lookup speculation for sampled requests,
+an optional `--admin-port`, and per-step graphs. See [RUNNER.md](RUNNER.md) for the separate measurements and
+[demo/README.md](demo/README.md) for reproducing the completed demo. Rental 7 ended on October 23; the recorded
+droplet and key were deleted. These instructions do not describe an active hosted service.
+
 DeepSeek-V4.1-Flash-1017 on one AMD Instinct MI325X (gfx942, 256 GiB HBM3E): the whole model except the Engram
 tables in HBM, one HIP graph per decode step, MFMA prompt kernels, DSpark speculative decoding. Rust + HIP; the
 config, readers, CPU reference and server come from [`../core`](../core). Measurements: [../FINDINGS-AMD.md](../FINDINGS-AMD.md).

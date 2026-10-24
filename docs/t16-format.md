@@ -1,23 +1,24 @@
 # Packaging T16: decision and format spec
 
-**Decision.** Keep GGUF as the container and T16 as dsx's own GGUF tensor types, and make the next release (the
-calib5 requant) a cleaned-up format v2: one tensor per role for the trellis and standard f16 tensors for its scales,
-the T16 parameters recorded in the GGUF's own metadata, this spec, and a numpy reference decoder. Don't ship an EXL3
-layout, and don't pursue a ggml type. dsx reads v1 and v2.
+The shipped T16 format uses GGUF types 1010–1012. Each expert matrix stores a trellis and its input/output scales
+in one blob. The current loader reads this v1 layout (`core/src/t16.rs`, `core/src/gguf.rs`). A proposed v2 layout
+with separate scale tensors is recorded below; it is not implemented by the current loader or converter. T16 model
+release v2 (the calib5 experiment) and container format v2 are different version numbers.
 
-The goal (lxe) is a clean, friendly package for dsx, not compatibility with other runtimes. GGUF already gives what
-lxe likes about it: one file set, metadata and the tokenizer inside, and Hugging Face shows it as GGUF. What is not
-clean today is how T16 sits inside it, and that is a small, local fix.
+GGUF supplies the model metadata and tokenizer in one file set. The default package is one ~252 GB GGUF with an
+IQ4_NL lookup table; the Q6_K alternative retains four shards. Generic EXL3 inference does not decode these T16 bytes
+correctly without support for the codebook and tile order.
 
 ## What dsx-t16 v1 ships
 
-`lxe/DeepSeek-V4.1-Flash-1017-dsx-t16`: four GGUF shards (llama.cpp split naming), plus `config.json`,
+`lxe/DeepSeek-V4.1-Flash-1017-dsx-t16`: one GGUF, plus `config.json`,
 `expert-rank.json`, `vision.safetensors`, `README.md` and `SHA256SUMS`.
 
 - Routed experts: per layer, `blk.L.ffn_{gate,up,down}_exps.weight` with dims `[k, n, 384]` and dsx type 1010 / 1011 /
   1012 (T16 at 1.5 / 2 / 2.5 bits). Each expert's matrix is one byte blob, `trellis | suh | svh`, so a tensor's size is
   not `rows x row bytes`; dsx special-cases it (`core/src/gguf.rs`).
-- Everything else uses standard ggml types: dense Q8_0, embeddings F16, the Engram table Q6_K (shard 4).
+- Everything else uses standard ggml types: dense Q8_0, embeddings F16, the default Engram lookup table IQ4_NL.
+  The `q6k-engram` branch carries the Q6_K alternative in four shards.
 - Inside the GGUF: the architecture config, Engram layout, `dsx.tokenizer_json`. Not inside: what T16 *is* (codebook,
   tile order, Hadamard, the output gains baked into svh, calibration). That lives only in the `config.json` prose.
 
@@ -28,12 +29,12 @@ How tools see it (checked 2026-10-22):
   `GGMLQuantizationType(1010)`), so `gguf-dump` cannot even show the metadata. That is the one tooling gap; the
   reference reader below closes it.
 
-## Options
+## Packaging alternatives considered (October 22, 2026)
 
 | | GGUF + dsx types (v2) | EXL3 layout | safetensors dir (HF-native) | ggml type upstream |
 |---|---|---|---|---|
 | One file set, metadata + tokenizer inside | yes | config + tokenizer files beside the shards | same as EXL3 | yes |
-| Runs in dsx | yes (today) | new loader | new loader | yes |
+| Runs in dsx | v1 today; v2 needs loader changes | new loader | new loader | yes |
 | Runs elsewhere | no | **no, and silently wrong** (below) | no | after weeks of work, maybe |
 | Generic tools read it | HF yes; gguf-py no | yes | yes | yes |
 | The rest of this model (Q8_0 dense, Q6_K Engram, MTP, placement) | native | not representable | opaque byte arrays | native |
@@ -66,9 +67,10 @@ are all built around GGUF. It moves the problem rather than solving it.
   (PR #29600, `llama_mul_mat_hadamard`, `prism.hadamard.*` keys) and for the KV cache, and per-expert scales could be
   gathered by expert id. Still a multi-week, multi-backend change for one model.
 
-## Format v2 (with the calib5 release)
+## Proposed format v2
 
-Changes from v1; dsx keeps reading v1.
+These changes are a design proposal, not shipped behavior. The converter and loader still use v1 blobs; do not
+produce separate scale tensors for them without implementing both ends.
 
 1. **Three tensors per role instead of a blob.** `blk.L.ffn_{role}_exps.weight` holds only trellises (T16 type, dims
    `[k, n, E]`); `blk.L.ffn_{role}_exps.suh` (F16 `[k, E]`) and `blk.L.ffn_{role}_exps.svh` (F16 `[n, E]`) hold the
@@ -86,10 +88,11 @@ Changes from v1; dsx keeps reading v1.
 4. **Tools.** `quant/t16/t16_ref.py`: `inspect` (metadata and tensors of any dsx GGUF, which gguf-py refuses), `dequant`
    (an expert's effective f32 matrix), and `selftest`. It decodes the golden files made by exllamav3 exactly
    (W_inner bit-identical; W_eff and y within fp16 rounding, 5e-4 to 9e-4 relative).
-5. **Type ids stay 1010-1012.** ggml's ids end at 42 (`GGML_TYPE_COUNT` 43), so no collision for a long time.
+5. **Proposed type ids stay 1010-1012.** They are private dsx ids, not an upstream allocation; future upstream
+   compatibility must be checked explicitly.
 
-Effort: converter ~2 h (split the blob, write the keys), dsx loader ~3 h (separate tensors, v1 fallback), the rest is
-done (this file, `t16_ref.py`).
+The original effort estimate was ~2 hours for the converter and ~3 hours for loader changes. These are unvalidated
+estimates; writing this specification and the reference reader did not implement the v2 container.
 
 ## T16 tensor format (byte-exact)
 
@@ -112,7 +115,7 @@ A T16 expert matrix maps inputs `x` (k) to outputs `y` (n):
   fp16 0xca1e))`: the exact product and sum rounded once to fp16, i.e. `0.009567260742 b - 2.4375` within half an ulp.
   There are 511 possible values.
 - **Scales.** `suh` f16 `[k]`, `svh` f16 `[n]`. v1 stores each expert as `trellis | suh | svh` (one blob, experts
-  consecutive); v2 stores them as the three tensors above.
+  consecutive); the proposed v2 would store them as three tensors.
 
 The trellis bits come from exllamav3's quantizer (v1.6.4 + `quant/t16/make_mul16_exllamav3.sh`), whose own layout is
 `int16 [k/16][n/16][16 K]` read as little-endian u32 words, MSB first; dsx's stored layout is that, with tiles reordered

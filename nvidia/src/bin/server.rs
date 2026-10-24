@@ -38,8 +38,9 @@ struct Cli {
     /// A request's `hesitation_penalty` field overrides it.
     #[arg(long, default_value_t = 0.0)]
     hesitation_penalty: f32,
-    /// faster decode, slightly different outputs: the CPU's experts the router ranked R or lower (0 = best of 6) are added one
-    /// layer later instead of being waited for (3: ~+20% decode for KL +0.014 on 2x RTX 3090). Same as DSX_DEFER=R
+    /// add CPU expert outputs ranked R or lower (0 = best of 6) one layer late; changes model numerics.
+    /// T16 decode eval measured KL ~0.208 without deferral vs ~0.237 at R=3; speed depends on workload.
+    /// Off unless set here or through DSX_DEFER=R.
     #[arg(long)]
     defer_rank: Option<usize>,
     /// run the deterministic mock engine instead of the model

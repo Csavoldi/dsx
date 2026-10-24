@@ -49,6 +49,10 @@ All four run on [dsx](https://github.com/lxe/dsx) and were measured on the same 
 ([Lucebox 1017](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF), 8 x 1,024 tokens against the FP8
 model's top-256 log-probs).
 
+The table retains the original model-release measurements; quality was measured without expert deferral. Decode
+speeds were not all measured with the same runtime revision. For the later NVIDIA kernel integration, current
+switches and the unresolved decode exactness check, see [measurement status](https://github.com/lxe/dsx/blob/main/docs/current-state.md).
+
 ## At a glance
 
 | | |

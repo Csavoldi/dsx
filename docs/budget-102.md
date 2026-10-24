@@ -1,5 +1,11 @@
 # Decode resource budget on .102
 
+This is the pre-integration resource budget measured on October 22–23, 2026. Its floors and predictions apply to
+that build and workload. The lever table in section 8 records an earlier pause; later windows merged T16 GEMV and
+small-kernel changes and verified the FP8 arithmetic fix. See [current state](current-state.md) and
+[FINDINGS §9b](../FINDINGS.md#9b-decode-small-kernels-launch-structure-and-the-dev-4-merge-2026-10-23) for subsequent results.
+The old gpu-unlock proposal was dropped, not scheduled; power limits must be read live before any benchmark.
+
 Where a decode token's time and bytes go on .102 (2x RTX 3090, i7-12700K, 128 GB DDR4), from measurements, and what
 each candidate lever can win by that budget. Every proposal states its predicted gain, the measurement that confirms
 it and the result that kills it. Build: T16 IQ4_NL (a3cf51b + prefill cap 512), 3000-token prompt, 600 decode tokens,
