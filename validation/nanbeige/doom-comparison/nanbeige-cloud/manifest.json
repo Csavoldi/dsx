@@ -19,6 +19,7 @@
   "terminal": "54x46",
   "output_rows": "17",
   "fresh_game": true,
-  "status": "running",
-  "started_utc": "2026-10-25T20:46:45.298297+00:00"
+  "status": "stopped_by_user",
+  "started_utc": "2026-10-25T20:46:45.298297+00:00",
+  "rented_instance_released": true
 }

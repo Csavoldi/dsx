@@ -1,7 +1,7 @@
 {
   "key": "nanbeige-local",
   "session": "dsx-doom",
-  "pi_pane": "%232",
+  "pi_pane": "%237",
   "output_pane": "%226",
   "title": "Nanbeige EXL3 2.5 bpw | low",
   "provider": "dsx-nanbeige",
@@ -19,7 +19,9 @@
   "terminal": "54x46",
   "output_rows": "17",
   "fresh_game": true,
-  "status": "running",
+  "status": "cancelled",
   "started_utc": "2026-10-25T20:21:37.712304+00:00",
-  "streaming_fix_verified": true
+  "streaming_fix_verified": true,
+  "restored_pane_status": "idle; no automatic gauntlet restart",
+  "cancelled_utc": "2026-10-25T20:46:49.368092Z"
 }

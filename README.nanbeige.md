@@ -131,3 +131,6 @@ A passive ten-second sample of the active Doom run measured approximately 23.52 
 The [attention partition sweep](validation/nanbeige/attention-partitions.md) measures the CUDA GQA kernel and merge on the rented RTX PRO 6000 Blackwell without interrupting the local RTX 5090 run. Larger partitions did not consistently improve long-context attention. The production partition remains 512 tokens; no end-to-end throughput gain is claimed. The new `--attention-bench` option supports further isolated measurements.
 
 The [Doom comparison setup](validation/nanbeige/doom-comparison/README.md) records matched task prompts for local EXL3 Nanbeige, original 16-bit Nanbeige on a rented reference backend, and the existing DeepSeek DSX runner on two RTX 3090 GPUs. Its manifests identify the hardware, precision, and reasoning-control differences that limit attribution to weight quantization.
+
+
+The final cancelled Doom request generated 43,931 tokens at an average 29.10 TPS, reaching 46,497 prompt-plus-generated tokens. It accepted 4,230 of 13,581 lookup drafts and produced no game file. This long reasoning run is distinct from the short-context suite. The user stopped the comparison and optimization; the rented reference instance has been released. Changes remain on `nanbeige`, with no merge to `main`.

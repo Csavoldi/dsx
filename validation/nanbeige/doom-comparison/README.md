@@ -11,3 +11,13 @@ The reference initially failed Triton attention compilation with Triton 3.3.0. U
 The local live sample measured approximately 23.52 output tokens/second by retokenizing ten seconds of streamed reasoning. Its request started with 2,566 prompt tokens; the completed request's generated-token count and final populated context were still unavailable. This sample does not replace the earlier controlled short-context benchmark of 69.88 output tokens/second.
 
 At this checkpoint, DeepSeek has a running autoplay preview, cloud Nanbeige has started making tool calls, and local Nanbeige remains in its first reasoning turn. These are interim observations, not final task scores. Preserve the complete agent sessions and rendered previews before scoring completion. The reference pod retains its independent 80-minute automatic expiry.
+
+## Final stopped state
+
+The user stopped optimization and requested that all changes remain on the `nanbeige` branch, without merging into `main`.
+
+Local Nanbeige's Pi pane disappeared and the backend recorded cancellation after 43,931 output tokens. Its whole-run decode average was 29.10 TPS over 1,509.825 seconds, with 2,566 input tokens, three cached tokens, and 46,497 total prompt-plus-generated tokens. Prompt lookup accepted 4,230 of 13,581 drafted tokens in 4,675 attempts. The request produced no game file. The pane removal's cause is unknown. A new idle Pi pane was restored without restarting Doom.
+
+The user also stopped the original 16-bit reference because it continued overthinking. Its rented instance was deleted, and a provider GET returned HTTP 404. The SSH tunnel and automatic-expiry timer are inactive. Compute rental lasted approximately 38.7 minutes, with an estimated compute cost of $1.61 before any provider-specific billing or storage adjustments.
+
+DeepSeek produced a game and a changing autoplay preview. Its generated source and two observer captures are preserved here. The comparison was stopped before a complete common task score was assigned.
