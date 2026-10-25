@@ -221,3 +221,11 @@ or establish improved coding completion.
 for the other incremental probe; omitting the option preserves full-prompt
 capture. Prefix construction and subsequent decode remain outside the captured
 range. The option rejects sizes that do not match a probed interval.
+
+HTTP usage currently sets `prompt_cache_hit_tokens` to zero in the recipe's
+initial `PromptUsage`, even when the NVIDIA engine reuses a prefix. Treat the
+HTTP `cached_tokens`/cache-hit fields as unimplemented reporting, rather than a
+measurement of cache effectiveness. The engine's `cached_prompt_tokens`, raw
+`prefix_start` and measured prefill time are authoritative for these experiments.
+Correct HTTP reporting needs an engine-to-protocol metadata path; changing a
+usage label alone would not establish real cache reuse.

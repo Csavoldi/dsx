@@ -298,17 +298,18 @@ default change or claim of a reliable 2/2 success rate.
 
 The successful runs also expose a final-summary cost: their acceptance workflow
 removes API tools, which removes the native prompt's tool header and invalidates
-the prefix. The last request takes 16.525s for the cube and 21.973s for the
+the prefix. Raw engine audits confirm prefix start 0 in both final requests,
+with 12.157s and 12.791s of model prefill for cube and tetrahedron. The last request takes 16.525s for the cube and 21.973s for the
 tetrahedron. `--preserve-completion-prefix` is a separate experiment that retains
 the header while still blocking execution. Its live verification remains pending.
 
 The [incremental prefill traces](incremental-prefill-profile.json) isolate warm
 64- and 256-token additions after their prepared prefixes, with identical expert
-membership. For 64tokens, GPU0's combined kernel/copy busy fraction is 91.6% and
-GPU1's kernel busy fraction is 58.7%; for 256tokens they are 82.6% and 32.3%.
-GPU0 transfers 6.57GB and 16.78GB from host memory, taking 400ms and 1,044ms of summed
-copy time. T16 dequantization sums to 129/154ms on GPU0/1 for 64tokens and 285/219ms
-for 256tokens. Those activities overlap; they are costs to investigate, not
+membership. For 64 tokens, GPU0's combined kernel/copy busy fraction is 91.6% and
+GPU1's kernel busy fraction is 58.7%; for 256 tokens they are 82.6% and 32.3%.
+GPU0 transfers 6.57 GB and 16.78 GB from host memory, taking 400 ms and 1,044 ms of summed
+copy time. T16 dequantization sums to 129/154 ms on GPU0/1 for 64 tokens and 285/219 ms
+for 256 tokens. Those activities overlap; they are costs to investigate, not
 additive critical-path savings. GPU1 is performing resident-expert computation.
 The profile does not prove that moving more work there improves the task.
 
