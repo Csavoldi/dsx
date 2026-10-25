@@ -1,5 +1,7 @@
 //! Nanbeige protocol adapter around the unchanged DSX engine worker.
 use anyhow::{Result, anyhow, ensure};
+#[path = "nanbeige/tool_stream.rs"]
+mod tool_stream;
 use axum::{
     Json, Router,
     extract::State,
@@ -271,6 +273,7 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
             content: String::new(),
             reasoning: String::new(),
         };
+        let mut tool_stream = tool_stream::ToolStream::default();
         let mut decoder = app.tok.decode_stream(false);
         let started = std::time::Instant::now();
         let mut first_token = None;
@@ -290,6 +293,14 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
                         Ok(Some(piece)) => {
                             for (k, v) in parser.push(&piece, false) {
                                 send(chunk(&id, json!({k:v}), Value::Null));
+                            }
+                            if stream && !parser.thinking {
+                                match tool_stream.push(&parser.pending, &tools, &id) {
+                                    Ok(deltas) => for delta in deltas {
+                                        send(chunk(&id, json!({"tool_calls":[delta]}), Value::Null));
+                                    },
+                                    Err(e) => { error=Some(e.to_string()); break; }
+                                }
                             }
                         }
                         Ok(None) => {}
@@ -333,16 +344,17 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
         }
         if !tc.is_empty() {
             finish = "tool_calls";
-            let deltas: Vec<Value> = tc
-                .iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    let mut v = v.clone();
-                    v["index"] = json!(i);
-                    v
-                })
-                .collect();
-            send(chunk(&id, json!({"tool_calls":deltas}), Value::Null));
+            if stream {
+                match tool_stream.push(&parser.pending, &tools, &id).and_then(|deltas| {
+                    tool_stream.finish(tc.len())?;
+                    Ok(deltas)
+                }) {
+                    Ok(deltas) => for delta in deltas {
+                        send(chunk(&id, json!({"tool_calls":[delta]}), Value::Null));
+                    },
+                    Err(e) => error=Some(e.to_string()),
+                }
+            }
         }
         if let Some(e) = error {
             send(json!({"error":{"message":e}}));
@@ -452,6 +464,51 @@ mod tests {
         let args: Value =
             serde_json::from_str(c[0]["function"]["arguments"].as_str().unwrap()).unwrap();
         assert_eq!(args, json!({"content":"123","n":7}));
+    }
+    #[test]
+    fn tool_arguments_stream_before_call_finishes() {
+        let tools=json!([{"function":{"name":"write","parameters":{"properties":{"content":{"type":"string"},"path":{"type":"string"},"n":{"type":"integer"},"flags":{"type":"array"}}}}}]);
+        let body="print(\"世界\\path\")\n".repeat(200);
+        let text=format!("<tool_call>\n<function=write>\n<parameter=path>\n/tmp/doom.py\n</parameter>\n<parameter=content>\n{body}\n</parameter>\n<parameter=n>\n7\n</parameter>\n<parameter=flags>\n[true, false]\n</parameter>\n</function>\n</tool_call>");
+        let mut stream=tool_stream::ToolStream::default();
+        let mut prefix=String::new();let mut arguments=String::new();let mut declarations=0;
+        let mut emitted_during_body=false;
+        for ch in text.chars() {
+            prefix.push(ch);
+            for delta in stream.push(&prefix,&tools,"request").unwrap() {
+                if delta.get("id").is_some() {declarations+=1;assert_eq!(delta["id"],"call_request_0");}
+                if let Some(part)=delta["function"]["arguments"].as_str() {arguments.push_str(part);}
+            }
+            if prefix.ends_with("print(") && arguments.contains("print(") {emitted_during_body=true;}
+        }
+        stream.finish(1).unwrap();
+        let streamed:Value=serde_json::from_str(&arguments).unwrap();
+        let legacy=calls(&text,&tools).unwrap();
+        let expected:Value=serde_json::from_str(legacy[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(streamed,expected);
+        assert_eq!(streamed["content"],body);
+        assert_eq!(declarations,1);
+        assert!(emitted_during_body,"long write stayed buffered until its closing tag");
+    }
+    #[test]
+    fn streamed_multiple_calls_and_truncated_call() {
+        let tools=json!([{"function":{"name":"write","parameters":{"properties":{"content":{"type":"string"}}}}}]);
+        let first="<tool_call><function=write><parameter=content>\n\n</parameter></function></tool_call>";
+        let text=format!("{first}\n<tool_call><function=write><parameter=content>\n123\n</parameter></function></tool_call>");
+        let mut p=tool_stream::ToolStream::default();let mut prefix=String::new();let mut args=[String::new(),String::new()];
+        for ch in text.chars() {
+            prefix.push(ch);
+            for delta in p.push(&prefix,&tools,"multi").unwrap() {
+                let i=delta["index"].as_u64().unwrap() as usize;
+                if let Some(s)=delta["function"]["arguments"].as_str(){args[i].push_str(s);}
+            }
+        }
+        p.finish(2).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&args[0]).unwrap(),json!({"content":""}));
+        assert_eq!(serde_json::from_str::<Value>(&args[1]).unwrap(),json!({"content":"123"}));
+        let mut p=tool_stream::ToolStream::default();
+        p.push(&format!("{first}<tool_call><function=write><parameter=content>incomplete"),&tools,"bad").unwrap();
+        assert!(p.finish(1).is_err(),"truncated second call must not appear complete");
     }
     #[test]
     fn template_history() {
