@@ -115,3 +115,10 @@ terminates the owned proxy even if the display pane has already disappeared;
 `cleanup.json` records those errors. A proxy startup failure excludes the run
 before starting an agent. Verify these paths without inference with
 `python3 bench/geometry/test-proxy-owner.py`.
+
+Summaries bind API records to requests started during this agent's lifetime.
+A late response from one of those requests remains included; requests started
+after the agent stopped are preserved on disk but listed in
+`outside_run_request_numbers` and excluded from its metrics. This guards against
+recording faults without silently deleting their evidence. The proxy-ownership
+tests also exercise this lifetime filter.
