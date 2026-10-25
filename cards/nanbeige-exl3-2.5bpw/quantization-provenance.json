@@ -1,0 +1,70 @@
+{
+  "source_model": "Nanbeige/Nanbeige4.3-33B",
+  "source_revision": "c1093c501cc6460427c0ac634db7223d0450c0ee",
+  "quantizer_repository": "https://github.com/turboderp-org/exllamav3",
+  "quantizer_commit": "da68d57de61781e5b74ad68698ac4caf36408d7a",
+  "quantizer_version": "1.6.4",
+  "decoder_bits_per_weight": 2.5,
+  "head_bits": 16,
+  "embedding_bits": 16,
+  "codebook": "mul1",
+  "codebook_multiplier": "0x83DCD12D",
+  "out_scales": "auto",
+  "calibration": {
+    "rows": 32,
+    "columns": 512,
+    "tokens": 16384,
+    "files": {
+      "c4.utf8": {
+        "sha256": "2daf1ef16e02dbd337f86296acd4c3f2eb703800ad21fd1f48b40280c699cd41",
+        "bytes": 1338229
+      },
+      "code.utf8": {
+        "sha256": "12a80d96af7e16b3ecbf2e6899a9c70aee2f4e0003b581979fe6876944e2d891",
+        "bytes": 1357117
+      },
+      "multilingual.utf8": {
+        "sha256": "68182e06506ead0d2676673fdee4bbe6564ccb06cee3b8373b7e4824297ea91e",
+        "bytes": 293500
+      },
+      "technical.utf8": {
+        "sha256": "7cac2a0ddd7bc4db19e52e3b12ced3812514059f1f11bfc427b7849e0077a2ee",
+        "bytes": 350054
+      },
+      "tiny.utf8": {
+        "sha256": "51449c33b579f8b12e776dcbfa58ef47bab69f6ab7f44e972b7d98c4cfcac7fd",
+        "bytes": 261689
+      },
+      "wiki.utf8": {
+        "sha256": "d53fe0aeadf3355eb5d32b48bf8691575244c31caccae88ed46be8e1b40209c7",
+        "bytes": 2093275
+      }
+    },
+    "random_seed": 0,
+    "mixture_rows": {
+      "c4": 4,
+      "code": 4,
+      "multilingual": 2,
+      "technical": 2,
+      "wiki": 11,
+      "tiny": 1,
+      "random_tokens": 8
+    }
+  },
+  "command": "python convert.py -i SOURCE -w WORK -o OUTPUT -b 2.5 -hb 16 -eb 16 -cr 32 -cc 512 -cb mul1",
+  "shard_limit_mib": 8192,
+  "hardware": "1x NVIDIA RTX PRO 6000 Blackwell Server Edition, 96 GB",
+  "image": "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04",
+  "patches": {
+    "patch_qtf_opt.py": "60dbf44ec359fe107c44b6d560ee7e684727b3e603c24d899e8b74621e71db06",
+    "qt_frac_opt.cuh": "e0548bab93e3613b281005b12f85d31f643af6019102ab4008ffe6d3e9f23971",
+    "patch_sdpa.py": "ce67203b4739a44acbfa5d6a9a9ae8ee3fa3edd7de819a16f774cd40d85fb46c",
+    "validate_pack.py": "8eaeaf1beaae309b9e6825e5417bc5a154cbbf0857c711b7b2d961f9954fd8fa",
+    "reference_eval.py": "107f3392b6f7e306416e3f6da4dd110821d1549c86b42393e4b7f0f0b07c8fa4"
+  },
+  "metadata_compatibility": {
+    "config_bits_field": "omitted: Hugging Face requires an integer",
+    "bits_per_weight": 2.5,
+    "weight_files_changed": false
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "tiles": 17,
+  "rate": 2.5,
+  "seed": 20261025,
+  "indices_bit_identical": true,
+  "decoded_values_bit_identical": true,
+  "mean_squared_error": 0.08709414303302765
+}

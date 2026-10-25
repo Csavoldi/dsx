@@ -1,0 +1,8 @@
+{
+  "reference": "source checkpoint, ExLlamaV3 uncached forward on RTX PRO 6000 Blackwell",
+  "target": "EXL3 2.5 bpw, local DSX, INT8 prefill, KV3 and runtime head4",
+  "scored_tokens": 128,
+  "kl_source_to_target": 0.21091779417529996,
+  "top1_agreement": 0.8125,
+  "note": "Includes weight and runtime precision differences; not weight-only drift."
+}
