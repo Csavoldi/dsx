@@ -79,6 +79,22 @@ The longest locally populated prompt tested with this EXL3 pack was 16,384 token
 
 Raw single-run receipts are under [benchmarks/](benchmarks/). Decode timing excludes loading and prefill. The reference-quality rows above describe the initial batch-512 local configuration; the later batch-4,096 result includes different prefill rounding and KV precision choices. Task-completion evaluations remain pending.
 
+### Decode prefetch follow-up
+
+The DSX branch at `5c60c0e` adds four-row trellis prefetching, enabled with `DSX_NB_EXL3_EXPERIMENT=pf4`. This changes the runner; the published weight shards are unchanged. With prefill batch 4096 and the same 262144-token capacity, a separate 512-output-token suite measured:
+
+| Request | Input tokens | Final populated context | Decode with lookup width 3 | Accepted / proposed tokens |
+|---|---:|---:|---:|---:|
+| Rust sorted-slice merge | 49 | 561 | 72.65 tok/s | 79 / 141 |
+| PostgreSQL monthly customer ranking | 56 | 568 | 66.98 tok/s | 34 / 81 |
+| Probability counting explanation | 64 | 576 | 70.25 tok/s | 49 / 116 |
+
+The combined rate was **69.88 tok/s**, calculated from total output tokens divided by total decode time. These are short prompts with capped responses; task completion was not graded. The 100 tok/s general-generation target remains unmet.
+
+A paired run on the 30-token Python prime-function request measured 62.05 → 65.91 tok/s in serial mode and 64.51 → 68.61 tok/s with lookup after enabling prefetching. Its 3968-token cold WikiText prefill took 1.93977 seconds (**2045.60 tok/s**). Prefetching changes kernel occupancy and activation quantization slices: the 128-target check measured perplexity 12.70363 → 12.70233, mean KL 0.0018954 from the previous configuration, and 96.875% top-1 agreement. This small sample does not establish a quality improvement.
+
+Optional CUDA graphs for verification batches produced identical output token IDs across the three requests but no consistent speedup, so they remain disabled in the measured live configuration. Warm/cold prefix branching and exact retry checks passed. The [prefetch summary](benchmarks/continue-prefetch-summary.json) records settings, limitations, and acceptance counts; raw paired receipts are alongside it.
+
 ## Quantization
 
 The converter was ExLlamaV3 1.6.4 at [`da68d57de61781e5b74ad68698ac4caf36408d7a`](https://github.com/turboderp-org/exllamav3/tree/da68d57de61781e5b74ad68698ac4caf36408d7a). Conversion ran on one RTX PRO 6000 Blackwell Server GPU with 96 GB of VRAM.
