@@ -40,6 +40,11 @@ name = "oracle-bench"
 path = "src/bin/oracle-bench.rs"
 required-features = ["cuda"]
 
+[[bin]]
+name = "sampler-audit"
+path = "src/bin/sampler-audit.rs"
+required-features = ["cuda"]
+
 [features]
 default = []
 cuda = ["dep:cudarc"]

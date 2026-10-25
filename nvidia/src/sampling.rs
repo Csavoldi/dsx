@@ -43,4 +43,13 @@ impl GpuSampler {
         let output: Vec<u32> = g.download(self.output.ptr,2)?;
         Ok((output[1] == 0).then_some(output[0]))
     }
+
+    /// Diagnostic weights and the same block-mass total used by the device CDF.
+    /// Call only after a successful sample; this readback is not a fast path.
+    pub fn validation_distribution(&self, g: &Gpu) -> Result<(Vec<f32>, f64)> {
+        g.bind();
+        let weights = g.download(self.weights.ptr, self.n)?;
+        let sums: Vec<f64> = g.download(self.sums.ptr, self.blocks)?;
+        Ok((weights, sums.iter().sum()))
+    }
 }
