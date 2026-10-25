@@ -233,6 +233,8 @@ Thinking is on by default, at high effort. A request turns it off or sets the ef
 | [nvidia/README.md](nvidia/README.md) | the `dsx` command-line tools (`gen`, `eval`, `cmp`, `ref`, `spec`) and debug switches |
 | [docs/techniques.md](docs/techniques.md), [FINDINGS.md](FINDINGS.md) | techniques with sources, and measurements |
 
+The [geometry coding gauntlet](bench/geometry/README.md) measures reviewed task completion and elapsed time with isolated Pi sessions. Its [current receipts](bench/results/2026-10-24-gauntlet/README.md) separate functional outcomes from engine throughput and experimental timing.
+
 ## Repo
 
 | Path | |

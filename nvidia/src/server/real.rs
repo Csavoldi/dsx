@@ -97,6 +97,7 @@ impl Engine for Real {
         let mut sampler = Sampler::from_params(p);
         let mut fin = Finish::Length;
         let mut hes = p.hesitation.clone();
+        let mut lookup_audit = crate::spec::LookupAudit::from_env();
         for _ in 0..p.max_new {
             if let Some(h) = &hes {
                 for &i in h.ids.iter() {
@@ -118,6 +119,12 @@ impl Engine for Real {
             }
             logits = self.gm.step(tok)?;
             self.cached.push(tok);
+            if let Some(audit) = &mut lookup_audit {
+                audit.observe(&self.cached);
+            }
+        }
+        if let Some(audit) = lookup_audit {
+            tracing::info!(stats = %audit.report(), "lookup audit");
         }
         self.stats = GenStats { prefill: Some(prefill), decode: Some(td.elapsed()), cached_prompt_tokens: start };
         let _ = Duration::ZERO;
