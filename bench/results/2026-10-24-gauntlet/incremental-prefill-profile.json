@@ -1,0 +1,839 @@
+{
+  "source_commit": "e08a118",
+  "arm_commands": [
+    {
+      "time": 1792905883.7093778,
+      "event": "arm_start",
+      "label": "increment64",
+      "binary": "/home/lxe/ai/ds41/codex-gauntlet-20261024/increment-trace/oracle-bench",
+      "sha256": "0c319cf9294052a5a622892859ab7730a3d0f55e2e24554ebaa781f88740f432",
+      "env": {
+        "DSX_ADAPT": "0",
+        "DSX_CPU_THREADS": "14",
+        "DSX_T16_PAIR_GU": "1",
+        "DSX_AUX_ADAPTIVE": "0",
+        "DSX_AUX_STREAM": "0",
+        "DSX_DEFER": "3"
+      },
+      "command": [
+        "/home/lxe/ai/ds41/guard.sh",
+        "cs-increment64",
+        "118",
+        "nsys",
+        "profile",
+        "--trace=cuda",
+        "--sample=none",
+        "--cpuctxsw=none",
+        "--capture-range=cudaProfilerApi",
+        "--capture-range-end=stop",
+        "--force-overwrite=false",
+        "--output=/home/lxe/ai/ds41/codex-gauntlet-20261024/profile-incremental-prefill/increment64",
+        "/home/lxe/ai/ds41/codex-gauntlet-20261024/increment-trace/oracle-bench",
+        "--model",
+        "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+        "--rank",
+        "/home/lxe/ai/ds41/calib/rank.json",
+        "--ids",
+        "/home/lxe/ai/ds41/codex-validation-20261024/cube.ids",
+        "--continuation",
+        "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+        "--steps",
+        "64",
+        "--ctx",
+        "131072",
+        "--rounds",
+        "2",
+        "--widths",
+        "1",
+        "--rollback-steps",
+        "0",
+        "--warmup",
+        "0",
+        "--trace-path",
+        "warm-prefill",
+        "--arena-gb",
+        "110",
+        "--aux-gb",
+        "23.3",
+        "--prefill-probe",
+        "--trace-new-tokens",
+        "64"
+      ]
+    },
+    {
+      "time": 1792906040.4784656,
+      "event": "arm_start",
+      "label": "increment256",
+      "binary": "/home/lxe/ai/ds41/codex-gauntlet-20261024/increment-trace/oracle-bench",
+      "sha256": "0c319cf9294052a5a622892859ab7730a3d0f55e2e24554ebaa781f88740f432",
+      "env": {
+        "DSX_ADAPT": "0",
+        "DSX_CPU_THREADS": "14",
+        "DSX_T16_PAIR_GU": "1",
+        "DSX_AUX_ADAPTIVE": "0",
+        "DSX_AUX_STREAM": "0",
+        "DSX_DEFER": "3"
+      },
+      "command": [
+        "/home/lxe/ai/ds41/guard.sh",
+        "cs-increment256",
+        "118",
+        "nsys",
+        "profile",
+        "--trace=cuda",
+        "--sample=none",
+        "--cpuctxsw=none",
+        "--capture-range=cudaProfilerApi",
+        "--capture-range-end=stop",
+        "--force-overwrite=false",
+        "--output=/home/lxe/ai/ds41/codex-gauntlet-20261024/profile-incremental-prefill/increment256",
+        "/home/lxe/ai/ds41/codex-gauntlet-20261024/increment-trace/oracle-bench",
+        "--model",
+        "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+        "--rank",
+        "/home/lxe/ai/ds41/calib/rank.json",
+        "--ids",
+        "/home/lxe/ai/ds41/codex-validation-20261024/cube.ids",
+        "--continuation",
+        "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+        "--steps",
+        "64",
+        "--ctx",
+        "131072",
+        "--rounds",
+        "2",
+        "--widths",
+        "1",
+        "--rollback-steps",
+        "0",
+        "--warmup",
+        "0",
+        "--trace-path",
+        "warm-prefill",
+        "--arena-gb",
+        "110",
+        "--aux-gb",
+        "23.3",
+        "--prefill-probe",
+        "--trace-new-tokens",
+        "256"
+      ]
+    }
+  ],
+  "placement": [
+    {
+      "time": 1792906010.364113,
+      "event": "placement_matched",
+      "label": "increment64",
+      "resident_counts": [
+        1236,
+        2750
+      ],
+      "membership_sha256": "58d97988703baaa7c097f71eee0c7d4d988a6a0d68deb3f211e46f61247292d8"
+    },
+    {
+      "time": 1792906170.8315308,
+      "event": "placement_matched",
+      "label": "increment256",
+      "resident_counts": [
+        1236,
+        2750
+      ],
+      "membership_sha256": "58d97988703baaa7c097f71eee0c7d4d988a6a0d68deb3f211e46f61247292d8"
+    }
+  ],
+  "profiled_probes": [
+    {
+      "event": "prefill_probe",
+      "profiled": true,
+      "round": 1,
+      "prefix_tokens": 1967,
+      "new_tokens": 64,
+      "elapsed_s": 0.606997426,
+      "new_tok_s": 105.43702041991855,
+      "top1": 43,
+      "nonfinite_logits": 0,
+      "logit_fingerprint": "a88b5f409326494c"
+    },
+    {
+      "event": "prefill_probe",
+      "profiled": true,
+      "round": 1,
+      "prefix_tokens": 1775,
+      "new_tokens": 256,
+      "elapsed_s": 1.622013505,
+      "new_tok_s": 157.82852560157937,
+      "top1": 43,
+      "nonfinite_logits": 0,
+      "logit_fingerprint": "8aed45a48da41767"
+    }
+  ],
+  "analyses": [
+    {
+      "sqlite": "/home/lxe/dsx-gauntlet-20261024/profile-incremental-prefill/increment64.sqlite",
+      "input_tokens": 64,
+      "cuda_activity_span_s": 0.606803601,
+      "devices": {
+        "0": {
+          "kernel_calls": 22542,
+          "copy_busy_union_ms_per_input_token": 6.368236703125,
+          "kernel_and_copy_busy_fraction_of_capture_span": 0.9156039484347094,
+          "kernel_calls_per_input_token": 352.21875,
+          "kernel_busy_union_ms_per_input_token": 6.486338328125,
+          "kernel_busy_fraction_of_capture_span": 0.6841186379182348,
+          "kernel_duration_sum_ms_per_input_token": 6.486338328125,
+          "top_kernels": [
+            {
+              "name": "dequant_t16_f16",
+              "calls": 3795,
+              "sum_ns": 129308428,
+              "sum_ms_per_input_token": 2.0204441875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x64__1...",
+              "calls": 2132,
+              "sum_ns": 91550965,
+              "sum_ms_per_input_token": 1.430483828125
+            },
+            {
+              "name": "dequant_f16",
+              "calls": 629,
+              "sum_ns": 52381627,
+              "sum_ms_per_input_token": 0.818462921875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_s_6...",
+              "calls": 1035,
+              "sum_ns": 38775760,
+              "sum_ms_per_input_token": 0.60587125
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_l_5...",
+              "calls": 564,
+              "sum_ns": 22236252,
+              "sum_ms_per_input_token": 0.3474414375
+            },
+            {
+              "name": "sparse_attn_tc",
+              "calls": 40,
+              "sum_ns": 10829546,
+              "sum_ms_per_input_token": 0.16921165625
+            },
+            {
+              "name": "t16_post",
+              "calls": 3795,
+              "sum_ns": 9816243,
+              "sum_ms_per_input_token": 0.153378796875
+            },
+            {
+              "name": "t16_pre",
+              "calls": 3795,
+              "sum_ns": 8107730,
+              "sum_ms_per_input_token": 0.12668328125
+            },
+            {
+              "name": "gemv2T_kernel_val",
+              "calls": 218,
+              "sum_ns": 7753667,
+              "sum_ms_per_input_token": 0.121151046875
+            },
+            {
+              "name": "Kernel2",
+              "calls": 99,
+              "sum_ns": 5909850,
+              "sum_ms_per_input_token": 0.09234140625
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_l_2...",
+              "calls": 333,
+              "sum_ns": 5234411,
+              "sum_ms_per_input_token": 0.081787671875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_s_3...",
+              "calls": 41,
+              "sum_ns": 4722796,
+              "sum_ms_per_input_token": 0.0737936875
+            },
+            {
+              "name": "indexer_score",
+              "calls": 8,
+              "sum_ns": 4696009,
+              "sum_ms_per_input_token": 0.073375140625
+            },
+            {
+              "name": "hc_dots_t",
+              "calls": 80,
+              "sum_ns": 3320848,
+              "sum_ms_per_input_token": 0.05188825
+            },
+            {
+              "name": "scatter_add",
+              "calls": 1265,
+              "sum_ns": 2746312,
+              "sum_ms_per_input_token": 0.042911125
+            },
+            {
+              "name": "swiglu_rows_f16",
+              "calls": 1305,
+              "sum_ns": 2637109,
+              "sum_ms_per_input_token": 0.041204828125
+            },
+            {
+              "name": "gather_f16",
+              "calls": 1265,
+              "sum_ns": 2300227,
+              "sum_ms_per_input_token": 0.035941046875
+            },
+            {
+              "name": "splitKreduce_kernel",
+              "calls": 479,
+              "sum_ns": 1394812,
+              "sum_ms_per_input_token": 0.0217939375
+            },
+            {
+              "name": "hc_post",
+              "calls": 80,
+              "sum_ns": 1394525,
+              "sum_ms_per_input_token": 0.021789453125
+            },
+            {
+              "name": "ampere_s1688gemm_fp16_256x64_l_7...",
+              "calls": 2,
+              "sum_ns": 1146226,
+              "sum_ms_per_input_token": 0.01790978125
+            }
+          ],
+          "memcpy": {
+            "Host-to-Device": {
+              "calls": 2461,
+              "bytes": 6566521856,
+              "sum_ns": 399687632,
+              "max_copy_bytes": 5242880,
+              "bytes_per_input_token": 102601904.0,
+              "sum_ms_per_input_token": 6.24511925
+            },
+            "Device-to-Device": {
+              "calls": 150,
+              "bytes": 58732608,
+              "sum_ns": 269732,
+              "max_copy_bytes": 1310720,
+              "bytes_per_input_token": 917697.0,
+              "sum_ms_per_input_token": 0.0042145625
+            },
+            "Device-to-Host": {
+              "calls": 161,
+              "bytes": 79283200,
+              "sum_ns": 5152752,
+              "max_copy_bytes": 1310720,
+              "bytes_per_input_token": 1238800.0,
+              "sum_ms_per_input_token": 0.08051175
+            },
+            "Peer-to-Peer": {
+              "calls": 40,
+              "bytes": 52428800,
+              "sum_ns": 2457033,
+              "max_copy_bytes": 1310720,
+              "bytes_per_input_token": 819200.0,
+              "sum_ms_per_input_token": 0.038391140625
+            }
+          }
+        },
+        "1": {
+          "kernel_calls": 22530,
+          "copy_busy_union_ms_per_input_token": 0.388041140625,
+          "kernel_and_copy_busy_fraction_of_capture_span": 0.6282083616046307,
+          "kernel_calls_per_input_token": 352.03125,
+          "kernel_busy_union_ms_per_input_token": 5.568194734375,
+          "kernel_busy_fraction_of_capture_span": 0.5872813912322186,
+          "kernel_duration_sum_ms_per_input_token": 5.568194734375,
+          "top_kernels": [
+            {
+              "name": "dequant_t16_f16",
+              "calls": 4452,
+              "sum_ns": 153520976,
+              "sum_ms_per_input_token": 2.39876525
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x64__1...",
+              "calls": 2076,
+              "sum_ns": 85667524,
+              "sum_ms_per_input_token": 1.3385550625
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_s_6...",
+              "calls": 932,
+              "sum_ns": 33894737,
+              "sum_ms_per_input_token": 0.529605265625
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_l_5...",
+              "calls": 854,
+              "sum_ns": 31723258,
+              "sum_ms_per_input_token": 0.49567590625
+            },
+            {
+              "name": "gemv2T_kernel_val",
+              "calls": 412,
+              "sum_ns": 14385569,
+              "sum_ms_per_input_token": 0.224774515625
+            },
+            {
+              "name": "t16_post",
+              "calls": 4452,
+              "sum_ns": 11488939,
+              "sum_ms_per_input_token": 0.179514671875
+            },
+            {
+              "name": "t16_pre",
+              "calls": 4452,
+              "sum_ns": 9739192,
+              "sum_ms_per_input_token": 0.152174875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_l_2...",
+              "calls": 150,
+              "sum_ns": 5453562,
+              "sum_ms_per_input_token": 0.08521190625
+            },
+            {
+              "name": "scatter_add",
+              "calls": 1484,
+              "sum_ns": 3253052,
+              "sum_ms_per_input_token": 0.0508289375
+            },
+            {
+              "name": "swiglu_rows_f16",
+              "calls": 1484,
+              "sum_ns": 2839139,
+              "sum_ms_per_input_token": 0.044361546875
+            },
+            {
+              "name": "gather_h",
+              "calls": 1484,
+              "sum_ns": 2584862,
+              "sum_ms_per_input_token": 0.04038846875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_s_3...",
+              "calls": 22,
+              "sum_ns": 826152,
+              "sum_ms_per_input_token": 0.012908625
+            },
+            {
+              "name": "splitKreduce_kernel",
+              "calls": 270,
+              "sum_ns": 701642,
+              "sum_ms_per_input_token": 0.01096315625
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x64__8...",
+              "calls": 6,
+              "sum_ns": 285859,
+              "sum_ms_per_input_token": 0.004466546875
+            }
+          ],
+          "memcpy": {
+            "Peer-to-Peer": {
+              "calls": 40,
+              "bytes": 26214400,
+              "sum_ns": 8123086,
+              "max_copy_bytes": 655360,
+              "bytes_per_input_token": 409600.0,
+              "sum_ms_per_input_token": 0.12692321875
+            },
+            "Host-to-Device": {
+              "calls": 80,
+              "bytes": 122880,
+              "sum_ns": 291584,
+              "max_copy_bytes": 1536,
+              "bytes_per_input_token": 1920.0,
+              "sum_ms_per_input_token": 0.004556
+            },
+            "Device-to-Host": {
+              "calls": 40,
+              "bytes": 52428800,
+              "sum_ns": 16419963,
+              "max_copy_bytes": 1310720,
+              "bytes_per_input_token": 819200.0,
+              "sum_ms_per_input_token": 0.256561921875
+            }
+          }
+        }
+      },
+      "limits": "Kernel busy is an interval union, not SM occupancy or bandwidth. Summed kernel times can overlap. Copy bytes exclude mapped-memory accesses made inside kernels. Profiling overhead is not a performance gain or an untraced timing measurement."
+    },
+    {
+      "sqlite": "/home/lxe/dsx-gauntlet-20261024/profile-incremental-prefill/increment256.sqlite",
+      "input_tokens": 256,
+      "cuda_activity_span_s": 1.621940553,
+      "devices": {
+        "0": {
+          "kernel_calls": 45829,
+          "copy_busy_union_ms_per_input_token": 4.225514125,
+          "kernel_and_copy_busy_fraction_of_capture_span": 0.8260582858735637,
+          "kernel_calls_per_input_token": 179.01953125,
+          "kernel_busy_union_ms_per_input_token": 3.51377651171875,
+          "kernel_busy_fraction_of_capture_span": 0.5545991098972171,
+          "kernel_duration_sum_ms_per_input_token": 3.51377651171875,
+          "top_kernels": [
+            {
+              "name": "dequant_t16_f16",
+              "calls": 8448,
+              "sum_ns": 285184262,
+              "sum_ms_per_input_token": 1.1140010234375
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x64__6...",
+              "calls": 5180,
+              "sum_ns": 215372091,
+              "sum_ms_per_input_token": 0.84129723046875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_s_7...",
+              "calls": 2428,
+              "sum_ns": 90216071,
+              "sum_ms_per_input_token": 0.35240652734375
+            },
+            {
+              "name": "dequant_f16",
+              "calls": 629,
+              "sum_ns": 51733171,
+              "sum_ms_per_input_token": 0.20208269921875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_256x128_1...",
+              "calls": 134,
+              "sum_ns": 41743019,
+              "sum_ms_per_input_token": 0.16305866796875
+            },
+            {
+              "name": "sparse_attn_tc",
+              "calls": 40,
+              "sum_ns": 36323873,
+              "sum_ms_per_input_token": 0.14189012890625
+            },
+            {
+              "name": "t16_post",
+              "calls": 8448,
+              "sum_ns": 22289543,
+              "sum_ms_per_input_token": 0.08706852734375
+            },
+            {
+              "name": "t16_pre",
+              "calls": 8448,
+              "sum_ns": 19224681,
+              "sum_ms_per_input_token": 0.07509641015625
+            },
+            {
+              "name": "indexer_score",
+              "calls": 8,
+              "sum_ns": 17609237,
+              "sum_ms_per_input_token": 0.06878608203125
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x128_3...",
+              "calls": 318,
+              "sum_ns": 16646951,
+              "sum_ms_per_input_token": 0.06502715234375
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_l_8...",
+              "calls": 380,
+              "sum_ns": 14121055,
+              "sum_ms_per_input_token": 0.05516037109375
+            },
+            {
+              "name": "hc_dots_t",
+              "calls": 80,
+              "sum_ns": 11604406,
+              "sum_ms_per_input_token": 0.0453297109375
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x64__5...",
+              "calls": 89,
+              "sum_ns": 8739652,
+              "sum_ms_per_input_token": 0.034139265625
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_l_9...",
+              "calls": 212,
+              "sum_ns": 7814759,
+              "sum_ms_per_input_token": 0.03052640234375
+            },
+            {
+              "name": "scatter_add",
+              "calls": 2816,
+              "sum_ns": 6414433,
+              "sum_ms_per_input_token": 0.02505637890625
+            },
+            {
+              "name": "gemv2T_kernel_val",
+              "calls": 174,
+              "sum_ns": 6168933,
+              "sum_ms_per_input_token": 0.02409739453125
+            },
+            {
+              "name": "swiglu_rows_f16",
+              "calls": 2856,
+              "sum_ns": 5806427,
+              "sum_ms_per_input_token": 0.02268135546875
+            },
+            {
+              "name": "gather_f16",
+              "calls": 2816,
+              "sum_ns": 5398296,
+              "sum_ms_per_input_token": 0.02108709375
+            },
+            {
+              "name": "hc_post",
+              "calls": 80,
+              "sum_ns": 4792427,
+              "sum_ms_per_input_token": 0.01872041796875
+            },
+            {
+              "name": "Kernel2",
+              "calls": 55,
+              "sum_ns": 4205220,
+              "sum_ms_per_input_token": 0.016426640625
+            }
+          ],
+          "memcpy": {
+            "Host-to-Device": {
+              "calls": 6037,
+              "bytes": 16782710272,
+              "sum_ns": 1043811681,
+              "max_copy_bytes": 20971520,
+              "bytes_per_input_token": 65557462.0,
+              "sum_ms_per_input_token": 4.07738937890625
+            },
+            "Device-to-Device": {
+              "calls": 342,
+              "bytes": 216543488,
+              "sum_ns": 989907,
+              "max_copy_bytes": 5242880,
+              "bytes_per_input_token": 845873.0,
+              "sum_ms_per_input_token": 0.00386682421875
+            },
+            "Device-to-Host": {
+              "calls": 161,
+              "bytes": 311643136,
+              "sum_ns": 25184146,
+              "max_copy_bytes": 5242880,
+              "bytes_per_input_token": 1217356.0,
+              "sum_ms_per_input_token": 0.0983755703125
+            },
+            "Peer-to-Peer": {
+              "calls": 40,
+              "bytes": 207093760,
+              "sum_ns": 11745882,
+              "max_copy_bytes": 5242880,
+              "bytes_per_input_token": 808960.0,
+              "sum_ms_per_input_token": 0.0458823515625
+            }
+          }
+        },
+        "1": {
+          "kernel_calls": 32929,
+          "copy_busy_union_ms_per_input_token": 0.3777441171875,
+          "kernel_and_copy_busy_fraction_of_capture_span": 0.3830986566373866,
+          "kernel_calls_per_input_token": 128.62890625,
+          "kernel_busy_union_ms_per_input_token": 2.04945606640625,
+          "kernel_busy_fraction_of_capture_span": 0.3234771780196065,
+          "kernel_duration_sum_ms_per_input_token": 2.04945606640625,
+          "top_kernels": [
+            {
+              "name": "dequant_t16_f16",
+              "calls": 6411,
+              "sum_ns": 219172447,
+              "sum_ms_per_input_token": 0.85614237109375
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x64__6...",
+              "calls": 3258,
+              "sum_ns": 129496692,
+              "sum_ms_per_input_token": 0.505846453125
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_s_7...",
+              "calls": 1321,
+              "sum_ns": 47557092,
+              "sum_ms_per_input_token": 0.185769890625
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_l_8...",
+              "calls": 656,
+              "sum_ns": 24114152,
+              "sum_ms_per_input_token": 0.09419590625
+            },
+            {
+              "name": "t16_post",
+              "calls": 6411,
+              "sum_ns": 17787012,
+              "sum_ms_per_input_token": 0.069480515625
+            },
+            {
+              "name": "t16_pre",
+              "calls": 6411,
+              "sum_ns": 16254755,
+              "sum_ms_per_input_token": 0.06349513671875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_l_9...",
+              "calls": 435,
+              "sum_ns": 15600819,
+              "sum_ms_per_input_token": 0.06094069921875
+            },
+            {
+              "name": "gemv2T_kernel_val",
+              "calls": 287,
+              "sum_ns": 9933497,
+              "sum_ms_per_input_token": 0.03880272265625
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_256x128_1...",
+              "calls": 97,
+              "sum_ns": 8010315,
+              "sum_ms_per_input_token": 0.03129029296875
+            },
+            {
+              "name": "scatter_add",
+              "calls": 2137,
+              "sum_ns": 5300535,
+              "sum_ms_per_input_token": 0.02070521484375
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x64__5...",
+              "calls": 76,
+              "sum_ns": 5082858,
+              "sum_ms_per_input_token": 0.0198549140625
+            },
+            {
+              "name": "gather_h",
+              "calls": 2137,
+              "sum_ns": 4175274,
+              "sum_ms_per_input_token": 0.0163096640625
+            },
+            {
+              "name": "swiglu_rows_f16",
+              "calls": 2137,
+              "sum_ns": 4162238,
+              "sum_ms_per_input_token": 0.0162587421875
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_128x128_3...",
+              "calls": 70,
+              "sum_ns": 3602242,
+              "sum_ms_per_input_token": 0.0140712578125
+            },
+            {
+              "name": "Kernel2",
+              "calls": 48,
+              "sum_ns": 3438400,
+              "sum_ms_per_input_token": 0.01343125
+            },
+            {
+              "name": "ampere_s16816gemm_fp16_64x64_s_10...",
+              "calls": 88,
+              "sum_ns": 3265567,
+              "sum_ms_per_input_token": 0.01275612109375
+            },
+            {
+              "name": "ampere_s1688gemm_fp16_128x128__12...",
+              "calls": 44,
+              "sum_ns": 2900285,
+              "sum_ms_per_input_token": 0.01132923828125
+            },
+            {
+              "name": "splitKreduce_kernel",
+              "calls": 874,
+              "sum_ns": 2364789,
+              "sum_ms_per_input_token": 0.00923745703125
+            },
+            {
+              "name": "ampere_s1688gemm_fp16_128x128__16...",
+              "calls": 11,
+              "sum_ns": 983243,
+              "sum_ms_per_input_token": 0.00384079296875
+            },
+            {
+              "name": "ampere_s1688gemm_fp16_256x64_s_14...",
+              "calls": 7,
+              "sum_ns": 616038,
+              "sum_ms_per_input_token": 0.0024063984375
+            }
+          ],
+          "memcpy": {
+            "Peer-to-Peer": {
+              "calls": 40,
+              "bytes": 103546880,
+              "sum_ns": 31875349,
+              "max_copy_bytes": 2621440,
+              "bytes_per_input_token": 404480.0,
+              "sum_ms_per_input_token": 0.12451308203125
+            },
+            "Host-to-Device": {
+              "calls": 80,
+              "bytes": 485376,
+              "sum_ns": 536770,
+              "max_copy_bytes": 6144,
+              "bytes_per_input_token": 1896.0,
+              "sum_ms_per_input_token": 0.0020967578125
+            },
+            "Device-to-Host": {
+              "calls": 40,
+              "bytes": 207093760,
+              "sum_ns": 64290375,
+              "max_copy_bytes": 5242880,
+              "bytes_per_input_token": 808960.0,
+              "sum_ms_per_input_token": 0.25113427734375
+            }
+          }
+        }
+      },
+      "limits": "Kernel busy is an interval union, not SM occupancy or bandwidth. Summed kernel times can overlap. Copy bytes exclude mapped-memory accesses made inside kernels. Profiling overhead is not a performance gain or an untraced timing measurement."
+    }
+  ],
+  "postflight": {
+    "server_pids": [
+      1036788
+    ],
+    "server_md5": "363ced3dada78d1271549592de700e3d",
+    "model_unchanged": true,
+    "power_restored": true,
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "restored": true
+  },
+  "peak_cpu_c": 75.0,
+  "raw_sha256": {
+    "controller-source.py": "97c8ee5a3c4189b4b18aded13b3442e0d409ec635c0fc2bb12f55db842fe1488",
+    "events.jsonl": "855b4c2e829f8cbe83bb6f313f7d819e9db15bdf2768cd53cb00decd719daecf",
+    "hardware.jsonl": "544e402b8382f2b43474895a23df156e526d797601bb916fe0d16d0e8740225c",
+    "increment256.log": "ffd486de21f74fe266faca2ec6fb13d0e29977c76978f970655655db4ae0684e",
+    "increment256.nsys-rep": "1b2ae8ddc8ee82b69f050c8bef738833ff59ca2cf9b895c9195d558c433cd082",
+    "increment256.sqlite": "6ae90f132a940e2c715757160d1e0ccff8cd11fdc33bf7633eb3554d507a44de",
+    "increment64.log": "bb78b74ea4b16390a3c589efd70859369ed39aa12796c42e2d82137421028546",
+    "increment64.nsys-rep": "08de130a1f1cead38e4a7bef01daf033596af4ed64050715444db6ee9f5142c6",
+    "increment64.sqlite": "3f431ffa6a9dd1c60f159e2eff7cdc5b160fe998d456dcf8b3f3c50d4d503217",
+    "postflight.json": "3244e576a5ab34d216ef892935a16e8462c90e477e1af077d2af4b61265f8893",
+    "preflight.json": "19e2224b5530d294944e4744dcea33cd92c0dfed198096da2f235a8a018932f3",
+    "server-before.log": "f25cd6a1905d9b93852b35e8495416888b1984a29028c9922aac856351df743a",
+    "increment64-analysis.json": "07cbcf790fbc2afd80988d7140136f2a5d4c3f17e16a4f71140ca93bf360dcdf",
+    "increment256-analysis.json": "5893ed5e0da0570defd72b781751bd3faaf7420c9cbeb06344e29dd4fed40a2e"
+  },
+  "observations": [
+    "64-token capture:GPU0combined kernel/copy busy91.56percent, GPU1kernel busy58.73percent;256-token capture82.61and32.35percent respectively. These are interval unions, not SM occupancy.",
+    "GPU0HtoD6.567GB/399.69ms at64tokens and16.783GB/1043.81ms at256. T16dequant kernel sums are129.31/153.52ms onGPU0/1 at64 and285.18/219.17ms at256. Summed times can overlap.",
+    "GPU1 performs resident-expert compute in incremental prefill; its host-link rate is not its VRAM weight bandwidth.",
+    "Short-prefix optimization should target measured weight-transfer/dequantization costs and validate wall time. Existing direct/int8 few-token expert substitution was previously not faster and worsened numerical quality; do not repeat it as an assumed gain."
+  ],
+  "limits": [
+    "Instrumented attribution at matched full residency, fixed adaptation0, not an untraced performance comparison or a coding task.",
+    "Only the chosen warm incremental prefill is captured. Prefix construction, other probe sizes and subsequent forced decode are excluded.",
+    "Copy bytes exclude mapped-memory traffic inside kernels; interval busy fractions do not identify SM occupancy or prove CPU wait attribution. No optimization gain is booked."
+  ]
+}
