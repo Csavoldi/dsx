@@ -3,6 +3,7 @@
 //! had been decoded, and returning the greedy next token.
 
 use crate::decode::*;
+pub(crate) static MERGE_OUT_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 use crate::hip::{Arg, Buf, Gpu};
 use anyhow::Result;
 
@@ -1146,6 +1147,16 @@ impl Decoder {
                 0,
                 &[Arg::P(bp), Arg::P(bs), Arg::P(pf.q.ptr), Arg::P(b.rings[li].ptr), Arg::P((ring_stride) as u64), Arg::P(comp), Arg::P((cstride) as u64), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::P(b.apart.ptr)],
             )?;
+            let merge_out = match MERGE_OUT_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+                1 => false,
+                2 => true,
+                _ => std::env::var("DSXA_ATTN_MERGE_OUT").as_deref() == Ok("1"),
+            };
+            if merge_out {
+                g.launch("attn_merge_out_b", (t as u32, NH as u32, 1), 128, 0,
+                    &[Arg::P(pf.q.ptr), Arg::P(b.apart.ptr), Arg::P(l.sinks.ptr), Arg::P(bp), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])?;
+                return Ok(());
+            }
             g.launch("attn_merge_b", (t as u32, NH as u32, 1), 512, 0, &[Arg::P(pf.q.ptr), Arg::P(b.apart.ptr), Arg::P(l.sinks.ptr)])?;
         } else {
         g.launch(

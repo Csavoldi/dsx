@@ -285,6 +285,44 @@ extern "C" __global__ void __launch_bounds__(256) attn_out_b(const int* bpos, fl
     write_act(8 * HD, [&](int i) -> float { return ot[i]; }, oq + off, os + off / 32, nullptr, obq + off);
 }
 
+// Merge split attention and prepare wo_a in one pass. Four neighboring dimensions
+// per thread share the denominator and keep each rotary pair in registers.
+extern "C" __global__ void __launch_bounds__(128) attn_merge_out_b(float* __restrict__ q, const float* __restrict__ part,
+                                                                  const float* sinks, const int* bpos, const float* rf,
+                                                                  uint8_t* oq, float* os, uint16_t* obq) {
+    const int t = blockIdx.x, h = blockIdx.y, d0 = 4 * threadIdx.x;
+    const float* pp = part + (size_t)t * ATTN_SPLITS * ATTN_PART;
+    float M = -INFINITY;
+    for (int s = 0; s < ATTN_SPLITS; s++) M = fmaxf(M, pp[s * ATTN_PART + NH * HD + h]);
+    float L = 0.f, v[4] = {};
+    if (M != -INFINITY) {
+        for (int s = 0; s < ATTN_SPLITS; s++) {
+            const float m = pp[s * ATTN_PART + NH * HD + h];
+            if (m == -INFINITY) continue;
+            const float e = expf(m - M);
+            L += pp[s * ATTN_PART + NH * HD + 64 + h] * e;
+            const float4 o = *reinterpret_cast<const float4*>(pp + s * ATTN_PART + (size_t)h * HD + d0);
+            v[0] += o.x * e; v[1] += o.y * e; v[2] += o.z * e; v[3] += o.w * e;
+        }
+    }
+    L += M == -INFINITY ? 1.f : expf(sinks[h] - M);
+    for (int j = 0; j < 4; j++) v[j] = round_bf16(v[j] / L);
+    if (d0 >= HD - RD) {
+        for (int j = 0; j < 4; j += 2) {
+            const int pi = (d0 + j - (HD - RD)) / 2;
+            const float ang = (float)bpos[t] * rf[pi];
+            const float cs = cosf(ang), sn = -sinf(ang), a = v[j], b = v[j + 1];
+            // Match attn_out_b's packed lowering: round the sine products,
+            // then fuse the cosine products with them.
+            v[j] = fmaf(a, cs, -__fmul_rn(b, sn));
+            v[j + 1] = fmaf(b, cs, __fmul_rn(a, sn));
+        }
+    }
+    const size_t off = ((size_t)t * NH + h) * HD;
+    *reinterpret_cast<float4*>(q + off + d0) = make_float4(v[0], v[1], v[2], v[3]);
+    write_act(HD, [&](int i) -> float { return v[i & 3]; }, oq + off, os + off / 32, nullptr, obq + off);
+}
+
 // greedy token of each of the batch's logit rows (block per row; ties to the lowest index, as argmax)
 extern "C" __global__ void __launch_bounds__(1024) argmax_b(const float* logits, int n, int ld, int* out) {
     __shared__ float bv[16];
