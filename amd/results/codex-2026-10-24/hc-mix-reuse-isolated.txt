@@ -1,0 +1,180 @@
+B=1 mode=0 graph=0 floats=48 bit_differences=0
+TIME B=1 mode=0 graph=0 round=0 opt=0 us=8.950
+TIME B=1 mode=0 graph=0 round=0 opt=1 us=7.850
+TIME B=1 mode=0 graph=0 round=1 opt=0 us=8.878
+TIME B=1 mode=0 graph=0 round=1 opt=1 us=7.844
+TIME B=1 mode=0 graph=0 round=2 opt=0 us=8.874
+TIME B=1 mode=0 graph=0 round=2 opt=1 us=7.817
+TIME B=1 mode=0 graph=0 round=3 opt=0 us=8.908
+TIME B=1 mode=0 graph=0 round=3 opt=1 us=7.814
+B=1 mode=0 graph=1 floats=48 bit_differences=0
+TIME B=1 mode=0 graph=1 round=0 opt=0 us=9.715
+TIME B=1 mode=0 graph=1 round=0 opt=1 us=8.673
+TIME B=1 mode=0 graph=1 round=1 opt=0 us=9.668
+TIME B=1 mode=0 graph=1 round=1 opt=1 us=8.642
+TIME B=1 mode=0 graph=1 round=2 opt=0 us=9.902
+TIME B=1 mode=0 graph=1 round=2 opt=1 us=8.636
+TIME B=1 mode=0 graph=1 round=3 opt=0 us=9.676
+TIME B=1 mode=0 graph=1 round=3 opt=1 us=8.649
+B=1 mode=1 graph=0 floats=48 bit_differences=0
+TIME B=1 mode=1 graph=0 round=0 opt=0 us=8.930
+TIME B=1 mode=1 graph=0 round=0 opt=1 us=7.815
+TIME B=1 mode=1 graph=0 round=1 opt=0 us=8.877
+TIME B=1 mode=1 graph=0 round=1 opt=1 us=7.813
+TIME B=1 mode=1 graph=0 round=2 opt=0 us=8.882
+TIME B=1 mode=1 graph=0 round=2 opt=1 us=7.877
+TIME B=1 mode=1 graph=0 round=3 opt=0 us=8.897
+TIME B=1 mode=1 graph=0 round=3 opt=1 us=7.810
+B=1 mode=1 graph=1 floats=48 bit_differences=0
+TIME B=1 mode=1 graph=1 round=0 opt=0 us=9.687
+TIME B=1 mode=1 graph=1 round=0 opt=1 us=8.671
+TIME B=1 mode=1 graph=1 round=1 opt=0 us=9.678
+TIME B=1 mode=1 graph=1 round=1 opt=1 us=8.936
+TIME B=1 mode=1 graph=1 round=2 opt=0 us=9.677
+TIME B=1 mode=1 graph=1 round=2 opt=1 us=8.649
+TIME B=1 mode=1 graph=1 round=3 opt=0 us=9.667
+TIME B=1 mode=1 graph=1 round=3 opt=1 us=8.660
+B=1 mode=2 graph=0 floats=48 bit_differences=0
+TIME B=1 mode=2 graph=0 round=0 opt=0 us=9.386
+TIME B=1 mode=2 graph=0 round=0 opt=1 us=9.335
+TIME B=1 mode=2 graph=0 round=1 opt=0 us=9.336
+TIME B=1 mode=2 graph=0 round=1 opt=1 us=9.323
+TIME B=1 mode=2 graph=0 round=2 opt=0 us=9.318
+TIME B=1 mode=2 graph=0 round=2 opt=1 us=9.329
+TIME B=1 mode=2 graph=0 round=3 opt=0 us=9.348
+TIME B=1 mode=2 graph=0 round=3 opt=1 us=9.323
+B=1 mode=2 graph=1 floats=48 bit_differences=0
+TIME B=1 mode=2 graph=1 round=0 opt=0 us=10.140
+TIME B=1 mode=2 graph=1 round=0 opt=1 us=10.187
+TIME B=1 mode=2 graph=1 round=1 opt=0 us=10.123
+TIME B=1 mode=2 graph=1 round=1 opt=1 us=10.160
+TIME B=1 mode=2 graph=1 round=2 opt=0 us=10.393
+TIME B=1 mode=2 graph=1 round=2 opt=1 us=10.169
+TIME B=1 mode=2 graph=1 round=3 opt=0 us=10.124
+TIME B=1 mode=2 graph=1 round=3 opt=1 us=10.173
+B=1 mode=3 graph=0 floats=48 bit_differences=0
+B=1 mode=3 graph=1 floats=48 bit_differences=0
+B=1 mode=4 graph=0 floats=48 bit_differences=0
+B=1 mode=4 graph=1 floats=48 bit_differences=0
+B=1 mode=5 graph=0 floats=48 bit_differences=0
+B=1 mode=5 graph=1 floats=48 bit_differences=0
+B=4 mode=0 graph=0 floats=192 bit_differences=0
+TIME B=4 mode=0 graph=0 round=0 opt=0 us=9.161
+TIME B=4 mode=0 graph=0 round=0 opt=1 us=8.052
+TIME B=4 mode=0 graph=0 round=1 opt=0 us=9.092
+TIME B=4 mode=0 graph=0 round=1 opt=1 us=7.991
+TIME B=4 mode=0 graph=0 round=2 opt=0 us=9.112
+TIME B=4 mode=0 graph=0 round=2 opt=1 us=7.992
+TIME B=4 mode=0 graph=0 round=3 opt=0 us=9.186
+TIME B=4 mode=0 graph=0 round=3 opt=1 us=7.985
+B=4 mode=0 graph=1 floats=192 bit_differences=0
+TIME B=4 mode=0 graph=1 round=0 opt=0 us=9.879
+TIME B=4 mode=0 graph=1 round=0 opt=1 us=8.854
+TIME B=4 mode=0 graph=1 round=1 opt=0 us=9.855
+TIME B=4 mode=0 graph=1 round=1 opt=1 us=8.823
+TIME B=4 mode=0 graph=1 round=2 opt=0 us=9.848
+TIME B=4 mode=0 graph=1 round=2 opt=1 us=8.838
+TIME B=4 mode=0 graph=1 round=3 opt=0 us=9.853
+TIME B=4 mode=0 graph=1 round=3 opt=1 us=8.839
+B=4 mode=1 graph=0 floats=192 bit_differences=0
+TIME B=4 mode=1 graph=0 round=0 opt=0 us=9.153
+TIME B=4 mode=1 graph=0 round=0 opt=1 us=7.981
+TIME B=4 mode=1 graph=0 round=1 opt=0 us=9.102
+TIME B=4 mode=1 graph=0 round=1 opt=1 us=7.988
+TIME B=4 mode=1 graph=0 round=2 opt=0 us=9.104
+TIME B=4 mode=1 graph=0 round=2 opt=1 us=7.984
+TIME B=4 mode=1 graph=0 round=3 opt=0 us=9.134
+TIME B=4 mode=1 graph=0 round=3 opt=1 us=7.967
+B=4 mode=1 graph=1 floats=192 bit_differences=0
+TIME B=4 mode=1 graph=1 round=0 opt=0 us=9.873
+TIME B=4 mode=1 graph=1 round=0 opt=1 us=8.857
+TIME B=4 mode=1 graph=1 round=1 opt=0 us=9.842
+TIME B=4 mode=1 graph=1 round=1 opt=1 us=8.834
+TIME B=4 mode=1 graph=1 round=2 opt=0 us=9.848
+TIME B=4 mode=1 graph=1 round=2 opt=1 us=8.829
+TIME B=4 mode=1 graph=1 round=3 opt=0 us=9.844
+TIME B=4 mode=1 graph=1 round=3 opt=1 us=8.828
+B=4 mode=2 graph=0 floats=192 bit_differences=0
+TIME B=4 mode=2 graph=0 round=0 opt=0 us=9.606
+TIME B=4 mode=2 graph=0 round=0 opt=1 us=9.534
+TIME B=4 mode=2 graph=0 round=1 opt=0 us=9.556
+TIME B=4 mode=2 graph=0 round=1 opt=1 us=9.510
+TIME B=4 mode=2 graph=0 round=2 opt=0 us=9.560
+TIME B=4 mode=2 graph=0 round=2 opt=1 us=9.510
+TIME B=4 mode=2 graph=0 round=3 opt=0 us=9.570
+TIME B=4 mode=2 graph=0 round=3 opt=1 us=9.523
+B=4 mode=2 graph=1 floats=192 bit_differences=0
+TIME B=4 mode=2 graph=1 round=0 opt=0 us=10.327
+TIME B=4 mode=2 graph=1 round=0 opt=1 us=10.387
+TIME B=4 mode=2 graph=1 round=1 opt=0 us=10.308
+TIME B=4 mode=2 graph=1 round=1 opt=1 us=10.357
+TIME B=4 mode=2 graph=1 round=2 opt=0 us=10.302
+TIME B=4 mode=2 graph=1 round=2 opt=1 us=10.361
+TIME B=4 mode=2 graph=1 round=3 opt=0 us=10.304
+TIME B=4 mode=2 graph=1 round=3 opt=1 us=10.362
+B=4 mode=3 graph=0 floats=192 bit_differences=0
+B=4 mode=3 graph=1 floats=192 bit_differences=0
+B=4 mode=4 graph=0 floats=192 bit_differences=0
+B=4 mode=4 graph=1 floats=192 bit_differences=0
+B=4 mode=5 graph=0 floats=192 bit_differences=0
+B=4 mode=5 graph=1 floats=192 bit_differences=0
+B=8 mode=0 graph=0 floats=384 bit_differences=0
+TIME B=8 mode=0 graph=0 round=0 opt=0 us=9.240
+TIME B=8 mode=0 graph=0 round=0 opt=1 us=8.092
+TIME B=8 mode=0 graph=0 round=1 opt=0 us=9.168
+TIME B=8 mode=0 graph=0 round=1 opt=1 us=8.062
+TIME B=8 mode=0 graph=0 round=2 opt=0 us=9.186
+TIME B=8 mode=0 graph=0 round=2 opt=1 us=8.116
+TIME B=8 mode=0 graph=0 round=3 opt=0 us=9.208
+TIME B=8 mode=0 graph=0 round=3 opt=1 us=8.067
+B=8 mode=0 graph=1 floats=384 bit_differences=0
+TIME B=8 mode=0 graph=1 round=0 opt=0 us=9.864
+TIME B=8 mode=0 graph=1 round=0 opt=1 us=8.845
+TIME B=8 mode=0 graph=1 round=1 opt=0 us=9.833
+TIME B=8 mode=0 graph=1 round=1 opt=1 us=8.819
+TIME B=8 mode=0 graph=1 round=2 opt=0 us=9.838
+TIME B=8 mode=0 graph=1 round=2 opt=1 us=8.814
+TIME B=8 mode=0 graph=1 round=3 opt=0 us=9.839
+TIME B=8 mode=0 graph=1 round=3 opt=1 us=8.821
+B=8 mode=1 graph=0 floats=384 bit_differences=0
+TIME B=8 mode=1 graph=0 round=0 opt=0 us=9.234
+TIME B=8 mode=1 graph=0 round=0 opt=1 us=8.057
+TIME B=8 mode=1 graph=0 round=1 opt=0 us=9.167
+TIME B=8 mode=1 graph=0 round=1 opt=1 us=8.057
+TIME B=8 mode=1 graph=0 round=2 opt=0 us=9.186
+TIME B=8 mode=1 graph=0 round=2 opt=1 us=8.067
+TIME B=8 mode=1 graph=0 round=3 opt=0 us=9.195
+TIME B=8 mode=1 graph=0 round=3 opt=1 us=8.051
+B=8 mode=1 graph=1 floats=384 bit_differences=0
+TIME B=8 mode=1 graph=1 round=0 opt=0 us=9.864
+TIME B=8 mode=1 graph=1 round=0 opt=1 us=8.837
+TIME B=8 mode=1 graph=1 round=1 opt=0 us=9.835
+TIME B=8 mode=1 graph=1 round=1 opt=1 us=8.823
+TIME B=8 mode=1 graph=1 round=2 opt=0 us=9.834
+TIME B=8 mode=1 graph=1 round=2 opt=1 us=8.823
+TIME B=8 mode=1 graph=1 round=3 opt=0 us=9.849
+TIME B=8 mode=1 graph=1 round=3 opt=1 us=8.821
+B=8 mode=2 graph=0 floats=384 bit_differences=0
+TIME B=8 mode=2 graph=0 round=0 opt=0 us=9.692
+TIME B=8 mode=2 graph=0 round=0 opt=1 us=9.594
+TIME B=8 mode=2 graph=0 round=1 opt=0 us=9.632
+TIME B=8 mode=2 graph=0 round=1 opt=1 us=9.593
+TIME B=8 mode=2 graph=0 round=2 opt=0 us=9.643
+TIME B=8 mode=2 graph=0 round=2 opt=1 us=9.597
+TIME B=8 mode=2 graph=0 round=3 opt=0 us=9.655
+TIME B=8 mode=2 graph=0 round=3 opt=1 us=9.596
+B=8 mode=2 graph=1 floats=384 bit_differences=0
+TIME B=8 mode=2 graph=1 round=0 opt=0 us=10.311
+TIME B=8 mode=2 graph=1 round=0 opt=1 us=10.370
+TIME B=8 mode=2 graph=1 round=1 opt=0 us=10.292
+TIME B=8 mode=2 graph=1 round=1 opt=1 us=10.350
+TIME B=8 mode=2 graph=1 round=2 opt=0 us=10.279
+TIME B=8 mode=2 graph=1 round=2 opt=1 us=10.346
+TIME B=8 mode=2 graph=1 round=3 opt=0 us=10.279
+TIME B=8 mode=2 graph=1 round=3 opt=1 us=10.342
+B=8 mode=3 graph=0 floats=384 bit_differences=0
+B=8 mode=3 graph=1 floats=384 bit_differences=0
+B=8 mode=4 graph=0 floats=384 bit_differences=0
+B=8 mode=4 graph=1 floats=384 bit_differences=0
+B=8 mode=5 graph=0 floats=384 bit_differences=0
+B=8 mode=5 graph=1 floats=384 bit_differences=0

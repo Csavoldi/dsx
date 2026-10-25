@@ -1720,8 +1720,12 @@ extern "C" __global__ void hc_mix_t(const float* pmix, HcArgs pa, const float* p
         hc_finish16(m0, pa, hc_eps, eps, iters, ln, o, o + 4, o + 8);
     }
     if (premix) {
-        reduce_mix(premix + (size_t)t * NPART * 32, ln, m1);
-        hc_finish16(m1, prea, hc_eps, eps, iters, ln, o + 24, nullptr, nullptr);
+        const float* reduced = m0;
+        if (premix != pmix) {
+            reduce_mix(premix + (size_t)t * NPART * 32, ln, m1);
+            reduced = m1;
+        }
+        hc_finish16(reduced, prea, hc_eps, eps, iters, ln, o + 24, nullptr, nullptr);
     }
 }
 #include "verify.h"
