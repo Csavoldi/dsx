@@ -1,0 +1,50 @@
+{
+  "providers": {
+    "dsx": {
+      "name": "dsx",
+      "baseUrl": "http://localhost:8090/v1",
+      "api": "openai-completions",
+      "apiKey": "none",
+      "authHeader": false,
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": true,
+        "supportsUsageInStreaming": true,
+        "maxTokensField": "max_tokens",
+        "supportsStrictMode": false
+      },
+      "models": [
+        {
+          "id": "deepseek-v4.1-flash",
+          "name": "dsx T16 \u00b7 256K",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "thinkingLevelMap": {
+            "off": "none",
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "xhigh": null,
+            "max": "max"
+          },
+          "samplingParams": {
+            "temperature": 1.0,
+            "top_p": 1.0
+          }
+        }
+      ]
+    }
+  }
+}
