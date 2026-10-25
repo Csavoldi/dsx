@@ -48,3 +48,39 @@ The following GPU-sampling tetrahedron trial timed out after **302.00 seconds** 
 The runner now writes `progress.txt` while a task runs, distinguishing streamed code/tool arguments, waiting for a first model delta, timeouts and completion. This observer reads existing logs without sending inference requests. The terminal display remains the agent's animation rather than a generation indicator.
 
 The paired-launch CPU-sampling control cube also timed out (300.83 seconds, 38.73 decode tokens/s); its smallest-size shading check failed. The next tetrahedron was interrupted at the user's request to reserve the server and is excluded from completed-task counts. The accepted stock server was restored and independently checked before the manual reservation. [The quality investigation](quality-investigation.md) preserves the negative completion outcomes, distinguishes measured divergence from missing evidence, and defines failure-conditioned replays. No experimental serving configuration has been adopted.
+
+## Stable adaptive ordering and deferral controls
+
+The failure-conditioned investigation found equal-score adaptive evictions that
+changed CPU deferral participation even between two runs of the baseline.
+Explicit layer/expert tie-breaking removed that observed drift: original-image,
+paired/GPU-sampling and repeated controls matched all 16,677,120 F32 logits and
+the complete cache/routing traces on the tested prefix. This is a reproducibility
+fix, with no claim of improved coding quality. See the [quality investigation](quality-investigation.md).
+
+The first live batch with stable ordering and **deferral disabled** completed a
+reviewed cube in **167.61 seconds**, 4,724 tokens and 10 tool calls, at **34.68
+decode tokens/s** and **440.97 engine-cache-miss prefill tokens/s**. Its original
+judge-5 result was a false failure: returning the cursor home at both ends of a
+frame created empty intervals that the parser counted as redraws. Judge 7
+excludes control-only intervals and passes the unchanged renderer at all three
+sizes. A [retrospective check](judge-v7-retrospective.json) applied the same fix
+to seven earlier artifacts, retaining their previous artifact outcomes.
+
+The no-deferral tetrahedron timed out after **300.09 seconds**, 8,930 emitted
+tokens and 13 tool calls, at **33.49 decode tokens/s** and **407.06 prefill
+tokens/s**. Its final faces used ASCII characters instead of braille, and it
+fails the corrected judge too. This batch therefore has one reviewed completion
+in two tasks. These fresh sampled tasks do not prove that deferral caused or
+prevented a quality change. [Batch receipts](stable-defer-none.json) include
+source/display review, original and corrected checks, exact raw-token audit,
+temperatures and verified stock restoration.
+
+The token audit matched every recorded prompt length and available completion
+usage count. Processed output counts matched model-step counters. The cancelled
+last tetrahedron response emitted one token that was not processed into KV;
+that explains its one-token difference from the engine-generated total. The
+830-token prefix replay occurred on the first tetrahedron request, where only a
+shared prefix of the previous cube conversation matched; no follow-up within
+either task replayed an already cached prefix. The rank-3 task batch is the next
+control, keeping the same candidate binary and task settings with fresh seeds.
