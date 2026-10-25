@@ -209,3 +209,8 @@ are unchanged. This intentionally changes generation and can reduce quality; it
 requires actual coding-task validation. The raw-token audit records each forced
 position, original sampled ID and chosen close ID, and runtime stats report the
 applied budget and reasoning-token count. It is not a lossless optimization.
+
+The [October 24 optimization ledger](../bench/results/2026-10-24-gauntlet/DECISIONS.md)
+links measured gains, rejected configurations, task failures and harness fixes.
+Experimental throughput results do not supersede the accepted serving configuration
+or establish improved coding completion.
