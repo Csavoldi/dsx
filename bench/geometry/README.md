@@ -57,6 +57,9 @@ For new comparisons, `--acceptance-stop --judge-version 7` selects the corrected
 frame parser for both ongoing acceptance and final certification. The default
 remains version 5 for reproducibility of existing comparisons. The completion
 guard requires the selected version and an unchanged artifact/self-check hash.
+Version 7 can also report a failed size/margin check after the agent inspects
+that revision. This functional feedback uses corrected VT coordinates; version
+5 comparisons retain their original feedback scope.
 
 `--normalize-capture-blanks` is an opt-in workflow test. It replaces U+2800
 (empty braille) with an ASCII space only in a successful `bash` result that

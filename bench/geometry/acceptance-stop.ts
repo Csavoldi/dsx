@@ -56,11 +56,15 @@ export default function (pi: ExtensionAPI) {
     if (ready()) return {...payload,tools:[],tool_choice:"none",messages:[...messages,{role:"user",content:message}]};
     try {
       const check=read("latest-check.json"), self=read("self-check.json"), current=hash();
-      if (check.source_sha256!==current || self.source_sha256!==current || feedbackHash===current || check.pass) return;
+      if (check.judge_version!==judgeVersion || check.source_sha256!==current || self.source_sha256!==current || feedbackHash===current || check.pass) return;
       const failures:string[]=[];
       for (const phase of check.renderer?.phases ?? []) {
         if (phase.max_dots===0) failures.push("No visible braille dots were rendered.");
         const cert=phase.frame_certification;
+        if (judgeVersion>=7 && cert?.supported_full_frame) {
+          if (phase.typical_width_fraction>.95 || phase.typical_height_fraction>.95) failures.push("The solid reaches the terminal boundary; leave a clear visible margin.");
+          if (phase.typical_width_fraction<.2 || phase.typical_height_fraction<.2) failures.push("The solid is too small to occupy a substantial part of the terminal.");
+        }
         if (cert?.supported_full_frame && cert.max_ghost_fraction>.015) failures.push("Dots from previous frames remain visible as the object moves.");
         if (cert?.supported_full_frame && cert.shaded_frame_fraction<.2) failures.push("Visible face interiors do not show clearly differentiated shading.");
       }

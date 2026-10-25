@@ -16,6 +16,9 @@ try{
  assert.equal(event.content[0].text,raw,'Original tool event remains unchanged');
  const audit=JSON.parse(readFileSync(join(root,'capture-normalization.jsonl'),'utf8').trim());assert.equal(audit.blank_cells,60);assert.equal(audit.raw_content[0].text,raw);
  assert.equal(JSON.parse(readFileSync(join(root,'self-check.json'))).source_sha256,hash);
+ writeFileSync(join(root,'latest-check.json'),JSON.stringify({pass:false,judge_version:7,source_sha256:hash,renderer:{phases:[{typical_width_fraction:.8,typical_height_fraction:1,frame_certification:{supported_full_frame:true}}]}}));
+ const feedback=handlers.before_provider_request({payload:{messages:[]}});assert.match(feedback.messages[0].content,/clear visible margin/);
+ assert.equal(handlers.before_provider_request({payload:{messages:[]}}),undefined,'Functional feedback occurs once per unchanged revision');
  writeFileSync(join(root,'acceptance.json'),JSON.stringify({pass:true,judge_version:7,source_sha256:hash}));
  assert.equal(handlers.tool_call({}).block,true);assert.deepEqual(tools,[]);
  console.log('Capture checks passed: named pane only, unchanged geometry/columns, raw audit preserved, matching judge required.');
