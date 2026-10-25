@@ -6,6 +6,7 @@ Anthropic-compatible API · chat in the browser, pictures, thinking levels</p>
 
 <p align="center">
 <a href="https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--t16-yellow" alt="Model: dsx-t16"></a>
+<a href="https://x.com/lxe"><img src="docs/assets/twitter-lxe.svg" alt="Follow @lxe on Twitter / X"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust"></a>
 <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-13-76B900?logo=nvidia" alt="CUDA 13"></a>

@@ -36,22 +36,14 @@ the CPU and GPUs signal each other through mapped-memory flags instead of host s
 decode kernels made for this model's attention and expert shapes (optionally letting the GPU run ahead of the CPU's
 lowest-ranked experts). Same experts, same machine: 27-29.5 tok/s in dsx, 12.0 in llama.cpp (both after a 3K-token prompt).
 
-## Which build
+## Release measurements
 
-| Build | Made for | Download | KL / top-1 vs FP8 | Decode |
-|---|---|---|---:|---:|
-| [**dsx-t16**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16) (recommended) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 252 GB in one file, Engram and tokenizer inside | 0.196 / 80.9% | 34.9 tok/s (36.8 with `--defer-rank 3`) |
-| [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 305 GB, Engram and tokenizer inside | 0.272 / 79.0% | 27-29.5 tok/s (32-36 with `--defer-rank 3`) |
-| [dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 148 GB + the official Engram shards (203 GB) | 0.373 / 74.4% | ~29 tok/s (35.7 with `--defer-rank 3`) |
-| [dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4) | 1x AMD Instinct MI325X (256 GiB) | 270 GB + the official Engram shards (203 GB) | 0.049 / 90.6% | 110-114 tok/s |
+The quality and speed figures below belong to this model release and its recorded runtime. They are not a new
+measurement of every later kernel revision. See [NVIDIA measurement status](https://github.com/lxe/dsx/blob/main/docs/current-state.md)
+for the runtime settings and open correctness checks, and [model release history](https://github.com/lxe/dsx/blob/main/docs/model-history.md)
+for other packages.
 
-All four run on [dsx](https://github.com/lxe/dsx) and were measured on the same eval
-([Lucebox 1017](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF), 8 x 1,024 tokens against the FP8
-model's top-256 log-probs).
-
-The table retains the original model-release measurements; quality was measured without expert deferral. Decode
-speeds were not all measured with the same runtime revision. For the later NVIDIA kernel integration, current
-switches and the unresolved decode exactness check, see [measurement status](https://github.com/lxe/dsx/blob/main/docs/current-state.md).
+This is a historical model release. [T16](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16) is the current desktop download.
 
 ## At a glance
 

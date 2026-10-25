@@ -22,7 +22,7 @@ speed. See [current state](current-state.md) for benchmark conditions.
 dsx uses every visible GPU, up to six: one main GPU and up to five expert GPUs (`DSX_GPUS=0,2` picks which). At
 startup it measures each GPU's memory and host-to-device bandwidth. The best-linked one (within 15%, then the most
 memory) becomes the main GPU: dense weights, KV cache, prefill buffers and its own expert cache.
-Every other GPU only holds experts.
+Other GPUs hold expert weights and their execution buffers; they do not hold the main model’s dense weights or KV cache.
 
 An expert GPU whose link is at least half as fast as the main GPU's swaps experts like the main GPU's cache and
 takes a share of the expert stream during prefill. Swapping needs RAM copies of its experts: when the arena would leave

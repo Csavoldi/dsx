@@ -5,8 +5,8 @@ configuration switches, benchmark provenance and the open static-residency decod
 GPU subcommands such as `gen`, `eval` and `cmp` are absent; the CPU reference and GGUF tools remain available.
 
 DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200 (or one RTX 5090).
-Rust + CUDA (cudarc driver API, one nvcc fatbin for sm_86 and sm_120). Config, readers, block formats, the CPU
-reference and the server are in [`../core`](../core) (re-exported as `dsx::model`, `dsx::server`, ...). Plan and
+Rust + CUDA uses the cudarc driver API; `CUDA_ARCHS` selects fatbin targets, default sm_86 and sm_120.
+Config, readers, block formats, the CPU reference and the server are in [`../core`](../core) (re-exported as `dsx::model`, `dsx::server`, ...). Plan and
 numbers: ../DESIGN.md, ../FINDINGS.md, ../bench/RESULTS.md.
 
 ## Build
@@ -40,6 +40,8 @@ bonus for VRAM experts; changes the model's routing). Profiling: `DSX_EVPROF=1` 
 Sensitivity: `DSX_NOISE=A-B:REL` (Gaussian noise on layers A..B's routed expert outputs in prefill).
 
 ## Layout
+
+Implementation filenames below are under `nvidia/src/`. The `../core/src/` entry points to the shared core from this README’s directory.
 
 | file | |
 |---|---|

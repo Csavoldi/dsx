@@ -32,7 +32,9 @@ with the same gains; it did not replace the default model. No improved agentic q
 
 `dsx-server` defaults to a 32K context, chunk size 4096, arena budget 0, and deferral off. Its two-3090 quick start
 explicitly selects 128K context, a 110 GB arena and `--defer-rank 3`. The recorded reference serving configuration
-uses those values, `--main-gb=-1.5`, `--aux-gb=-1.0`, and no experimental environment overrides.
+used those values, `--main-gb=-1.5`, `--aux-gb=-1.0`, and no experimental environment overrides.
+This is a recorded benchmark configuration, not an inventory of live services. For example, later coding runs
+used a 256K context; changing `--ctx` changes available expert-cache memory and must accompany any timing claim.
 
 | Control | Default | Meaning |
 |---|---|---|
@@ -149,6 +151,7 @@ kill serving through memory pressure. Do not assume old protection settings stil
 | [budget](budget-102.md), [inflight analysis](t16-decode-inflight.md) | dated resource models and intermediate kernel profiles |
 | [bench results](../bench/results/2026-10-22-102/README.md) | raw window scripts and receipts; not all large traces are in Git |
 | [quantization tools](../quant/README.md) | current T16 entry points and historical scalar pipeline |
+| [model release history](model-history.md) | package-specific release measurements; older models retained for reproducibility |
 | [model cards](../cards/dsx-t16/README.md) | model-release metrics; local copies require separate publication to update the Hub |
 | [AMD runner](../amd/README.md), [batched log](../amd/RUNNER.md) | separate HIP implementation and completed rental measurements |
 

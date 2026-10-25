@@ -1,6 +1,11 @@
 # DeepSeek-V4.1-Flash-1017 on one AMD MI325X: findings
 
-## Results so far
+This document records the original model release and early single-session experiments. Later batching and
+agentic-serving work is described in [the AMD guide](amd/README.md) and [profile](amd/box/AGENTIC_MI325X.md).
+Rental totals and proposed next steps below belong to those earlier runs; the [rental ledger](amd/box/RENTALS.md)
+records the subsequent sessions and their closure.
+
+## Original release measurements
 
 | | |
 |---|---|
@@ -12,7 +17,7 @@
 | Cost at $3.80/h, one stream | $9.3 per million generated tokens, $0.64 per million prompt tokens |
 | Published | [lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4), 6 GGUF shards, 270.5 GB |
 
-For comparison on the same eval: dsx's 2-bit quant (148 GB) KL 0.395; Lucebox ROCMFP2S (158 GiB) 0.265, ROCMFP23S
+For comparison on that eval: an earlier dsx 2-bit build (148 GB) measured KL 0.395; Lucebox ROCMFP2S (158 GiB) 0.265, ROCMFP23S
 (179 GiB) 0.194. With 256 GiB of HBM there is room to keep 59% of the experts in the checkpoint's own FP4 (the model
 was trained with them) and give the coldest 41% (by measured routing frequency) a fitted 3-bit codebook.
 
@@ -144,7 +149,7 @@ The expert GEMV is also decode's largest cost: per launch, every block spends ~8
 router logits and ~9 µs staging the activation before ~15 µs of streaming (`gtime`). Producing the routing and the
 FP8 activation once, and blocks that stream several tiles each, is the next step for both decode and verify.
 
-## 7. Status and next steps
+## 7. Historical status and proposals
 
 Done: the runner (`amd/`), the MXFP4 + 3-bit build (published as 6 GGUF shards), decode 110-114 tok/s at 4K-256K,
 prefill 1,160-1,840 tok/s, the OpenAI / Anthropic server, DSpark speculation (opt-in). Rental: one MI325X,

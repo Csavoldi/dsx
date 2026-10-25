@@ -1,6 +1,7 @@
 # NVIDIA server configuration
 
-`dsx-server` needs `--model`; every other option has a default.
+Normal model inference requires `--model`; the remaining settings have defaults. `--mock` runs the deterministic
+fixture engine without model weights; supply `--tokenizer` for that mode.
 
 **Model files**
 

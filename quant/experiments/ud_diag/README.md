@@ -1,6 +1,7 @@
-# Why UD-IQ1_M's experts beat ours (October 20, 2026)
+# UD-IQ1_M versus early scalar quants (October 20, 2026)
 
-The scripts behind FINDINGS.md section 7's codebook paragraph. They ran on a rented H100 pod with absolute paths:
+This is a historical study of the scalar quants before T16 v1.
+The scripts support FINDINGS.md section 7’s codebook measurements. They ran on a rented H100 pod with absolute paths:
 
 - `/work/udN`: dumps from a forward-only `v41_calib` chain over the `calib/` corpus, every 8th expert of layer N
   (`V41_SCREEN_TIERS="" V41_SCREEN_IQ2=0 V41_DUMP=... V41_DUMP_LAYER=5,20,32,39`)
