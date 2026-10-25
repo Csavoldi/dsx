@@ -1,0 +1,53 @@
+{
+  "providers": {
+    "dsx-nanbeige": {
+      "name": "DSX Nanbeige",
+      "baseUrl": "http://127.0.0.1:8095/v1",
+      "api": "openai-completions",
+      "apiKey": "none",
+      "authHeader": false,
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsUsageInStreaming": true,
+        "maxTokensField": "max_tokens",
+        "supportsStrictMode": false,
+        "supportsStore": false,
+        "thinkingFormat": "chat-template",
+        "chatTemplateKwargs": {
+          "enable_thinking": {
+            "$var": "thinking.enabled"
+          },
+          "preserve_thinking": true,
+          "tool_call_format": "xml"
+        },
+        "requiresReasoningContentOnAssistantMessages": true
+      },
+      "models": [
+        {
+          "id": "nanbeige4.3-33b",
+          "name": "DSX Nanbeige \u00b7 RTX 5090 \u00b7 256K",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "top_k": 0,
+            "min_p": 0.0,
+            "seed": 1699757404
+          }
+        }
+      ]
+    }
+  }
+}

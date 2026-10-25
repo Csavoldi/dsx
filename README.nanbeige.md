@@ -84,3 +84,7 @@ The earlier 8K graph and fixed-shape equivalence receipts remain as historical c
 The 4,096-token batch option processed a cold 3,968-token WikiText prefix in 1.8862 seconds (2,103.75 tok/s) and the 16,384-token retrieval prompt in 11.8008 seconds (1,388.38 tok/s), returning the correct key. The corresponding 128-token perplexity check was 12.7036. These are short-sample measurements; the lower perplexity does not establish a quality improvement. Larger batches use canonical 3-bit KV for keys that have left the BF16 ring.
 
 The deployed EXL3 configuration uses `DSX_NB_BATCH=4096`, `DSX_NB_ATTN8=2`, `DSX_NB_PART_SIZE=16384`, `DSX_NB_EXL3_NARROW=1`, and `--ctx 262144 --kv-bits 3 --host-embed --head-bits 4 --lookup 3`. At batch 2,048, the same decode policy measured 63.13 tok/s serial coding and 65.11 with lookup; repeated copying measured 151.97 with lookup. The 100 tok/s general-generation target remains unmet.
+
+## Pi file paths
+
+The live Pi smoke completed bash, write, and read calls in the existing tmux session. Its first relative-path read failed, then an absolute-path read verified the written file. The launcher now appends an instruction to use absolute file paths for read, write, and edit tools. This avoids the observed relative-path ambiguity; it is not a change to the Pi tool implementation.
