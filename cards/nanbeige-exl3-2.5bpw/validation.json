@@ -8,6 +8,7 @@
   "tensor_count": 1563,
   "decoder_matrices": 364,
   "decoder_weights": 30725373952,
+  "underlying_model_parameters": 33118977024,
   "decoder_trellis_bytes": 9601679360,
   "decoder_bits_per_weight": 2.5,
   "tensor_payload_bytes": 14402678192,

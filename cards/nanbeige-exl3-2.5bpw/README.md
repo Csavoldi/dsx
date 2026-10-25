@@ -30,6 +30,7 @@ The quant was made from the original BF16 checkpoint. It is intended for GPU inf
 | Property | Value |
 |---|---|
 | Source | `Nanbeige/Nanbeige4.3-33B` at `c1093c501cc6460427c0ac634db7223d0450c0ee` |
+| Underlying model parameters | 33,118,977,024 (33.12B), including embedding, head, and norms |
 | Decoder | Uniform 2.5 bpw, 52 layers, 7 projections per layer |
 | Format | EXL3, `mul1` codebook (`0x83DCD12D`), upstream tensor layout |
 | Embedding and head | BF16 embedding; FP16 head; 16 bits per weight |
@@ -38,6 +39,8 @@ The quant was made from the original BF16 checkpoint. It is intended for GPU inf
 | Calibration | 32 rows × 512 tokens = 16,384 tokens |
 | Original maximum position setting | 524,288 tokens; usable context depends on the runtime and KV memory |
 | License | Apache 2.0, following the source checkpoint |
+
+The underlying model has **33,118,977,024 parameters**. The Hub may display about 7.2B because its Safetensors counter counts the stored EXL3 integer elements without expanding the packed trellis into model weights. Quantization changes the representation and precision of these parameters; it preserves the model architecture and parameter count. The shard index records the exact underlying count as `metadata.total_parameters`.
 
 The 2.5 bpw label describes decoder trellis data. The two large 16-bit vocabulary tables increase the total download and effective whole-model bitrate. Weight size alone does not determine VRAM use: KV cache, activations, temporary buffers, and the output-head implementation also consume memory.
 
