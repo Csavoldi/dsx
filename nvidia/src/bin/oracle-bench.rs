@@ -190,6 +190,7 @@ fn main() -> Result<()> {
     )?;
     let pb = gm.pb.take().expect("prefill buffers");
     if a.prefill_probe {
+        emit(json!({"event":"prefill_residency","resident_experts":gm.validation_residency(),"adaptive":false,"limit":"Recorded before timing; compare full membership across arms."}));
         ensure!(std::env::var("DSX_ADAPT").is_ok_and(|v| v == "0"), "--prefill-probe requires DSX_ADAPT=0 for fixed residency");
         let continuation = forced.as_ref().ok_or_else(|| anyhow::anyhow!("--prefill-probe requires --continuation"))?;
         let mut sizes = vec![ids.len(), 256.min(ids.len()), 64.min(ids.len())];
