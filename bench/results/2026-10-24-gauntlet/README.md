@@ -274,3 +274,30 @@ expert membership in all four arms. Warm full-prompt throughput rises from
 recorded limit-safe temperature, and the original server, power settings and
 model identity are restored. This small full-prompt gain needs a live workflow
 and quality check before adoption; it does not imply faster agent completion.
+
+The [2,048-token budget pilot](budget2048.json) completes both tested shapes with
+normal agent exits and passing source/display reviews:
+
+| Shape | Completion time | First observed passing artifact | Decode tokens/s | New-prompt prefill tokens/s |
+|---|---:|---:|---:|---:|
+| Tetrahedron |225.366s|184.195s|39.704|607.953|
+| Cube |179.386s|144.179s|39.703|637.585|
+
+Both programs retain distinct shaded Braille faces, correct geometry and depth
+handling, comfortable size, smooth animation and clean terminal restoration at
+all three test sizes. Raw token/policy checks verify the intended forced thought
+closures, sampling settings and engine counts. Stock serving, model identity and
+CPU power settings are restored after the window.
+
+This is a two-task pilot with fresh seeds, 300-second budgets, low/native-score10,
+a 2,048-token cap, judge8 and normalized captures. Compact guidance is absent.
+The cap-512 pilot used compact guidance, and the 180-second groups had shorter
+budgets; these differences prevent attributing the success to the cap alone.
+The result supports further testing of this configuration, with no production
+default change or claim of a reliable 2/2 success rate.
+
+The successful runs also expose a final-summary cost: their acceptance workflow
+removes API tools, which removes the native prompt's tool header and invalidates
+the prefix. The last request takes 16.525s for the cube and 21.973s for the
+tetrahedron. `--preserve-completion-prefix` is a separate experiment that retains
+the header while still blocking execution. Its live verification remains pending.

@@ -22,6 +22,12 @@ The [512-token hard-budget pilot](budget512.json) forces 11 closures at the inte
 position and produces code, but still times out without a passing cube. Keep it
 disabled by default; shorter thought streams alone do not establish a benefit.
 
+The [2,048-token pilot](budget2048.json) completes tetrahedron in 225.366 seconds
+and cube in 179.386 seconds, with reviewed source/display quality and normal
+exits. It also removes compact guidance and uses 300-second budgets. Keep it
+experimental: two fresh-seed successes do not isolate the cap or establish a
+reliable success rate.
+
 Every task uses a fresh request seed and temperature/top-p 1. Historical checker
 versions remain reproducible. Judge 8 adds synchronized-update support and stores
 repair notes in tool history. Review submitted source and saved terminal output
