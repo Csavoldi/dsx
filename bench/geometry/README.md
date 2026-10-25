@@ -157,7 +157,7 @@ DSX_THINKING_BUDGET=2048 DSX_RUNTIME_STATS=1 \
   --arena-gb 110 --defer-rank 3
 ```
 
-The measured host used a 125W CPU long-term cap, 230W GPU caps, no swap and a 118GB
+The measured host used a 125 W CPU long-term cap, 230 W GPU caps, no swap and a 118 GiB
 process guard. Preserve and restore the host's original settings around the
 window. Once serving is ready, run one task at a time:
 

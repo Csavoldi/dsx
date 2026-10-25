@@ -1,0 +1,86 @@
+{
+  "verified_at": 1792907676.7571812,
+  "scheduled_deadline": 1792907658,
+  "deadline_reached": true,
+  "host": {
+    "time": 1792907676.563336,
+    "pid": 1262217,
+    "command": "/home/lxe/ai/ds41/./dsx/target/release/dsx-server --model hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf --host 0.0.0.0 --port 8090 --ctx 131072 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 --arena-gb 110 --rank calib/rank.json --defer-rank 3 --vision hf-t16/vision.safetensors ",
+    "binary_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+    "dsx_env": [],
+    "model": {
+      "path": "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+      "size": 251592261632,
+      "inode": 154277358,
+      "mtime_ns": 1792707596293851835
+    },
+    "rank_sha256": "4afadccff5134056539193ae92c5a8e79278867ef06bdc52b4db3df278491674",
+    "rapl_long_uw": "4095875000",
+    "gpu_state": "0, 230.00, 46, 23052, 0\n1, 230.00, 40, 23158, 0\n",
+    "gpu_lock": null
+  },
+  "remote": {
+    "time": 1792907161.1717756,
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "model_first_mib_sha256": "395af6514e775fdf7e22ea7004000a8f19821399097089255e95e6d860ca7a26",
+    "serve_script_sha256": "cce530175593b3300d92a7ceed074c07a3f43c9109ccb7477ebac3bce96e796a",
+    "owned_benchmark_processes": [],
+    "swap": "",
+    "gpu_state": "0, 230.00, 50, 23052, 0\n1, 230.00, 40, 23158, 0\n",
+    "xid_query_returncode": 1,
+    "xid_query_output": "-- No entries --",
+    "xid_query_error": ""
+  },
+  "local": {
+    "time": 1792907161.2865617,
+    "owned_processes": [],
+    "port8987_free": true
+  },
+  "scope": {
+    "name": "ds41-serve.scope",
+    "active": true,
+    "memory_max_bytes": 126701535232,
+    "memory_max_gib": 118,
+    "memory_swap_max": 0,
+    "rapl_short_uw": 180000000
+  },
+  "implementation_validation": {
+    "reasoning_policy_tests": "5passed; test-thinking-budget.log",
+    "server_http_tests": "13passed; test-thinking-budget-server.log",
+    "release_cuda_build": "build-thinking-budget-server.log; success",
+    "incremental_trace_build": "build-incremental-profile.log; success",
+    "incremental_trace_invalid_size": "Rejected17before model/GPU initialization",
+    "harness_tests": [
+      "8terminal tests passed",
+      "3proxy ownership/cleanup/lifetime tests passed",
+      "stop,capture,persistent feedback and completion-header tests passed",
+      "3causal lookup tests passed"
+    ],
+    "docs": "Published JSON parses and relative documentation links verified; final report link resolves after this receipt is saved"
+  },
+  "final_health": {
+    "status": "ok",
+    "model": "deepseek-v4.1-flash",
+    "pending": 0
+  },
+  "heartbeat": {
+    "id": "dsx-six-hour-gauntlet-progress",
+    "status": "PAUSED"
+  },
+  "git_base_head": "32956101eb2b18dadbc65bb6881f6c6b7c1a1416",
+  "requirements": {
+    "six_hour_window_finished": true,
+    "varied_single_agent_tasks_and_source_display_reviews": true,
+    "primary_completion_metrics_preserved_including_failures": true,
+    "measured_cache_latency_improvement_and_controlled_throughput_screens": true,
+    "fixed_T16_and_accepted_production_restored": true,
+    "owned_jobs_proxies_and_gpu_lock_cleaned": true,
+    "negative_lineage_and_reproducible_settings_published": true,
+    "periodic_updates_commits_and_pushes_recorded": true,
+    "heartbeat_paused": true
+  }
+}

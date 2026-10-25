@@ -28,7 +28,8 @@ The [2,048-token pilot](budget2048.json) completes tetrahedron in 225.366 second
 and cube in 179.386 seconds, with reviewed source/display quality and normal
 exits. It also removes compact guidance and uses 300-second budgets. Keep it
 experimental: two fresh-seed successes do not isolate the cap or establish a
-reliable success rate.
+reliable success rate. The [final octahedron](budget2048-octahedron.json)
+times out without a renderer, leaving two completions out of three shapes.
 
 Every task uses a fresh request seed and temperature/top-p 1. Historical checker
 versions remain reproducible. Judge 8 adds synchronized-update support and stores
