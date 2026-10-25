@@ -342,5 +342,5 @@
       "prefix_replayed_tokens": 858
     }
   ],
-  "limit": "Live notes are retained in tool-role messages, with zero measured prefix replay in completed requests. This validates cache-prefix preservation, not an A/B latency or completion gain."
+  "limit": "Live notes are retained in tool-role messages across all later recorded requests. Cube has zero prefix replay; tetrahedron834 and octahedron858 total include their cross-task initial cached prefix, with24 replayed tokens on the final octahedron request. Persistence is verified; no A/B latency or completion gain is measured."
 }
