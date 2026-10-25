@@ -1,0 +1,7 @@
+{
+  "output_tokens": 256,
+  "all_output_ids_equal": true,
+  "graph_tps": 44.78606252248008,
+  "ordinary_tps": 45.10900746186752,
+  "claim": "correctness verified; no speedup demonstrated"
+}

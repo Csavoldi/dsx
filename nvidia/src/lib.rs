@@ -30,3 +30,6 @@ pub mod server {
     #[cfg(feature = "cuda")]
     pub mod real;
 }
+
+#[cfg(feature = "cuda")]
+pub mod nanbeige;

@@ -1,0 +1,9 @@
+{
+  "function": "is_prime",
+  "integer_range": [
+    -20,
+    10000
+  ],
+  "cases": 10021,
+  "passed": true
+}

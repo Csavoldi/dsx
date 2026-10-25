@@ -13,7 +13,7 @@ half = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 rayon = "1"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 deepseek-recipe = "0.1"
 deepseek-recipe-core = "0.1"
 deepseek-recipe-encoding = "0.1"
@@ -25,7 +25,11 @@ serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
-cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "cublas", "cuda-13000", "dynamic-loading"] }
+cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "cublas", "cublaslt", "cuda-13000", "dynamic-loading"] }
+
+minijinja = { version = "2.24", features = ["builtins", "json", "loop_controls", "preserve_order"] }
+minijinja-contrib = { version = "2.24", features = ["pycompat"] }
+regex = "1"
 
 [dev-dependencies]
 flate2 = "1"
@@ -48,3 +52,13 @@ required-features = ["cuda"]
 [features]
 default = []
 cuda = ["dep:cudarc"]
+
+[[bin]]
+name = "dsx-nanbeige"
+path = "src/bin/nanbeige.rs"
+required-features = ["cuda"]
+
+[[bin]]
+name = "dsx-nanbeige-server"
+path = "src/bin/nanbeige-server.rs"
+required-features = ["cuda"]

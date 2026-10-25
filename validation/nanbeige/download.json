@@ -1,0 +1,90 @@
+{
+  "repo": "primitive-ai/Nanbeige4.3-33B-NVFP4",
+  "revision": "4171a7d6eabfffc37b9d89629fb75d28fd5c2c5d",
+  "files": [
+    {
+      "name": ".gitattributes",
+      "bytes": 1570,
+      "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+      "seconds": 0.26424074172973633
+    },
+    {
+      "name": "README.md",
+      "bytes": 1521,
+      "sha256": "86a1d121561e4effaf6bd29ddd9b90300560a33b8c9a4ec6e64e1eb4eb9911c3",
+      "seconds": 0.2627999782562256
+    },
+    {
+      "name": "added_tokens.json",
+      "bytes": 174,
+      "sha256": "9e3b127a27647df2c353cc1e5500826f7cdbe8bd15a458e368bba8422e9719cf",
+      "seconds": 0.2826652526855469
+    },
+    {
+      "name": "config.json",
+      "bytes": 1991,
+      "sha256": "0c1830b5776e566f9f920e0369afe6c6579baad265916243c414c7e722f56d58",
+      "seconds": 0.2672703266143799
+    },
+    {
+      "name": "generation_config.json",
+      "bytes": 164,
+      "sha256": "fa8b09c0d2ab1db7a2736a780586df21b1602f8e02e29fa9feee325bb57d18ee",
+      "seconds": 0.2666013240814209
+    },
+    {
+      "name": "model-00001.safetensors",
+      "bytes": 4653166712,
+      "sha256": "e8c6ef82af56c691ad8c941f0b6b4a4a5f75dfc553e73fbde0147fbb97eddfea",
+      "seconds": 93.31884455680847
+    },
+    {
+      "name": "model-00002.safetensors",
+      "bytes": 4653166992,
+      "sha256": "266d18327d0cf5066d5b736d60c2120b297f4268cdb232c1f90a398a359ea298",
+      "seconds": 72.02417945861816
+    },
+    {
+      "name": "model-00003.safetensors",
+      "bytes": 4653166992,
+      "sha256": "04c7d30f514281fafcf388cc1a97a83a4df151f3cb85e7468e0a1b6912c8b545",
+      "seconds": 66.107351064682
+    },
+    {
+      "name": "model-00004.safetensors",
+      "bytes": 8110909416,
+      "sha256": "fcb3b94231e3d4835df90d816242e4699202534b5ee917620149cebce267c266",
+      "seconds": 87.99749493598938
+    },
+    {
+      "name": "model.safetensors.index.json",
+      "bytes": 124152,
+      "sha256": "1a0c1eb38c027967f0cf6c2fe037ba2cf16839006c246f9b35932be49bf5436b",
+      "seconds": 0.24617362022399902
+    },
+    {
+      "name": "special_tokens_map.json",
+      "bytes": 623,
+      "sha256": "b718fce2b7a8940ffeddc1e67f3b092cc0d13ac885c63a021528786f8c4cf6c0",
+      "seconds": 0.2174367904663086
+    },
+    {
+      "name": "tokenizer.json",
+      "bytes": 18450979,
+      "sha256": "1d858a0fc007f22af6ae18bfa1ae52d30e398aa9cd1ea06e7777176869346a3f",
+      "seconds": 1.7010242938995361
+    },
+    {
+      "name": "tokenizer.model",
+      "bytes": 2782298,
+      "sha256": "fb41d04798b714520a9b075727b0226538b7330254299062742c50ec8374bc36",
+      "seconds": 1.8615949153900146
+    },
+    {
+      "name": "tokenizer_config.json",
+      "bytes": 11033,
+      "sha256": "91f4aec9f1fafb9924659bc3d843130bd3b092418327f31a998156aa07aa44b7",
+      "seconds": 0.20827865600585938
+    }
+  ]
+}

@@ -2566,3 +2566,5 @@ extern "C" __global__ void chase(const uint32_t *__restrict__ next, int steps, u
 }
 
 #include "sampling.cuh"
+
+#include "nanbeige.cuh"
