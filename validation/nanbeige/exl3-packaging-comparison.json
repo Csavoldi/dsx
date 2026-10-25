@@ -1,0 +1,79 @@
+[
+  {
+    "repo": "turboderp/Qwen3-32B-exl3",
+    "revision": "2.5bpw",
+    "commit": "63c102648ff84be908577d25f25213c19ae13de9",
+    "hub_safetensors": null,
+    "quantization_config": {
+      "quant_method": "exl3",
+      "version": "0.0.1",
+      "bits": 2.5,
+      "head_bits": 6,
+      "calibration": {
+        "rows": 100,
+        "cols": 2048
+      },
+      "out_scales": "auto"
+    },
+    "index_metadata": {
+      "total_size": 11909460736
+    },
+    "shards": [
+      "model-00001-of-00002.safetensors",
+      "model-00002-of-00002.safetensors"
+    ],
+    "tensor_name_examples": [
+      "model.embed_tokens.weight",
+      "model.layers.0.input_layernorm.weight",
+      "model.layers.0.mlp.down_proj.suh",
+      "model.layers.0.mlp.down_proj.svh",
+      "model.layers.0.mlp.gate_proj.suh",
+      "model.layers.0.mlp.gate_proj.svh",
+      "model.layers.0.mlp.up_proj.suh",
+      "model.layers.0.mlp.up_proj.svh"
+    ]
+  },
+  {
+    "repo": "lxe/Nanbeige4.3-33B-EXL3-2.5bpw",
+    "revision": "main",
+    "commit": "093dccd3f6aaf06351c98bc3e5971dd5e8526d72",
+    "hub_safetensors": {
+      "parameters": {
+        "BF16": 1197177856,
+        "F16": 1203320832,
+        "I16": 4800839680
+      },
+      "total": 7201338368
+    },
+    "quantization_config": {
+      "quant_method": "exl3",
+      "version": "1.6.4",
+      "head_bits": 16,
+      "calibration": {
+        "rows": 32,
+        "cols": 512
+      },
+      "out_scales": "auto",
+      "codebook": "mul1",
+      "bits_per_weight": 2.5
+    },
+    "index_metadata": {
+      "total_size": 14402678192,
+      "total_parameters": 33118977024
+    },
+    "shards": [
+      "model-00001-of-00002.safetensors",
+      "model-00002-of-00002.safetensors"
+    ],
+    "tensor_name_examples": [
+      "model.embed_tokens.weight",
+      "model.layers.0.self_attn.k_proj.suh",
+      "model.layers.0.self_attn.k_proj.svh",
+      "model.layers.0.self_attn.k_proj.mul1",
+      "model.layers.0.self_attn.k_proj.trellis",
+      "model.layers.0.self_attn.o_proj.suh",
+      "model.layers.0.self_attn.o_proj.svh",
+      "model.layers.0.self_attn.o_proj.mul1"
+    ]
+  }
+]

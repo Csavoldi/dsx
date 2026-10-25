@@ -1,0 +1,29 @@
+[
+  {
+    "pack": "turboderp/Qwen3-32B-exl3",
+    "source": "Qwen/Qwen3-32B",
+    "logical_parameters": 32762123264,
+    "stored_elements": 5954730368,
+    "quantized_matrix_rates": {
+      "3.0": 192,
+      "4.0": 96,
+      "2.0": 160,
+      "6.0": 1
+    },
+    "stored_tensor_count": 1605,
+    "source_api_parameters": 32762123264,
+    "matches_source": true
+  },
+  {
+    "pack": "lxe/Nanbeige4.3-33B-EXL3-2.5bpw",
+    "source": "Nanbeige/Nanbeige4.3-33B",
+    "logical_parameters": 33118977024,
+    "stored_elements": 7201338732,
+    "quantized_matrix_rates": {
+      "2.5": 364
+    },
+    "stored_tensor_count": 1563,
+    "source_api_parameters": 33118977024,
+    "matches_source": true
+  }
+]

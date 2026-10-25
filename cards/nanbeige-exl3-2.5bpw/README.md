@@ -40,7 +40,7 @@ The quant was made from the original BF16 checkpoint. It is intended for GPU inf
 | Original maximum position setting | 524,288 tokens; usable context depends on the runtime and KV memory |
 | License | Apache 2.0, following the source checkpoint |
 
-The underlying model has **33,118,977,024 parameters**. The Hub may display about 7.2B because its Safetensors counter counts the stored EXL3 integer elements without expanding the packed trellis into model weights. Quantization changes the representation and precision of these parameters; it preserves the model architecture and parameter count. The shard index records the exact underlying count as `metadata.total_parameters`.
+This is a **33.12B-parameter** model. The Hub currently reports about 7.2B packed tensor elements; its counter does not reconstruct EXL3 weight shapes. The shard index records the exact underlying count as `metadata.total_parameters`.
 
 The 2.5 bpw label describes decoder trellis data. The two large 16-bit vocabulary tables increase the total download and effective whole-model bitrate. Weight size alone does not determine VRAM use: KV cache, activations, temporary buffers, and the output-head implementation also consume memory.
 
@@ -110,6 +110,12 @@ python convert.py \
   -o Nanbeige4.3-33B-EXL3-2.5bpw \
   -b 2.5 -hb 16 -eb 16 -cr 32 -cc 512 -cb mul1
 ```
+
+## Hub metadata compatibility
+
+The pack follows the upstream EXL3 tensor layout, shard index, and fractional `quantization_config.bits: 2.5` convention. The root configuration and detailed `quantization_config.json` agree. The Hub may warn that `bits` must be an integer; EXL3 supports fractional target bitrates, and the warning reflects the Hub schema. Neither that warning nor its packed-element parameter badge indicates a missing weight shard.
+
+Turboderp's [Qwen3-32B EXL3 pack](https://huggingface.co/turboderp/Qwen3-32B-exl3/tree/2.5bpw) likewise uses two shards. Reconstructing its trellis tensor shapes gives 32,762,123,264 parameters, matching the source checkpoint, versus 5,954,730,368 stored elements. The same shape audit gives 33,118,977,024 parameters for this pack, exactly matching its source. See [the audit receipt](benchmarks/exl3-logical-parameter-audit.json).
 
 ## Download and run
 

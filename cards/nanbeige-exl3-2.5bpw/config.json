@@ -44,6 +44,6 @@
         },
         "out_scales": "auto",
         "codebook": "mul1",
-        "bits_per_weight": 2.5
+        "bits": 2.5
     }
 }

@@ -1,0 +1,7 @@
+{
+  "commit": "c4354256b972e11badf28c6cd8c1ca74548a5be0",
+  "canonical_bits": 2.5,
+  "root_and_detailed_config_agree": true,
+  "weight_shards_changed": false,
+  "upstream_example": "turboderp/Qwen3-32B-exl3@63c102648ff84be908577d25f25213c19ae13de9"
+}
