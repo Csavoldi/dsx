@@ -358,6 +358,7 @@ pub struct Decoder {
     /// batched-step graphs by (tokens, draft, verify, 16K-position bucket, batch) and the shapes seen once
     pub(crate) bgraphs: std::cell::RefCell<std::collections::HashMap<(usize, bool, bool, usize, u64), Graph>>,
     pub(crate) bseen: std::cell::RefCell<std::collections::HashSet<(usize, bool, bool, usize, u64)>>,
+    pub(crate) bgraph_epoch: std::cell::Cell<usize>,
     pub pos: usize,
     /// eager debugging: residual stream after every layer (downloaded with a sync per layer)
     pub dump: Option<std::cell::RefCell<Vec<Vec<f32>>>>,
@@ -663,7 +664,7 @@ impl Decoder {
 
         // ---- experts
         let (free, _) = g.mem_info()?;
-        // DSXA_DSPARK=3 (or 2): room for the draft layers, their experts in a 3-bit (2-bit) codebook
+        // DSXA_DSPARK=4/3/2: reserve the native MXFP4 or lower-bit draft stack
         let draft = crate::dspark::bits_from_env().map(crate::dspark::bytes).unwrap_or(0);
         // DSXA_RESERVE_GB: extra HBM kept free (batched decode's per-sequence state); the coldest experts give way
         let extra = std::env::var("DSXA_RESERVE_GB").ok().and_then(|v| v.parse::<f64>().ok()).map(|g| (g * 1e9) as usize).unwrap_or(0);
@@ -768,6 +769,7 @@ impl Decoder {
             pz: std::cell::Cell::new(false),
             bgraphs: Default::default(),
             bseen: Default::default(),
+            bgraph_epoch: Default::default(),
             pos: 0,
             dump: None,
             etab: vec![],
@@ -1614,6 +1616,8 @@ impl Decoder {
     pub fn reload_kernels(&mut self, image: &[u8]) -> Result<()> {
         self.graph = None;
         self.vgraphs.borrow_mut().clear();
+        self.bgraphs.borrow_mut().clear();
+        self.bseen.borrow_mut().clear();
         self.g.reload(image)?;
         self.set_globals()
     }

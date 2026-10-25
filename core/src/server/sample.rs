@@ -39,6 +39,16 @@ impl Sampler {
         Self { temperature, top_p, rng: Rng::new(seed) }
     }
 
+    /// Whether an accelerator can sample the untruncated distribution directly.
+    pub fn untruncated(&self) -> bool {
+        self.temperature > 0.0 && self.temperature.is_finite() && !(self.top_p < 1.0)
+    }
+
+    /// A categorical draw for an accelerator that implements this sampler's distribution.
+    pub fn uniform_draw(&mut self) -> f64 {
+        self.rng.next_f64()
+    }
+
     pub fn from_params(p: &GenParams) -> Self {
         Self::new(p.temperature, p.top_p, p.seed)
     }

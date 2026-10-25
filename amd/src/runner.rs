@@ -15,6 +15,32 @@ use dsx_core::server::engine::{BatchEngine, GenParams};
 use dsx_core::server::sample::Sampler;
 use std::collections::{HashMap, VecDeque};
 
+pub(crate) static CHUNK_OVERRIDE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static IDLE_CHUNK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static DECODE_ROUNDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[derive(Default)]
+struct PrefillCadence {
+    remaining: usize,
+}
+
+impl PrefillCadence {
+    fn due(&mut self, waiting: bool, decoding: bool, rounds: usize) -> bool {
+        if !waiting || !decoding || rounds == 0 {
+            self.remaining = 0;
+            return waiting;
+        }
+        self.remaining = self.remaining.min(rounds);
+        if self.remaining > 0 {
+            self.remaining -= 1;
+            false
+        } else {
+            self.remaining = rounds;
+            true
+        }
+    }
+}
+
 enum Phase {
     /// waiting for / in the lane's prefill: prompt tokens not yet fed (from `done`)
     Prefill { prompt: Vec<u32>, done: usize },
@@ -58,6 +84,7 @@ pub struct Runner<'a> {
     /// the sequence whose state is in the lane (prefilling, or decoding alone)
     lane: Option<u64>,
     chunk: usize,
+    cadence: PrefillCadence,
     clock: u64,
     /// live numbers for the admin dashboard
     pub tel: Option<std::sync::Arc<crate::telemetry::Telemetry>>,
@@ -69,10 +96,16 @@ unsafe impl Send for Runner<'_> {}
 impl<'a> Runner<'a> {
     pub fn new(dec: &'a mut Decoder, slots: usize, ctx: usize) -> Result<Runner<'a>> {
         anyhow::ensure!(ctx <= dec.max_ctx, "batch context {ctx} > lane context {}", dec.max_ctx);
+        crate::spec::init_tuning_from_env()?;
         let b = dec.new_batch(slots, ctx)?;
         let chunk = std::env::var("DSXR_CHUNK").ok().and_then(|v| v.parse().ok()).unwrap_or(2048);
+        let idle = std::env::var("DSXR_IDLE_CHUNK").ok().map(|v| v.parse::<usize>()).transpose()?.unwrap_or(0);
+        let rounds = std::env::var("DSXR_DECODE_ROUNDS").ok().map(|v| v.parse::<usize>()).transpose()?.unwrap_or(0);
+        anyhow::ensure!(idle <= 8192 && rounds <= 64, "DSXR_IDLE_CHUNK must be 0..8192; DSXR_DECODE_ROUNDS must be 0..64");
+        IDLE_CHUNK.store(idle, std::sync::atomic::Ordering::Relaxed);
+        DECODE_ROUNDS.store(rounds, std::sync::atomic::Ordering::Relaxed);
         let slots = (0..slots).map(|_| Slot { owner: None, tokens: vec![], parked: false, used: 0 }).collect();
-        Ok(Runner { dec, b, seqs: HashMap::new(), slots, waiting: VecDeque::new(), lane: None, chunk, clock: 0, tel: None })
+        Ok(Runner { dec, b, seqs: HashMap::new(), slots, waiting: VecDeque::new(), lane: None, chunk, cadence: PrefillCadence::default(), clock: 0, tel: None })
     }
 
     /// Move the lane's decoding sequence into its slot.
@@ -197,7 +230,10 @@ impl Runner<'_> {
     fn step_inner(&mut self) -> Result<Vec<(u64, u32)>> {
         let mut out = vec![];
         // ---- 1. prefill: one chunk of the oldest waiting prompt in the lane
-        if let Some(&wid) = self.waiting.front() {
+        let decoding = self.seqs.values().any(|s| matches!(s.phase, Phase::Decode { .. }));
+        let rounds = DECODE_ROUNDS.load(std::sync::atomic::Ordering::Relaxed);
+        let prefill_due = self.cadence.due(!self.waiting.is_empty(), decoding, rounds);
+        if let Some(&wid) = self.waiting.front().filter(|_| prefill_due) {
             if self.lane != Some(wid) {
                 self.park_lane()?;
                 let (slot, done) = match &self.seqs[&wid].phase {
@@ -213,7 +249,10 @@ impl Runner<'_> {
             }
             let s = self.seqs.get_mut(&wid).unwrap();
             let Phase::Prefill { prompt, done } = &mut s.phase else { unreachable!() };
-            let end = (*done + self.chunk).min(prompt.len());
+            let override_chunk = CHUNK_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+            let idle_chunk = IDLE_CHUNK.load(std::sync::atomic::Ordering::Relaxed);
+            let chunk = if !decoding && idle_chunk > 0 { idle_chunk } else if override_chunk == 0 { self.chunk } else { override_chunk };
+            let end = (*done + chunk).min(prompt.len());
             let next = self.dec.prefill(&prompt[*done..end])?;
             s.fed.extend_from_slice(&prompt[*done..end]);
             *done = end;
@@ -337,4 +376,40 @@ impl Runner<'_> {
         sl.tokens = if parked { s.fed } else { vec![] };
     }
 
+}
+
+#[cfg(test)]
+mod cadence_tests {
+    use super::PrefillCadence;
+
+    #[test]
+    fn zero_preserves_prefill_every_step() {
+        let mut c = PrefillCadence::default();
+        for _ in 0..100 { assert!(c.due(true, true, 0)); }
+    }
+
+    #[test]
+    fn four_decode_rounds_leave_prefill_bounded() {
+        let mut c = PrefillCadence::default();
+        let due: Vec<_> = (0..100).filter(|_| c.due(true, true, 4)).collect();
+        assert_eq!(due, (0..100).step_by(5).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn prefill_runs_immediately_without_decoders() {
+        let mut c = PrefillCadence::default();
+        assert!(c.due(true, true, 64));
+        for _ in 0..100 { assert!(c.due(true, false, 64)); }
+        assert!(c.due(true, true, 64));
+    }
+
+    #[test]
+    fn removing_queue_or_disabling_rounds_clears_debt() {
+        let mut c = PrefillCadence::default();
+        assert!(c.due(true, true, 4));
+        assert!(!c.due(false, true, 4));
+        assert!(c.due(true, true, 4));
+        assert!(c.due(true, true, 0));
+        assert!(c.due(true, true, 4));
+    }
 }

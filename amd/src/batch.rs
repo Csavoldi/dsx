@@ -45,6 +45,9 @@ pub struct Batch {
     pub(crate) xl: Buf,
     pub(crate) logits: Buf,
     pub(crate) next: Buf,
+    pub(crate) sample_draws: Buf,
+    pub(crate) sample_next: Buf,
+    pub(crate) draft_logits: Option<Buf>,
     pub(crate) bad: Buf,
     /// graph-captured steps: pinned inputs, and the 16K-position bucket the indexer grid is sized for (0: exact)
     pub(crate) pin_rows: *mut u8,
@@ -52,6 +55,7 @@ pub struct Batch {
     pub(crate) gbucket: std::cell::Cell<usize>,
     /// split attention partials [token <= 128][10 splits][64 * 512 + 128] f32
     pub(crate) apart: Buf,
+    pub(crate) attn_fine: bool,
     /// multi-token steps: batch row of each token's previous position (-1: none), and the compressor state each
     /// token would leave, per ratio-2 KV-source layer [layer][token][2][HD] (committed for the accepted prefix)
     pub(crate) bprev: Buf,
@@ -95,6 +99,7 @@ impl Decoder {
         if std::env::var("DSXA_BBLAS").map(|v| v != "0").unwrap_or(true) {
             self.build_bdense()?;
         }
+        let attn_fine = std::env::var("DSXA_ATTN_FINE").as_deref() == Ok("1");
         let g = &self.g;
         let (mut rings, mut comp, mut idx, mut cst, mut rows) = (vec![], vec![], vec![], vec![], vec![]);
         for l in &self.layers {
@@ -132,11 +137,15 @@ impl Decoder {
             xl: g.alloc_zeroed(BMAX * D * 2)?,
             logits: g.alloc_zeroed(BMAX * VOCAB * 4)?,
             next: g.alloc_zeroed(BMAX * 4)?,
+            sample_draws: g.alloc_zeroed(BMAX * 32)?,
+            sample_next: g.alloc_zeroed(BMAX * 4)?,
+            draft_logits: if self.dspark.is_some() { Some(g.alloc(BMAX * VOCAB * 4)?) } else { None },
             bad: g.alloc_zeroed(4)?,
             pin_rows: g.host_alloc(BMAX * 2 * ENG_ROW_BYTES)?,
             pin_toks: g.host_alloc(BMAX * 4)?,
             gbucket: std::cell::Cell::new(0),
-            apart: g.alloc(128 * 10 * (NH * HD + 128) * 4)?,
+            apart: g.alloc(128 * if attn_fine {20} else {10} * (NH * HD + 128) * 4)?,
+            attn_fine,
             bprev: g.alloc_zeroed(BMAX * 4)?,
             stage: self.layers.iter().map(|l| if l.kv_src && l.ratio == 2 { g.alloc_zeroed(BMAX * 2 * HD * 4).ok() } else { None }).collect(),
             multi: false,
@@ -342,6 +351,11 @@ impl Decoder {
     /// [next, noise x (block-1)] per slot at its next positions, then the Markov head in order. Returns `block`
     /// drafted tokens per slot (the tokens after next).
     pub fn batch_draft(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32]) -> Result<Vec<Vec<u32>>> {
+        self.batch_draft_sampled(b, slots, nexts, None)
+    }
+
+    /// Optional sampled proposals retain their raw conditional logits for exact rejection.
+    pub fn batch_draft_sampled(&mut self, b: &mut Batch, slots: &[usize], nexts: &[u32], mut samplers: Option<&mut [Option<&mut dsx_core::server::sample::Sampler>]>) -> Result<Vec<Vec<u32>>> {
         let ds = self.dspark.as_ref().ok_or_else(|| anyhow::anyhow!("DSpark not loaded (DSXA_DSPARK=3)"))?;
         let (blk, noise, rank) = (ds.block, ds.noise, ds.rank);
         let (mh_w, me) = (ds.markov_head.w.ptr, ds.markov_embed.ptr);
@@ -376,10 +390,31 @@ impl Decoder {
         self.run_chunk_draft_b(&tk, b)?;
         // Markov head in order: row (slot i, block j) += markov(previous drafted token), argmax
         let g = &self.g;
+        let sampled = samplers.as_ref().is_some_and(|ss| ss.iter().any(Option::is_some));
         for j in 0..blk {
             let mj = crate::verify::VJob { w: mh_w, n: VOCAB as i32, k: rank as i32, fmt: 4, xb: me, rows: b.dtok.at(j * BMAX * 4), ldx: rank as i32, ntok: nb as i32, y: b.logits.at(j * VOCAB * 4), ldy: (blk * VOCAB) as i32, atomic: 1, mul: 1.0, split: 1, ..Default::default() };
             self.blaunch("dspark markov", vec![mj])?;
             g.launch("argmax_b", (nb as u32, 1, 1), 1024, 0, &[Arg::P(b.logits.at(j * VOCAB * 4)), Arg::I(VOCAB as i32), Arg::I((blk * VOCAB) as i32), Arg::P(b.dtok.at((j + 1) * BMAX * 4))])?;
+            if sampled {
+                #[derive(Clone, Copy, Default)]
+                #[repr(C)]
+                struct Draw { temperature: f32, active: i32, uniform: f64 }
+                let mut draws = vec![Draw::default(); nb];
+                for (i, sm) in samplers.as_deref_mut().unwrap().iter_mut().enumerate() {
+                    if let Some(sm) = sm.as_deref_mut() {
+                        draws[i] = Draw { temperature: sm.temperature, active: 1, uniform: sm.uniform_draw() };
+                    }
+                }
+                g.htod(b.sample_draws.ptr, &draws)?;
+                g.launch("sample_logits_stride_b", (nb as u32, 1, 1), 1024, 0,
+                    &[Arg::P(b.logits.at(j * VOCAB * 4)), Arg::I(VOCAB as i32), Arg::I((blk * VOCAB) as i32),
+                      Arg::P(b.sample_draws.ptr), Arg::P(b.dtok.at((j + 1) * BMAX * 4)), Arg::P(b.sample_next.ptr)])?;
+                g.dtod(b.dtok.at((j + 1) * BMAX * 4), b.sample_next.ptr, nb * 4)?;
+            }
+        }
+        if sampled {
+            let q = b.draft_logits.as_ref().ok_or_else(|| anyhow::anyhow!("sampled draft needs proposal-logit storage"))?;
+            g.dtod(q.ptr, b.logits.ptr, t * VOCAB * 4)?;
         }
         let v: Vec<i32> = g.dtoh(b.dtok.ptr, (blk + 1) * BMAX)?;
         Ok((0..nb).map(|i| (1..=blk).map(|j| v[j * BMAX + i] as u32).collect()).collect())
@@ -408,7 +443,13 @@ impl Decoder {
         let st = crate::ck::Ck::open(&wpath)?;
         let mut out = vec![];
         let mut total = 0usize;
+        let only = std::env::var("DSXA_BDENSE_ONLY").ok();
+        let skip = std::env::var("DSXA_BDENSE_SKIP").ok();
         let mut add = |dm: &crate::load::DMat, name: &str, out: &mut Vec<(u64, usize, usize, usize, Buf)>| -> Result<()> {
+            let matches = |list: &str| list.split(',').map(str::trim).any(|part| !part.is_empty() && name.contains(part));
+            if only.as_deref().is_some_and(|v| !matches(v)) || skip.as_deref().is_some_and(matches) {
+                return Ok(());
+            }
             let t = st.get(name)?;
             let raw = st.bytes(t);
             let (n, k) = (dm.n, dm.k);
@@ -452,6 +493,7 @@ impl Decoder {
         if self.head.sc.is_none() {
             add(&self.head, "head.weight", &mut out)?;
         }
+        anyhow::ensure!(!out.is_empty(), "BF16 dense filters matched no matrices");
         if self.blas.is_none() {
             self.blas = Some(crate::hip::blas::create(self.g.stream)?);
         }

@@ -34,9 +34,10 @@ pub struct Dspark {
 const LAYERS: usize = 3;
 const NE_D: usize = 128;
 
-/// DSXA_DSPARK=3 or 2: draft experts in the 3-bit or 2-bit codebook
+/// DSXA_DSPARK=4 preserves native MXFP4; 3 or 2 use lower-bit codebooks.
 pub fn bits_from_env() -> Option<i32> {
     match std::env::var("DSXA_DSPARK").ok()?.as_str() {
+        "4" => Some(E_FP4),
         "2" => Some(E_CB2),
         "" | "0" => None,
         _ => Some(E_CB3),
@@ -131,7 +132,8 @@ impl Dspark {
             ne: NE_D,
         };
         anyhow::ensure!(ds.targets.len() == 3 && ds.top_k <= 6 && ds.block + 1 <= 16, "unexpected DSpark config");
-        eprintln!("dspark: {} layers, block {}, experts {}: {:.1} s, {:.1} GB on device", LAYERS, ds.block, if fmt == E_CB3 { "3-bit" } else { "2-bit" }, t0.elapsed().as_secs_f32(), g.allocated.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9);
+        let (free, total) = g.mem_info()?;
+        eprintln!("dspark: {} layers, block {}, experts {}: {:.1} s, {:.1} GB live HBM used, {:.1} GB free", LAYERS, ds.block, match fmt { E_FP4 => "MXFP4", E_CB3 => "3-bit", _ => "2-bit" }, t0.elapsed().as_secs_f32(), (total - free) as f64 / 1e9, free as f64 / 1e9);
         Ok(ds)
     }
 }

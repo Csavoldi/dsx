@@ -269,6 +269,33 @@ extern "C" __global__ void __launch_bounds__(256) prep_t(int mode, const float* 
     }, oq + (size_t)r * n + c0, os + (size_t)r * (n / 32) + c0 / 32, ob ? ob + (size_t)r * n + c0 : nullptr, obq ? obq + (size_t)r * n + c0 : nullptr);
 }
 
+// Routed and shared SwiGLU rows share one launch. Each block retains prep_t's
+// exact row/slice arithmetic and write_act quantization.
+extern "C" __global__ void __launch_bounds__(256) prep_swiglu_pair_t(
+    int routed, const float* gate, const float* up, const float* weights,
+    uint8_t* codes, float* scales, uint16_t* bf, uint16_t* bq,
+    const float* shared_gate, const float* shared_up,
+    uint8_t* shared_codes, float* shared_scales, uint16_t* shared_bf, uint16_t* shared_bq,
+    float lim) {
+    int r = blockIdx.x;
+    const bool shared = r >= routed;
+    if (shared) {
+        r -= routed; gate = shared_gate; up = shared_up;
+        codes = shared_codes; scales = shared_scales; bf = shared_bf; bq = shared_bq;
+    }
+    const float w = shared ? 1.f : weights[r];
+    const int c0 = blockIdx.y * 1024, nc = min(1024, INTER - c0);
+    const float* x = gate + (size_t)r * INTER;
+    const float* x2 = up + (size_t)r * INTER;
+    write_act(nc, [&](int i) -> float {
+        i += c0;
+        const float g = fminf(x[i], lim), u = fminf(fmaxf(x2[i], -lim), lim);
+        return round_bf16(g / (1.f + expf(-g)) * u * w);
+    }, codes + (size_t)r * INTER + c0, scales + (size_t)r * (INTER / 32) + c0 / 32,
+       bf ? bf + (size_t)r * INTER + c0 : nullptr,
+       bq ? bq + (size_t)r * INTER + c0 : nullptr);
+}
+
 // RoPE on the last 64 dims of each head for a batch: x [T][heads][hd], position p0 + t (inverse: conjugate)
 extern "C" __global__ void rope_t(float* x, int heads, int hd, const float* freqs, int p0, int inverse) {
     P0_DEV(p0);

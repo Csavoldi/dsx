@@ -1730,3 +1730,7 @@ extern "C" __global__ void hc_mix_t(const float* pmix, HcArgs pa, const float* p
 }
 #include "verify.h"
 #include "batch.h"
+
+#include "sample.h"
+
+#include "reject.h"
