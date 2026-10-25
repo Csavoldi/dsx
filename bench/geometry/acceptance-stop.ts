@@ -25,6 +25,27 @@ export default function (pi: ExtensionAPI) {
       return true;
     } catch { return false; }
   }
+  function functionalFeedback(): string | undefined {
+    try {
+      const check=read("latest-check.json"), self=read("self-check.json"), current=hash();
+      if (check.judge_version!==judgeVersion || check.source_sha256!==current || self.source_sha256!==current || feedbackHash===current || check.pass) return;
+      const failures:string[]=[];
+      for (const phase of check.renderer?.phases ?? []) {
+        if (phase.max_dots===0) failures.push("No visible braille dots were rendered.");
+        const cert=phase.frame_certification;
+        if (judgeVersion>=7 && cert?.supported_full_frame) {
+          if (phase.typical_width_fraction>.95 || phase.typical_height_fraction>.95) failures.push("The solid reaches the terminal boundary; leave a clear visible margin.");
+          if (phase.typical_width_fraction<.2 || phase.typical_height_fraction<.2) failures.push("The solid is too small to occupy a substantial part of the terminal.");
+        }
+        if (cert?.supported_full_frame && cert.max_ghost_fraction>.015) failures.push("Dots from previous frames remain visible as the object moves.");
+        if (cert?.supported_full_frame && cert.shaded_frame_fraction<.2) failures.push("Visible face interiors do not show clearly differentiated shading.");
+      }
+      if (!failures.length) return;
+      feedbackHash=current;
+      const feedback="Functional acceptance check: "+[...new Set(failures)].join(" ")+" Repair these functional failures, self-check once, then finish. Do not polish unrelated appearance.";
+      return feedback;
+    } catch { return; }
+  }
   pi.on("tool_result", (event) => {
     let content = event.content;
     let normalized = false;
@@ -44,6 +65,13 @@ export default function (pi: ExtensionAPI) {
       }
     } catch { /* A missing artifact is not accepted. */ }
     if (ready()) return {content:[...content,{type:"text",text:message}]};
+    if (judgeVersion>=8) {
+      const feedback = functionalFeedback();
+      if (feedback) {
+        appendFileSync(join(root,"functional-feedback.jsonl"),JSON.stringify({time:Date.now()/1000,source_sha256:hash(),tool_call_id:event.toolCallId,delivery:"persisted-tool-result",text:feedback})+"\n");
+        return {content:[...content,{type:"text",text:feedback}]};
+      }
+    }
     if (normalized) return {content};
   });
   pi.on("tool_call", () => {
@@ -54,24 +82,8 @@ export default function (pi: ExtensionAPI) {
     const messages=payload.messages as Array<unknown> | undefined;
     if (!Array.isArray(messages)) return;
     if (ready()) return {...payload,tools:[],tool_choice:"none",messages:[...messages,{role:"user",content:message}]};
-    try {
-      const check=read("latest-check.json"), self=read("self-check.json"), current=hash();
-      if (check.judge_version!==judgeVersion || check.source_sha256!==current || self.source_sha256!==current || feedbackHash===current || check.pass) return;
-      const failures:string[]=[];
-      for (const phase of check.renderer?.phases ?? []) {
-        if (phase.max_dots===0) failures.push("No visible braille dots were rendered.");
-        const cert=phase.frame_certification;
-        if (judgeVersion>=7 && cert?.supported_full_frame) {
-          if (phase.typical_width_fraction>.95 || phase.typical_height_fraction>.95) failures.push("The solid reaches the terminal boundary; leave a clear visible margin.");
-          if (phase.typical_width_fraction<.2 || phase.typical_height_fraction<.2) failures.push("The solid is too small to occupy a substantial part of the terminal.");
-        }
-        if (cert?.supported_full_frame && cert.max_ghost_fraction>.015) failures.push("Dots from previous frames remain visible as the object moves.");
-        if (cert?.supported_full_frame && cert.shaded_frame_fraction<.2) failures.push("Visible face interiors do not show clearly differentiated shading.");
-      }
-      if (!failures.length) return;
-      feedbackHash=current;
-      const feedback="Functional acceptance check: "+[...new Set(failures)].join(" ")+" Repair these functional failures, self-check once, then finish. Do not polish unrelated appearance.";
-      return {...payload,messages:[...messages,{role:"user",content:feedback}]};
-    } catch { return; }
+    if (judgeVersion>=8) return; // Persist repair notes in tool results, not one-request payload edits.
+    const feedback = functionalFeedback();
+    if (feedback) return {...payload,messages:[...messages,{role:"user",content:feedback}]};
   });
 }

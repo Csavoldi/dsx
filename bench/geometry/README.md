@@ -93,3 +93,12 @@ version 8 opts into the additional mode and is selectable explicitly with
 `--acceptance-stop --judge-version 8`. Retrospective artifact certification must
 remain separate from the original agent timeout and completion result. Human
 review still checks geometry and centering that automated extents cannot prove.
+
+Version 8 delivers functional repair feedback through the tool-result hook, so
+Pi stores the note in conversation history. Earlier versions injected a user
+note into one provider payload; that note disappeared from the next payload,
+which could invalidate the cached prefix and force a full prompt replay. The
+legacy behavior remains available for existing comparisons. Version 8 records
+each delivered note in `functional-feedback.jsonl`; check it with
+`node bench/geometry/test-feedback.mjs`. Actual request histories and cache
+counters must still verify persistence and its latency effect in a live run.
