@@ -21,6 +21,8 @@ tags:
 
 # Nanbeige4.3-33B EXL3 2.5 bpw
 
+![Model parameters: 33.12B](https://img.shields.io/badge/model_parameters-33.12B-blue)
+
 This is [Nanbeige4.3-33B](https://huggingface.co/Nanbeige/Nanbeige4.3-33B), a dense reasoning model, with all 364 decoder projections quantized to **2.5 bits per weight** in the standard ExLlamaV3 trellis format. The token embedding and normalization weights remain BF16; the output head uses FP16 storage. The pack uses ExLlamaV3's `mul1` codebook and tensor layout.
 
 The quant was made from the original BF16 checkpoint. It is intended for GPU inference with ExLlamaV3 and for experiments with the DSX Rust and CUDA runner. The model remains a dense network: every decoder matrix participates in every generated token, so expert offloading strategies do not apply.
@@ -40,7 +42,7 @@ The quant was made from the original BF16 checkpoint. It is intended for GPU inf
 | Original maximum position setting | 524,288 tokens; usable context depends on the runtime and KV memory |
 | License | Apache 2.0, following the source checkpoint |
 
-This is a **33.12B-parameter** model. The Hub currently reports about 7.2B packed tensor elements; its counter does not reconstruct EXL3 weight shapes. The shard index records the exact underlying count as `metadata.total_parameters`.
+**Model parameters: 33,118,977,024 (33.12B).** This count matches the original checkpoint and is independently reconstructed from every EXL3 matrix shape. The Hub's automatic Safetensors sidebar currently counts about 7.2B stored elements because its parser does not expand EXL3 trellis tensors into logical weights. Other EXL3 packs show the same discrepancy. The [parameter audit](benchmarks/exl3-logical-parameter-audit.json) records the source comparison, and the shard index retains the exact count as `metadata.total_parameters`.
 
 The 2.5 bpw label describes decoder trellis data. The two large 16-bit vocabulary tables increase the total download and effective whole-model bitrate. Weight size alone does not determine VRAM use: KV cache, activations, temporary buffers, and the output-head implementation also consume memory.
 
@@ -113,7 +115,7 @@ python convert.py \
 
 ## Hub metadata compatibility
 
-The pack follows the upstream EXL3 tensor layout, shard index, and fractional `quantization_config.bits: 2.5` convention. The root configuration and detailed `quantization_config.json` agree. The Hub may warn that `bits` must be an integer; EXL3 supports fractional target bitrates, and the warning reflects the Hub schema. Neither that warning nor its packed-element parameter badge indicates a missing weight shard.
+The pack retains the upstream EXL3 tensor layout and shard index. Its complete quantization recipe remains in `quantization_config.json`, including the exact fractional target `bits: 2.5` and per-tensor precision. The optional `bits` field is omitted from root `config.json` because the Hub currently requires an integer there. ExLlamaV3 treats that root field as informational and loads precision from the stored tensors. No precision value was rounded, and no weight tensor was changed.
 
 Turboderp's [Qwen3-32B EXL3 pack](https://huggingface.co/turboderp/Qwen3-32B-exl3/tree/2.5bpw) likewise uses two shards. Reconstructing its trellis tensor shapes gives 32,762,123,264 parameters, matching the source checkpoint, versus 5,954,730,368 stored elements. The same shape audit gives 33,118,977,024 parameters for this pack, exactly matching its source. See [the audit receipt](benchmarks/exl3-logical-parameter-audit.json).
 
@@ -150,7 +152,7 @@ cd Nanbeige4.3-33B-EXL3-2.5bpw
 sha256sum -c SHA256SUMS
 ```
 
-The published model configuration and tokenizer come from the pinned source checkpoint. Quantization metadata is included in `config.json` and `quantization_config.json`. The model config records the fractional bitrate as `bits_per_weight: 2.5`; its integer-only `bits` field is omitted for Hugging Face parser compatibility. Tensor-level quantization metadata retains the exact rates.
+The model architecture and tokenizer come from the pinned source checkpoint. Quantization metadata is included in `config.json` and the complete `quantization_config.json`; the latter preserves the exact fractional bitrate and tensor-level rates.
 
 ## Credits and license
 

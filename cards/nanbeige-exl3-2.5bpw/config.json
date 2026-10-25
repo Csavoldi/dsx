@@ -43,7 +43,6 @@
             "cols": 512
         },
         "out_scales": "auto",
-        "codebook": "mul1",
-        "bits": 2.5
+        "codebook": "mul1"
     }
 }

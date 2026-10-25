@@ -120,7 +120,7 @@ The final prefetch configuration measured 2045.60 TPS for a cold 3968-token pref
 
 ## EXL3 packaging audit
 
-The published pack follows the upstream EXL3 tensor layout and two-shard convention. Root `config.json` and the detailed `quantization_config.json` both retain the canonical fractional `bits: 2.5`. A previous display workaround had renamed the root field to `bits_per_weight`; that deviation was removed. The Hub's integer-only warning and packed-element parameter count require EXL3 support in its metadata parser. Weight shards and checksums are unchanged.
+The published pack follows the upstream EXL3 tensor layout and two-shard convention. The optional root `quantization_config.bits` field is omitted to avoid the Hub's integer-only schema warning. The complete `quantization_config.json` retains the exact `bits: 2.5` recipe and per-tensor rates. ExLlamaV3 treats the omitted root value as informational, and its configuration class accepts its absence. No precision value was rounded; weight shards and checksums are unchanged. The card prominently displays the audited 33.12B count, while the Hub's automatic Safetensors sidebar still counts packed EXL3 storage elements.
 
 The [parameter audit](validation/nanbeige/exl3-logical-parameter-audit.json) reconstructs logical matrix sizes from EXL3 tile shapes and agrees exactly with both source checkpoints: 33,118,977,024 parameters for Nanbeige, and 32,762,123,264 for Turboderp's Qwen3-32B EXL3 example. Its stored tensor elements total about 5.95B despite the 32.76B logical parameter count. This is why multiplying or renaming stored tensor dimensions to change the Hub badge would misrepresent the file format.
 

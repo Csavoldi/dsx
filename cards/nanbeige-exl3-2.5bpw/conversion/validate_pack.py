@@ -59,8 +59,9 @@ if idx:
  assert idx['metadata'].get('total_parameters', weights+2*166912*7168+105*7168)==weights+2*166912*7168+105*7168
  assert idx['weight_map']=={name:p.name for name,(p,_,_) in tensors.items()}
 q=json.loads((root/'config.json').read_text())['quantization_config'];assert q['quant_method']=='exl3' and q['codebook']=='mul1'
-assert q['bits']==2.5, 'Retain upstream fractional EXL3 bits metadata'
+assert 'bits' not in q, 'Root config omits the optional fractional field for Hub compatibility'
 storage_q=json.loads((root/'quantization_config.json').read_text())
+assert storage_q['bits']==2.5, 'Retain exact upstream fractional bitrate in the detailed recipe'
 assert all(storage_q.get(k)==v for k,v in q.items()), 'Root and detailed EXL3 metadata disagree'
 manifest={'schema_version':1,'tensor_dtypes':{name:t['dtype'] for name,(_,_,t) in tensors.items() if name in ['lm_head.weight','model.embed_tokens.weight','model.norm.weight']},'tensor_count':len(tensors),'decoder_matrices':364,'decoder_weights':weights,'underlying_model_parameters':weights+2*166912*7168+105*7168,'decoder_trellis_bytes':coded_bytes,'decoder_bits_per_weight':coded_bytes*8/weights,'tensor_payload_bytes':total_payload,'model_shard_bytes':sum(x['bytes'] for x in shards.values()),'whole_model_effective_bits_per_weight':total_payload*8/(weights+2*166912*7168+105*7168),'checks':['all expected tensors present once','exact shapes and dtypes','contiguous offsets and exact payload sizes','finite rotation scales, norms, embedding and head','stock mul1 codebook markers','complete shard index','per-shard SHA256'],'shards':shards}
 (root/'validation.json').write_text(json.dumps(manifest,indent=2)+'\n')

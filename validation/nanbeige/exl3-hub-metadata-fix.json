@@ -1,0 +1,36 @@
+{
+  "repo_id": "lxe/Nanbeige4.3-33B-EXL3-2.5bpw",
+  "previous_commit": "c4354256b972e11badf28c6cd8c1ca74548a5be0",
+  "commit": "06099f0b9151e16e0d1ae0da704657e1d6176dc7",
+  "timestamp": "2026-10-25T20:55:32.211930+00:00",
+  "changes": [
+    "omit informational root quantization_config.bits; exact bits 2.5 retained in quantization_config.json",
+    "prominent audited 33.12B parameter badge and explanation of Hub packed-element counter",
+    "validator updated for root optional field omission"
+  ],
+  "compatibility_check": "Executed ExLlamaV3 1.6.4 Exl3Config class with omitted bits; quant_method exl3 and bits None accepted",
+  "logical_parameters": 33118977024,
+  "automatic_hub_count_before": 7201338368,
+  "weight_shards_changed": false,
+  "hub_sidebar_fixed": false,
+  "metadata_commit": "f45de1ea4d15d7b98bf2a5afe56d8626d857d7ad",
+  "verified_utc": "2026-10-25T20:56:58.558024+00:00",
+  "rendered_warning_absent": true,
+  "rendered_logical_parameter_badge": "33.12B",
+  "automatic_hub_count_after": 7201338368,
+  "public": true,
+  "weight_sha256": {
+    "model-00001-of-00002.safetensors": "8d663fe31391ae76badf8241c97be5b8ec9223646fb2329f6d2d0a848c15eacf",
+    "model-00002-of-00002.safetensors": "1c6a7f8a61dac5fb8af83b56ec370c31bab0d90ca066c5b7aef29e509188238d"
+  },
+  "full_local_pack_validation": "passed all tensor shapes, dtypes, finite checks, offsets, index, and SHA256 checks",
+  "root_bits_omitted": true,
+  "detailed_bits": 2.5,
+  "parameter_counter_limit": "Hub parser lacks EXL3 expansion and caps declared total_parameters at its computed packed-element count.",
+  "parser_source": "https://github.com/huggingface/huggingface.js/blob/main/packages/hub/src/lib/parse-safetensors-metadata.ts",
+  "comparison_examples": [
+    "https://huggingface.co/turboderp/Qwen3-32B-exl3/tree/2.5bpw",
+    "https://huggingface.co/Honkware/Qwen3-8B-exl3-4.5bpw",
+    "https://huggingface.co/MikeRoz/Artemis-v1.2-2.25bpw-h6-exl3"
+  ]
+}
