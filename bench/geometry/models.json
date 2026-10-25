@@ -1,0 +1,46 @@
+{
+  "providers": {
+    "dsx-cube": {
+      "baseUrl": "http://127.0.0.1:8986/v1",
+      "api": "openai-completions",
+      "apiKey": "none",
+      "authHeader": false,
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "maxTokensField": "max_tokens",
+        "requiresReasoningContentOnAssistantMessages": true,
+        "thinkingFormat": "deepseek",
+        "supportsReasoningEffort": true,
+        "supportsUsageInStreaming": true,
+        "supportsStrictMode": false
+      },
+      "models": [
+        {
+          "id": "deepseek-v4.1-flash",
+          "name": "DSX T16 \u00b7 dual RTX 3090 \u00b7 single-agent baseline",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 131072,
+          "maxTokens": 8192,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "high"
+          },
+          "samplingParams": {
+            "temperature": 1.0,
+            "top_p": 1.0
+          },
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    }
+  }
+}
