@@ -1,0 +1,210 @@
+{
+  "run": "reasoning10-d3-low-cube-01",
+  "comparison_eligible": false,
+  "excluded": {
+    "reason": "Proxy readiness accepted the prior owned listener after the new proxy failed to bind. Requests recovered from stale listener storage; numerical/task comparison excluded.",
+    "recovery": "recovered/provenance.json",
+    "implementation_observation": "Native score10 did not prevent300s timeout/no renderer;11615processed tokens across2requests."
+  },
+  "started": {
+    "wall": 1792902108.3929963,
+    "shape": "cube",
+    "arm": "reasoning10-defer-3",
+    "pane": "%212",
+    "contract_version": 4,
+    "reasoning": "low",
+    "seed_base": 2330695610370627,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "task_sha256": "5c0d6f06a651696b4be4408ba58561f5ded760c457050cfd4783dde56a9bb7aa",
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "timeout_s": 300,
+    "server_log": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/reasoning10-defer-3-01/serve.out",
+    "acceptance_stop": true,
+    "judge_version": 8,
+    "feedback_mode": "persisted-tool-result",
+    "normalize_capture_blanks": false,
+    "guidance_sha256": null,
+    "timed_out": true,
+    "agent_exit": 143,
+    "agent_wall_s": 300.04201650619507
+  },
+  "candidate_ready": {
+    "time": 1792902106.8287578,
+    "env": {
+      "DSX_T16_PAIR_GU": "1",
+      "DSX_LOOKUP_AUDIT": "1",
+      "DSX_RUNTIME_STATS": "1",
+      "DSX_ENGRAM_FP8": "0",
+      "DSX_GPU_SAMPLE": "1",
+      "DSX_ADAPT_STABLE": "1",
+      "DSX_ADAPT": "8",
+      "DSX_CPU_THREADS": "14",
+      "DSX_TOKEN_AUDIT": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/reasoning10-defer-3-01/raw-generations.jsonl",
+      "DSX_REASONING_SCORE": "10"
+    },
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "binary_sha256": "89950ca9f1e899f29f9826e8fa5560f318a65c84b870924ef937f545bd15e326",
+    "command": "env -u DSX_DEFER -u DSX_REASONING_SCORE DSX_T16_PAIR_GU=1 DSX_LOOKUP_AUDIT=1 DSX_RUNTIME_STATS=1 DSX_ENGRAM_FP8=0 DSX_GPU_SAMPLE=1 DSX_ADAPT_STABLE=1 DSX_ADAPT=8 DSX_CPU_THREADS=14 DSX_TOKEN_AUDIT=/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/reasoning10-defer-3-01/raw-generations.jsonl DSX_REASONING_SCORE=10 /home/lxe/ai/ds41/guard.sh gauntletserve 118 /home/lxe/ai/ds41/codex-gauntlet-20261024/reasoned-server/dsx-server --model /home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf --host 0.0.0.0 --port 8090 --ctx 131072 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 --arena-gb 110 --rank /home/lxe/ai/ds41/calib/rank.json --vision /home/lxe/ai/ds41/hf-t16/vision.safetensors --defer-rank 3 2>&1 | tee /home/lxe/ai/ds41/codex-gauntlet-20261024/windows/reasoning10-defer-3-01/serve.out",
+    "maximum_candidate_seconds": 1000
+  },
+  "postflight": {
+    "time": 1792902506.9519992,
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "server_pid": 138089,
+    "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+    "model_identity": [
+      251592261632,
+      154277358,
+      1792707596293851835
+    ],
+    "rapl_long_uw": "4095875000",
+    "restored": true
+  },
+  "recovery_provenance": {
+    "fault": "The new proxy failed to bind; readiness accepted the prior owned listener. These files were recovered by task-path, timestamp and seed from that stale listener.",
+    "files": [
+      {
+        "from": "/home/lxe/dsx-gauntlet-20261024/workflow-space-d3-off-octahedron-01/requests/023.request.json",
+        "to": "/home/lxe/dsx-gauntlet-20261024/reasoning10-d3-low-cube-01/recovered/requests/001.request.json",
+        "sha256": "93b2d7a7799c20442ed1216fc1db560b4ae9950ee59b41ef3f33c1b5e4f5265d"
+      },
+      {
+        "from": "/home/lxe/dsx-gauntlet-20261024/workflow-space-d3-off-octahedron-01/requests/023.response.sse",
+        "to": "/home/lxe/dsx-gauntlet-20261024/reasoning10-d3-low-cube-01/recovered/requests/001.response.sse",
+        "sha256": "99369c44ce041c9b3ed8ed38ab9ed652461e7b964a22d2f2d0fa5859d091d5b1"
+      },
+      {
+        "from": "/home/lxe/dsx-gauntlet-20261024/workflow-space-d3-off-octahedron-01/requests/023.events.jsonl",
+        "to": "/home/lxe/dsx-gauntlet-20261024/reasoning10-d3-low-cube-01/recovered/requests/001.events.jsonl",
+        "sha256": "af62c5da118edbc84853f933e2724bed18438e5556ea948870a9a60d98ebdce2"
+      },
+      {
+        "from": "/home/lxe/dsx-gauntlet-20261024/workflow-space-d3-off-octahedron-01/requests/023.metrics.json",
+        "to": "/home/lxe/dsx-gauntlet-20261024/reasoning10-d3-low-cube-01/recovered/requests/001.metrics.json",
+        "sha256": "997f05b344d1aa177d0bc6a380c4e0ca8ed5df06b964f1a1621a17b192df1198"
+      },
+      {
+        "from": "/home/lxe/dsx-gauntlet-20261024/workflow-space-d3-off-octahedron-01/requests/024.request.json",
+        "to": "/home/lxe/dsx-gauntlet-20261024/reasoning10-d3-low-cube-01/recovered/requests/002.request.json",
+        "sha256": "5df550a1189a1fc505142c6f21f3cfc6bcfb1692489faa180148be2efca57d0f"
+      },
+      {
+        "from": "/home/lxe/dsx-gauntlet-20261024/workflow-space-d3-off-octahedron-01/requests/024.response.sse",
+        "to": "/home/lxe/dsx-gauntlet-20261024/reasoning10-d3-low-cube-01/recovered/requests/002.response.sse",
+        "sha256": "98ed41efbef5be88182c2fcfb3cb844b5989e0fced9628e010fa85d84416f25f"
+      },
+      {
+        "from": "/home/lxe/dsx-gauntlet-20261024/workflow-space-d3-off-octahedron-01/requests/024.events.jsonl",
+        "to": "/home/lxe/dsx-gauntlet-20261024/reasoning10-d3-low-cube-01/recovered/requests/002.events.jsonl",
+        "sha256": "34af82936333b7235f49af2c3f5991e4691702b5d5b45ca935d44a0fab7a6f49"
+      },
+      {
+        "from": "/home/lxe/dsx-gauntlet-20261024/workflow-space-d3-off-octahedron-01/requests/024.metrics.json",
+        "to": "/home/lxe/dsx-gauntlet-20261024/reasoning10-d3-low-cube-01/recovered/requests/002.metrics.json",
+        "sha256": "1674e362f5205c3aa49eb9c6f349134bea4b50753d1014422848b2f98e3e4122"
+      }
+    ]
+  },
+  "first_prompt_exact_token_match": true,
+  "records": [
+    {
+      "metric": {
+        "number": 23,
+        "seed": 245489402430675,
+        "start": 1792902108.5969284,
+        "path": "/v1/chat/completions",
+        "request_bytes": 8080,
+        "message_count": 2,
+        "max_tokens": 8192,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "reasoning_effort": "low",
+        "stream": true,
+        "content_deltas": 0,
+        "tool_deltas": 38,
+        "reasoning_deltas": 6282,
+        "usage": {
+          "prompt_tokens": 2130,
+          "completion_tokens": 6347,
+          "total_tokens": 8477,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 2130
+        },
+        "status": 200,
+        "headers_s": 0.004130858927965164,
+        "response_id": "chatcmpl-6add83dc0000",
+        "first_reasoning_content_s": 5.2903400529176,
+        "first_delta_s": 5.2903400529176,
+        "first_tool_calls_s": 162.75068945100065,
+        "finish_reason": "tool_calls",
+        "elapsed_s": 164.0365852599498,
+        "end": 1792902272.6335144,
+        "delta_gap_p50_s": 0.024289372959174216,
+        "delta_gap_p99_s": 0.04864714201539755,
+        "delta_gap_max_s": 0.3187316450057551
+      },
+      "raw_processed_output_tokens": 6347,
+      "raw_output_tokens": 6348,
+      "raw_prompt_tokens": 2130
+    },
+    {
+      "metric": {
+        "number": 24,
+        "seed": 245489402430676,
+        "start": 1792902272.6528695,
+        "path": "/v1/chat/completions",
+        "request_bytes": 32847,
+        "message_count": 4,
+        "max_tokens": 8192,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "reasoning_effort": "low",
+        "stream": true,
+        "content_deltas": 0,
+        "tool_deltas": 746,
+        "reasoning_deltas": 4497,
+        "usage": null,
+        "status": 200,
+        "headers_s": 0.011383545934222639,
+        "response_id": "chatcmpl-6add84800001",
+        "first_reasoning_content_s": 0.8151446980191395,
+        "first_delta_s": 0.8151446980191395,
+        "first_tool_calls_s": 116.45340703497641,
+        "error": "BrokenPipeError(32, 'Broken pipe')",
+        "elapsed_s": 135.78140269394498,
+        "end": 1792902408.4342735,
+        "delta_gap_p50_s": 0.024832102935761213,
+        "delta_gap_p99_s": 0.05306041892617941,
+        "delta_gap_max_s": 0.33743840898387134
+      },
+      "raw_processed_output_tokens": 5268,
+      "raw_output_tokens": 5269,
+      "raw_prompt_tokens": 8570
+    }
+  ],
+  "total_processed_output_tokens": 11615,
+  "renderer_present": false,
+  "raw_sha256": {
+    "reasoning10-defer-3-01/raw-generations.jsonl": "0bb57447fab57e4fc0c38e5ec5a39ce123daeade2fbfaa5c9f625982e71c2cb6",
+    "reasoning10-d3-low-cube-01/proxy.log": "185a1b8d75e25f7af207d72c3ed5e9b23e0ac577e0da7559afb7520dbbea8a12",
+    "reasoning10-d3-low-cube-01/agent.jsonl": "01f710128e0da1568177b992ec46d45033edeb23c902ba95ab8ba7d5fbb31e43",
+    "reasoning10-recovered.ids": "31b71e3b1b7ebff9adf2cb031c6b43cb03943cef59124c4ae181ee2349d83e48"
+  },
+  "limit": "Recovered observations show native score instruction applied and generated thinking/tool output. The proxy ownership fault excludes causal task/performance comparisons. This pilot cannot establish a quantization regression."
+}

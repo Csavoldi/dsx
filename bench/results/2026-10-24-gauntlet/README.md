@@ -220,3 +220,40 @@ and never produced a first delta before the deadline. That changing prefix can
 force a full prefill because the engine retains only its latest prompt snapshot.
 Version 8 now attaches feedback to stored tool results to preserve history;
 actual request/token verification of the new path is the next validation step.
+
+## Persistent feedback and bounded reasoning trials
+
+The [exact prefix analysis and live feedback receipts](feedback-prefix-repair.json)
+confirm the transient-note problem. Dropping the old user note moves the shared
+prefix before the retained snapshot: the16,749-token request must prefill from0.
+Keeping that note would require only636new tokens. This comparison uses exact
+model tokenization and the cache restore rule; it is not a timed replay. Judge8
+now stores functional feedback in tool results. The live trial retains every
+observed note in subsequent requests. It still records cross-task prefix replay
+and24replayed tokens on the final octahedron request, so persistence does not
+imply that every request has zero replay.
+
+The [blank-cell normalization batch](workflow-space.json) and
+[compact-guidance/judge8 batch](workflow-v8-compact.json) both complete zero of
+three tasks within their180-second budgets. Their source and saved-output reviews
+identify concrete defects: lost shading, clipped or tiny shapes, invalid face
+connectivity, and a dot-grid indexing exception. The second batch combines
+several workflow changes and cannot isolate their individual effect. Decode
+rates remain about40–41tokens/s. No task-completion improvement is booked.
+
+A missing tmux pane exposed a cleanup bug after the first batch: the owned proxy
+was left listening, and a subsequent native-score10 pilot sent its requests
+through that listener. New runs verify proxy root/PID/nonce and always terminate
+their owned proxy even if pane cleanup fails. Run summaries exclude requests
+started outside the agent lifetime while retaining late endings of owned
+requests. The two misplaced requests are preserved and recovered in the
+[native-score10 receipt](native-score10-recovered.json), with exact prompt-token
+matching to the candidate engine audit. That pilot is excluded from comparisons;
+its300-second timeout and11,615processed tokens without a renderer remain useful
+negative observations about score10 alone.
+
+`DSX_THINKING_BUDGET` adds an optional hard limit on thinking tokens. Forcing the
+thinking-close token intentionally changes generation and needs task-quality
+validation; it is disabled by default. Forced positions and original samples are
+recorded in the token audit. A shorter thought stream by itself does not count as
+a successful coding task.
