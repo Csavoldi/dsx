@@ -1,0 +1,33 @@
+{
+  "original": {
+    "tokens": 7365,
+    "prompt_bytes": 27577,
+    "tokenizer": "GGUF dsx.tokenizer_json",
+    "template": "DeepseekV41Encoding"
+  },
+  "normalized": {
+    "tokens": 5855,
+    "prompt_bytes": 21229,
+    "tokenizer": "GGUF dsx.tokenizer_json",
+    "template": "DeepseekV41Encoding"
+  },
+  "tokens_saved": 1510,
+  "percent_prompt_tokens_saved": 20.502376103190766,
+  "changes": [
+    {
+      "message": 7,
+      "blank_cells": 3174,
+      "characters": 3552,
+      "columns_and_nonblank_dots_unchanged": true
+    }
+  ],
+  "raw_sha256": {
+    "original.encode.json": "5d7e61b01c3f800eb2b01266d4b91163fa1151bf09eb627ffd97b66caa642b06",
+    "normalized.encode.json": "deb040ab2e6890110bece0ce9f266f72eb087c5dcf38f11109c5fa78556023e6",
+    "normalized.ids": "38da4a292c56d6755bba4467ade6bfece3cc5a28404087eaa474cf737030800c",
+    "normalized.request.json": "14bad21674326d05b9cf7c7251e7763e152b18494ccd7337198ab865f9e89ca0",
+    "original.ids": "f3ba8d0df37671480bfe3e9315395267bbf5a61e2f8135bf0d31cdd45d2915e5",
+    "original.request.json": "49a9b538fa1b101bbf34e14c955b5ed18b0b169b37754dfc8fd61bef1af1b446"
+  },
+  "limit": "CPU-only tokenization of a saved successful-task capture; no measured prefill latency or completion-quality gain. The opt-in live workflow must be tested separately."
+}

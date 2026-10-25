@@ -117,3 +117,45 @@ These are conditional estimates, not measured speculative acceptance, delivered
 speedups, or upper bounds for another drafter, cache policy or verifier. They do
 not justify implementing GPU speculation ahead of the prefill and workflow
 experiments. `bench/geometry/analyze-lookup.py` reproduces this CPU-only analysis.
+
+## GPU1 streaming during prefill
+
+An off/on/on/off comparison tested `DSX_AUX_STREAM=1` on the x4 GPU while
+retaining its fixed resident experts. All four arms used the same binary,
+complete expert membership (1,240 main / 2,750 auxiliary), fixed adaptation,
+T16 weights, 14 CPU workers at 125 W, and the accepted GPU power caps. Each arm
+ran three rounds of a full 2,031-token prompt and 256-/64-token increments,
+followed by the same 64 forced decode tokens. Prefix construction was excluded
+from incremental timing. The first round and warm rounds are reported separately
+in the [complete receipt](aux-prefill-screen.json).
+
+| Warm path | Streaming off, tok/s | Streaming on, tok/s | Change |
+| --- | ---: | ---: | ---: |
+| Full 2,031-token prefill | 461.85 | 423.86 | −8.23% |
+| 256-token increment | 159.15 | 159.63 | +0.30% |
+| 64-token increment | 108.71 | 105.12 | −3.30% |
+| Forced decode after full prompt | 37.37 | 37.35 | −0.05% |
+| Forced decode after 256 increment | 37.69 | 37.37 | −0.85% |
+| Forced decode after 64 increment | 37.53 | 37.60 | +0.19% |
+
+This rejects the tested streaming split on this host. GPU1 continued computing
+its resident experts in both arms; the flag adds a share of experts copied from
+RAM for prefill. An idle fraction during decode does not establish spare
+capacity during prefill. The x4 link's theoretical transfer contribution did not
+translate into a gain. A bounded profile will distinguish copy, compute and
+scheduling costs before trying another split. No auxiliary adaptation or SSD
+expert storage was enabled. Fixed-cache/forced-token rates are not live agent
+performance, and changed prefill summation order also changed fingerprints and
+some subsequent routing counts. Stock binary, model metadata, original power,
+idle health and released lock were verified afterward.
+
+## Empty-cell capture normalization
+
+A CPU-only check of a saved successful cube follow-up replaced 3,174 U+2800
+empty Braille cells with ASCII spaces in its single captured-display tool result.
+All rows, columns, nonblank dots, other messages and request settings remained
+unchanged. The embedded GGUF tokenizer and serving template encoded **7,365 →
+5,855 prompt tokens**, saving **1,510 tokens (20.50%)**. [The receipt](capture-normalization-screen.json)
+binds both requests and token-ID files. This is a prompt-size measurement;
+prefill latency and completion-quality gains remain to be tested in the labeled
+live workflow. The raw capture is preserved.
