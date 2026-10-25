@@ -134,10 +134,11 @@ cache counters. This measures cache preservation, not coding quality or task
 completion, and setup latency is excluded from target comparisons.
 
 `--preserve-completion-prefix` is an opt-in judge8 completion experiment. After
-acceptance, it keeps the previous API tool definitions and `tool_choice=auto`
+acceptance, it keeps the previous system message, API tool definitions and `tool_choice=auto`
 while the agent's execution tools remain disabled and its tool-call guard blocks
 further execution. The final-summary instruction still asks for no tool calls.
-This preserves the native prompt's tool header; removing tools or choosing
+Pi also rebuilds its system prompt when tools are disabled, so both headers
+are preserved. Removing tools or choosing
 `none` removes that header in the current recipe and can force a full prefill.
 Thinking settings stay unchanged for the same reason. The option changes only
 the accepted artifact's final-summary request. It needs live cache and normal-exit

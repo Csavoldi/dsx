@@ -14,6 +14,7 @@ export default function (pi: ExtensionAPI) {
   let feedbackHash = "";
   const preserveCompletionPrefix = process.env.GAUNTLET_PRESERVE_COMPLETION_PREFIX === "1";
   let previousTools: unknown[] | undefined;
+  let previousSystem: unknown;
   function ready() {
     if (accepted) return true;
     try {
@@ -86,10 +87,15 @@ export default function (pi: ExtensionAPI) {
     const payload=event.payload as Record<string,unknown>;
     const messages=payload.messages as Array<unknown> | undefined;
     if (!Array.isArray(messages)) return;
-    if (preserveCompletionPrefix && !accepted && Array.isArray(payload.tools) && payload.tools.length) previousTools=structuredClone(payload.tools);
+    if (preserveCompletionPrefix && !accepted) {
+      if (Array.isArray(payload.tools) && payload.tools.length) previousTools=structuredClone(payload.tools);
+      const first=messages[0] as {role?:string} | undefined;
+      if (first?.role==="system" || first?.role==="developer") previousSystem=structuredClone(first);
+    }
     if (ready()) {
-      const preserve=preserveCompletionPrefix && judgeVersion>=8 && previousTools!==undefined;
-      return {...payload,tools:preserve ? previousTools : [],tool_choice:preserve ? "auto" : "none",messages:[...messages,{role:"user",content:message}]};
+      const preserve=preserveCompletionPrefix && judgeVersion>=8 && previousTools!==undefined && previousSystem!==undefined;
+      const history=preserve ? [previousSystem,...messages.slice(1)] : messages;
+      return {...payload,tools:preserve ? previousTools : [],tool_choice:preserve ? "auto" : "none",messages:[...history,{role:"user",content:message}]};
     }
     if (judgeVersion>=8) return; // Persist repair notes in tool results, not one-request payload edits.
     const feedback = functionalFeedback();
