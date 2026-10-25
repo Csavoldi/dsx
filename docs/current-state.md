@@ -215,3 +215,9 @@ The [October 24 optimization ledger](../bench/results/2026-10-24-gauntlet/DECISI
 links measured gains, rejected configurations, task failures and harness fixes.
 Experimental throughput results do not supersede the accepted serving configuration
 or establish improved coding completion.
+
+`oracle-bench --prefill-probe --rounds 2 --trace-path warm-prefill
+--trace-new-tokens 64` captures only the warm 64-token incremental prefill. Use 256
+for the other incremental probe; omitting the option preserves full-prompt
+capture. Prefix construction and subsequent decode remain outside the captured
+range. The option rejects sizes that do not match a probed interval.

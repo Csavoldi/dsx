@@ -42,6 +42,9 @@ struct Args {
     /// Optional Nsight range: "step"/"verifyN" with --rounds 1, or "warm-prefill" with --prefill-probe --rounds >= 2.
     #[arg(long)]
     trace_path: Option<String>,
+    /// Select the 64/256/full-prompt warm prefill range; default is the full prompt.
+    #[arg(long)]
+    trace_new_tokens: Option<usize>,
     /// Save the serial reference logits for a cross-placement comparison.
     #[arg(long)]
     dump_reference: Option<PathBuf>,
@@ -166,6 +169,11 @@ fn main() -> Result<()> {
         "decode trace capture requires one round; warm-prefill requires --prefill-probe and at least two rounds"
     );
     let ids = read_ids(&a.ids)?;
+    ensure!(a.trace_new_tokens.is_none() || a.trace_path.as_deref()==Some("warm-prefill"), "--trace-new-tokens requires --trace-path warm-prefill");
+    let trace_fresh=a.trace_new_tokens.unwrap_or(ids.len());
+    if a.trace_path.as_deref()==Some("warm-prefill") {
+        ensure!([ids.len(),256.min(ids.len()),64.min(ids.len())].contains(&trace_fresh), "trace size must match a probed full/256/64-token prefill");
+    }
     let forced = a.continuation.as_deref().map(read_ids).transpose()?;
     ensure!(
         forced.as_ref().is_none_or(|x| x.len() >= a.steps),
@@ -201,7 +209,7 @@ fn main() -> Result<()> {
                 let prefix = ids.len() - fresh;
                 if prefix > 0 { let _ = gm.prefill(&pb, &ids[..prefix])?; }
                 gm.g.sync()?;
-                let tracing = round == 1 && fresh == ids.len() && a.trace_path.as_deref() == Some("warm-prefill");
+                let tracing = round == 1 && fresh == trace_fresh && a.trace_path.as_deref() == Some("warm-prefill");
                 if tracing {unsafe {dsx::gpu::check(cudarc::driver::sys::cuProfilerStart(), "cuProfilerStart")?;}}
                 let start = Instant::now();
                 let logits = gm.prefill(&pb, &ids[prefix..])?;
