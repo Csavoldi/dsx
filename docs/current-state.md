@@ -48,6 +48,7 @@ uses those values, `--main-gb=-1.5`, `--aux-gb=-1.0`, and no experimental enviro
 | `DSX_PREFILL_CPU` | enabled; `0` disables | CPU assistance for short chunks |
 | `DSX_PREFILL_CPU_MAX_N` | 512 | maximum chunk size eligible for CPU assistance |
 | `DSX_ADAPT` | 8 | maximum adaptive expert replacements per token; `0` fixes residency |
+| `DSX_REASONING_SCORE` | unset | experimental native thinking score 1–100; changes only the leading V4.1 reasoning header; thinking-off requests are unchanged |
 | `DSX_ADAPT_STABLE` | off; `1` enables | explicit layer/expert ordering for equal-score adaptive cache choices; experimental reproducibility control |
 | `DSX_T16_PAIR_GU` | off; `1` enables | experimental paired gate/up T16 launches; see [screening receipts](../bench/results/2026-10-24-gauntlet/README.md#paired-gateup-screening) |
 | `DSX_GPU_SAMPLE` | off; `1` enables | experimental GPU categorical sampling at temperature 1 and top-p at least 1, with zero hesitation penalty; other settings and non-finite logits use CPU sampling |
@@ -190,3 +191,11 @@ instrumented times are attribution evidence, not an untraced speed measurement.
 `bench/analyze_nsys.py --tokens N --token-kind input` labels amortized prefill
 activity per input token. The default normalization remains output tokens for
 existing decode traces.
+
+`DSX_REASONING_SCORE` is a prompt experiment, not a hard reasoning-token limit.
+The recipe currently maps low/high/max to 50/75/100. A lower native score may
+reduce planning cost, but its completion quality and latency require task tests.
+The override accepts only 1–100 and replaces only the template-generated leading
+header, preserving conversation text. With no override, prompt bytes are
+unchanged. `validation-encode` honors the same process-local override so saved
+requests can be encoded consistently with the serving window.

@@ -23,7 +23,8 @@ fn main() -> Result<()> {
     let conv = req
         .convert(ConversionOptions::default())
         .map_err(|e| anyhow!("request: {e:?}"))?;
-    let rendered = DeepseekV41Encoding::new().render_conversation(&conv.conversation);
+    let mut rendered = DeepseekV41Encoding::new().render_conversation(&conv.conversation);
+    rendered.prompt = dsx_core::server::reasoning::apply_score(rendered.prompt, conv.conversation.thinking_mode, std::env::var("DSX_REASONING_SCORE").ok().as_deref()).map_err(|e| anyhow!("reasoning score: {e:?}"))?;
     ensure!(
         rendered.image_sources.is_empty(),
         "text-only validation fixture required"

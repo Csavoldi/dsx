@@ -1,11 +1,12 @@
 //! OpenAI / Anthropic compatible HTTP API over one engine thread, built on DeepSeek's `deepseek-recipe` crates:
 //! request -> Conversation -> V4.1 prompt -> token ids -> engine -> token ids -> StreamProcessor -> protocol events.
-//! Text only: image inputs are rejected.
+//! Image inputs require a server configured with vision support.
 
 pub mod auth;
 pub mod engine;
 pub mod mock;
 pub mod sample;
+pub mod reasoning;
 pub mod webui;
 
 use std::pin::{Pin, pin};
@@ -301,9 +302,10 @@ fn hesitation_override(body: &[u8]) -> Option<f32> {
     serde_json::from_slice::<serde_json::Value>(body).ok()?.get("hesitation_penalty")?.as_f64().map(|v| v as f32)
 }
 
-/// Render + tokenize the conversation (V4.1 template). Rejects images.
+/// Render and tokenize the V4.1 conversation; image inputs require vision support.
 pub fn encode(st: &AppState, conv: &ConversationRequest) -> Result<(Vec<u32>, Vec<ImageInput>), ConversionError> {
-    let rendered = DeepseekV41Encoding::new().render_conversation(&conv.conversation);
+    let mut rendered = DeepseekV41Encoding::new().render_conversation(&conv.conversation);
+    rendered.prompt = reasoning::apply_score(rendered.prompt, conv.conversation.thinking_mode, std::env::var("DSX_REASONING_SCORE").ok().as_deref())?;
     if !rendered.image_sources.is_empty() && !st.cfg.vision {
         return Err(ConversionError::bad_request(format!(
             "this server was started without the vision weights (--vision); the request has {} image(s)",
