@@ -12,6 +12,8 @@ adoption; a faster forced continuation alone does not establish agent performanc
 | Rank-3 deferral | [Control](workflow-control.json) and [no-deferral](workflow-nodefer.json) both complete 0/3 short tasks; deferral runs decode around 40 tokens/s versus 35 without it | No completion-quality advantage established in either direction; preserve exact task defects and checker limitations |
 | Auxiliary prefill streaming, main weight 2 | [ABBA screen](aux-prefill-screen.json): warm full prompt 461.852→423.860 tokens/s, -8.226% | Reject on this x4 auxiliary link; [trace](aux-prefill-profile.json) shows extra peer traffic and main-GPU waiting |
 | Auxiliary prefill streaming, main weight 4 | [Matched ABBA screen](aux-prefill-w4-screen.json): 462.261→472.444 tokens/s, +2.203% for warm full prompts; incremental changes below 0.3% | Keep experimental; no demonstrated coding-completion gain |
+| Next-layer expert prefetch into GPU0 | [Historical negative result](../../../FINDINGS.md#9-negative-results): 37.4→28.3/20.7 tokens/s with deferral, despite reducing CPU work | Reject the old mechanism; a revival needs copy-engine use, prediction confidence and a measured SM/link/DRAM budget |
+| More aggressive deferral | [Historical rank-2/rank-1 tests](../../../FINDINGS.md#9-negative-results) add little throughput and worsen measured quality | Keep rank 3 for these pilots; current completion evidence does not justify stronger approximation |
 | GPU speculative decoding | [Causal copy replay](causal-lookup-replay.json) does not provide a useful successful-task acceptance/cost case; future-informed oracle throughput is only a ceiling | Do not implement a GPU drafter based on idle utilization alone; measure causal acceptance and total added cost first |
 | Blank Braille capture cells converted to spaces | [Tokenizer screen](capture-normalization-screen.json): 7,365→5,855 tokens with identical nonblank dots; [live batch](workflow-space.json) still 0/3 completions | Available workflow option; CPU token saving is not a measured completion gain |
 | Persistent functional feedback | [Exact prefix and live checks](feedback-prefix-repair.json): old disappearing note forces 16,749 tokens from 0; retained counterfactual requires 636 new tokens. Live notes remain in stored tool messages | Fix the harness history; [API replay](feedback-cache-api-replay.json) measures 20.489→3.539 seconds on this saved request. No whole-task speedup established |
@@ -38,3 +40,10 @@ Owned server windows restore the original executable, model identity, CPU power
 limit and idle health. Proxy ownership is checked before launching an agent;
 cleanup errors cannot bypass owned-proxy termination. Summaries exclude requests
 started outside the agent lifetime and explicitly list unfinished requests.
+
+The [incremental-prefill profiles](incremental-prefill-profile.json) measure
+substantial weight-copy and T16 dequantization costs for 64/256-token additions.
+GPU1 kernel busy fractions are about 59%/32% of those captures, so it already
+computes resident experts. A new fused prefill design needs measured wall-time
+and task-quality gains; the previous direct/int8 substitution was not faster
+and changed quality. Unmeasured gains remain zero.
