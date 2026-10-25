@@ -69,6 +69,12 @@ struct Args {
     /// Time full and incremental prefill at fixed residency, then a forced decode continuation.
     #[arg(long)]
     prefill_probe: bool,
+    /// Skip incremental cases when screening full-prompt throughput.
+    #[arg(long, requires="prefill_probe")]
+    prefill_full_only: bool,
+    /// Explicit new-token counts, including tiny increments for buffer-lifetime checks.
+    #[arg(long, requires="prefill_probe", conflicts_with="prefill_full_only", value_delimiter=',')]
+    prefill_new_tokens: Option<Vec<usize>>,
 }
 
 fn top(x: &[f32]) -> u32 {
@@ -201,8 +207,11 @@ fn main() -> Result<()> {
         emit(json!({"event":"prefill_residency","resident_experts":gm.validation_residency(),"adaptive":false,"limit":"Recorded before timing; compare full membership across arms."}));
         ensure!(std::env::var("DSX_ADAPT").is_ok_and(|v| v == "0"), "--prefill-probe requires DSX_ADAPT=0 for fixed residency");
         let continuation = forced.as_ref().ok_or_else(|| anyhow::anyhow!("--prefill-probe requires --continuation"))?;
-        let mut sizes = vec![ids.len(), 256.min(ids.len()), 64.min(ids.len())];
+        let mut sizes = a.prefill_new_tokens.clone().unwrap_or_else(|| vec![ids.len(), 256.min(ids.len()), 64.min(ids.len())]);
+        ensure!(!sizes.is_empty() && sizes.iter().all(|&n| n > 0 && n <= ids.len()), "prefill sizes must be 1..=prompt length");
+        if a.prefill_full_only { sizes.truncate(1); }
         sizes.dedup();
+        let mut reference_rows = Vec::new();
         for round in 0..a.rounds {
             for &fresh in &sizes {
                 gm.reset();
@@ -216,7 +225,8 @@ fn main() -> Result<()> {
                 gm.g.sync()?;
                 let elapsed = start.elapsed().as_secs_f64();
                 if tracing {unsafe {dsx::gpu::check(cudarc::driver::sys::cuProfilerStop(), "cuProfilerStop")?;}}
-                emit(json!({"event":"prefill_probe","profiled":tracing,"round":round,"prefix_tokens":prefix,"new_tokens":fresh,"elapsed_s":elapsed,"new_tok_s":fresh as f64/elapsed,"top1":top(&logits),"nonfinite_logits":logits.iter().filter(|v| !v.is_finite()).count(),"logit_fingerprint":hash_logits(&[logits])}));
+                emit(json!({"event":"prefill_probe","profiled":tracing,"round":round,"prefix_tokens":prefix,"new_tokens":fresh,"elapsed_s":elapsed,"new_tok_s":fresh as f64/elapsed,"top1":top(&logits),"nonfinite_logits":logits.iter().filter(|v| !v.is_finite()).count(),"logit_fingerprint":hash_logits(&[logits.clone()])}));
+                if round + 1 == a.rounds { reference_rows.push(logits); }
                 let picks = gm.cpu_picks();
                 let start = Instant::now();
                 let mut result = Vec::with_capacity(a.steps);
@@ -227,6 +237,7 @@ fn main() -> Result<()> {
                 emit(json!({"event":"prefill_decode_probe","round":round,"prefix_tokens":prefix,"new_tokens":fresh,"tokens":a.steps,"elapsed_s":elapsed,"tok_s":a.steps as f64/elapsed,"cpu_picks":after.1-picks.1,"routed_picks":after.0-picks.0,"logit_fingerprint":hash_logits(&result)}));
             }
         }
+        reference_io(&a, &reference_rows)?;
         emit(json!({"event":"done"}));
         return Ok(());
     }

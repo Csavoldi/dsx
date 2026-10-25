@@ -22,14 +22,44 @@ pub(crate) fn dq_kernel(k: &std::collections::HashMap<&'static str, crate::gpu::
 /// T16 experts in prefill: y = had(had(x * suh) @ W_inner) * svh, done on the activations around one GEMM.
 /// `x16` [nt][k] f16 (left as is unless `tx16` == `x16`), `tx16` scratch [nt][k], `y` [nt][n] f32.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn t16_linear(g: &crate::gpu::Gpu, k: &std::collections::HashMap<&'static str, crate::gpu::Kernel>, ty: i32, w: u64, x16: u64, tx16: u64, w16: u64, y: u64, nt: usize, kin: usize, nout: usize) -> Result<()> {
+pub(crate) fn t16_linear(g: &crate::gpu::Gpu, k: &std::collections::HashMap<&'static str, crate::gpu::Kernel>, ty: i32, w: u64, x16: u64, tx16: u64, w16: u64, y: u64, nt: usize, kin: usize, nout: usize, post: bool) -> Result<()> {
     let (gt, repacked) = if ty >= 2000 { (GType::from_id(ty as u32 - 2000)?, 1) } else { (GType::from_id(ty as u32)?, 0) };
     let k2 = crate::t16::k2(gt).unwrap();
     let tb = crate::t16::trellis_bytes(k2, kin, nout) as u64;
-    g.launch(k["t16_pre"], ((kin / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(x16), Arg::P(tx16), Arg::P(w + tb), Arg::I(kin as i32)])?;
-    g.launch(k["dequant_t16_f16"], ((kin as u32).div_ceil(512), (nout / 16) as u32, 1), 512, 0, &[Arg::I(k2 as i32), Arg::P(w), Arg::P(w16), Arg::I(nout as i32), Arg::I(kin as i32), Arg::I(repacked)])?;
+    if t16_warp_had() {
+        g.launch(k["t16_pre_warp"], (((kin / 128 * nt) as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(x16), Arg::P(tx16), Arg::P(w + tb), Arg::I(kin as i32), Arg::I(nt as i32)])?;
+    } else {
+        g.launch(k["t16_pre"], ((kin / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(x16), Arg::P(tx16), Arg::P(w + tb), Arg::I(kin as i32)])?;
+    }
+    g.launch(k[if t16_specialized_dq() { "dequant_t16_f16_specialized" } else { "dequant_t16_f16" }], ((kin as u32).div_ceil(512), (nout / 16) as u32, 1), 512, 0, &[Arg::I(k2 as i32), Arg::P(w), Arg::P(w16), Arg::I(nout as i32), Arg::I(kin as i32), Arg::I(repacked)])?;
     g.gemm_f16(tx16, w16, y, nt, kin, nout, nout)?;
-    g.launch(k["t16_post"], ((nout / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(y), Arg::P(w + tb + 2 * kin as u64), Arg::I(nout as i32), Arg::F(t16_gain(nout < kin, k2))])?;
+    if post && t16_warp_had() {
+        g.launch(k["t16_post_warp"], (((nout / 128 * nt) as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(y), Arg::P(w + tb + 2 * kin as u64), Arg::I(nout as i32), Arg::F(t16_gain(nout < kin, k2)), Arg::I(nt as i32)])?;
+    } else if post {
+        g.launch(k["t16_post"], ((nout / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(y), Arg::P(w + tb + 2 * kin as u64), Arg::I(nout as i32), Arg::F(t16_gain(nout < kin, k2))])?;
+    }
+    Ok(())
+}
+
+fn t16_warp_had() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("DSX_T16_WARP_HAD").is_ok_and(|v| v == "1"))
+}
+fn t16_specialized_dq() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("DSX_T16_SPECIALIZED_DQ").is_ok_and(|v| v == "1"))
+}
+fn t16_fused_post_gu() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("DSX_T16_FUSED_POST_GU").is_ok_and(|v| v == "1"))
+}
+/// Preserve diagnostic builds using an archived kernel image when new experiments are disabled.
+pub(crate) fn load_optional_kernels(g: &Gpu, k: &mut std::collections::HashMap<&'static str, crate::gpu::Kernel>) -> Result<()> {
+    if t16_warp_had() {
+        for name in ["t16_pre_warp", "t16_post_warp"] { k.insert(name, g.kernel(name)?); }
+    }
+    if t16_fused_post_gu() { k.insert("t16_post_gu_warp", g.kernel("t16_post_gu_warp")?); }
+    if t16_specialized_dq() { k.insert("dequant_t16_f16_specialized", g.kernel("dequant_t16_f16_specialized")?); }
     Ok(())
 }
 /// experiment: extra output gain on T16 matrices in prefill, per role and bits x 2, e.g. DSX_T16_GAIN=gu4=1.06,dn5=1.02
@@ -77,7 +107,7 @@ pub struct PrefillBufs {
     qr: Buf,
     q: Buf,
     kv: Buf,
-    o: Buf,
+    o: Option<Buf>,
     r: Buf,
     mix_a: Buf,
     mix_f: Buf,
@@ -96,7 +126,7 @@ pub struct PrefillBufs {
     compidx: Buf,
     keep: Buf,
     keep_tail: Buf,
-    tmp: Buf,
+    tmp: Option<Buf>,
     // experts
     gx16: Buf,
     /// T16: the gathered rows times one matrix's suh, Hadamard-transformed
@@ -159,6 +189,7 @@ impl AuxPrefill {
         for n in ["gather_h", "dequant_f16", "dequant_f16_iq8", "swiglu_rows_f16", "scatter_add", "fwht_rows_f16", "add_noise_rows", "dequant_t16_f16", "t16_pre", "t16_post"] {
             k.insert(n, g1.kernel(n)?);
         }
+        load_optional_kernels(g1, &mut k)?;
         Ok(AuxPrefill {
             x16: g1.alloc(tmax * d * 2)?,
             rows: g1.alloc(tmax * 8 * 4)?,
@@ -288,6 +319,10 @@ fn stream_main_weight() -> f64 {
 pub(crate) const SUB: usize = 256; // indexer queries per pass (bounds the [queries][positions] score matrix)
 
 impl PrefillBufs {
+    fn attn_out(&self) -> u64 { self.o.as_ref().map_or(self.q.ptr, |b| b.ptr) }
+    fn tmp_ptr(&self) -> u64 { self.tmp.as_ref().map_or(self.q.ptr, |b| b.ptr) }
+    fn tmp_bytes(&self) -> usize { self.tmp.as_ref().map_or(self.q.bytes, |b| b.bytes) }
+
     pub fn new(g: &Gpu, m: &Model, tmax: usize, max_ctx: usize) -> Result<PrefillBufs> {
         let c = &m.cfg;
         let tmax = tmax.max(1);
@@ -296,15 +331,18 @@ impl PrefillBufs {
         let max_in = hq.max(c.hc * c.dim).max(6144);
         let max_w = (32768 * 1280).max(c.dim * 8192).max(25600 * 6144).max(c.n_experts * c.dim);
         let nb = max_ctx / c.cand_block + 1;
+        let reuse = std::env::var("DSX_PREFILL_REUSE_BUFFERS").is_ok_and(|v| v == "1");
         Ok(PrefillBufs {
             tmax,
             h: f(tmax * c.hc * c.dim)?,
             x: f(tmax * c.dim)?,
             a: f(tmax * c.dim)?,
             qr: f(tmax * c.q_lora)?,
-            q: f(tmax * hq)?,
+            q: f(tmax * if reuse { hq.max(25600.max(c.n_experts)) } else { hq })?,
             kv: f(tmax * c.head_dim)?,
-            o: f(tmax * hq)?,
+            // Attention CTAs own disjoint token/head slices and load their Q into registers
+            // before writing O. Split-K small attention writes O only in its later merge kernel.
+            o: if reuse { None } else { Some(f(tmax * hq)?) },
             r: f(tmax * c.o_groups * c.o_lora)?,
             mix_a: f(tmax * 24)?,
             mix_f: f(tmax * 24)?,
@@ -323,7 +361,8 @@ impl PrefillBufs {
             compidx: g.alloc(tmax * c.idx_topk * 4)?,
             keep: g.alloc(SUB * nb)?,
             keep_tail: g.alloc((c.n_layers - 1 - c.cand_layer) * c.window * nb)?,
-            tmp: f(tmax * 25600.max(c.n_experts))?,
+            // Engram/router scratch is dead before attention Q is projected.
+            tmp: if reuse { None } else { Some(f(tmax * 25600.max(c.n_experts))?) },
             gx16: g.alloc(tmax * c.dim * 2)?,
             tx16: g.alloc(tmax * c.dim * 2)?,
             gg: f(tmax * c.inter)?,
@@ -448,20 +487,28 @@ impl GpuModel<'_> {
                 self.stage_expert(g, li, e, q.estage[b].ptr, q.ev_free[b], q.ev_ready[b])?
             }
         };
+        let fused_post = is_t16(gt) && t16_fused_post_gu();
         for (wp, yp) in [(gp, q.gg), (up, q.gu)] {
             if is_t16(gt) {
-                t16_linear(g, q.k, gt, wp, q.gx16, q.tx16, q.w16, yp, nt, d, inter)?;
+                t16_linear(g, q.k, gt, wp, q.gx16, q.tx16, q.w16, yp, nt, d, inter, !fused_post)?;
                 continue;
             }
             g.launch(dq_kernel(q.k, gt, d), dq_grid(gt, inter, d), 256, 0, &[Arg::I(gt), Arg::P(wp), Arg::P(0), Arg::P(q.w16), Arg::I(inter as i32), Arg::I(d as i32)])?;
             g.gemm_f16(q.gx16, q.w16, yp, nt, d, inter, inter)?;
         }
+        if fused_post {
+            let ty = if gt >= 2000 { gt - 2000 } else { gt };
+            let k2 = crate::t16::k2(GType::from_id(ty as u32)?).unwrap();
+            let scale = crate::t16::trellis_bytes(k2, d, inter) as u64 + 2 * d as u64;
+            g.launch(q.k["t16_post_gu_warp"], (((inter / 128 * nt) as u32).div_ceil(4), 1, 1), 128, 0, &[Arg::P(q.gg), Arg::P(q.gu), Arg::P(gp + scale), Arg::P(up + scale), Arg::P(w_p), Arg::P(q.h16), Arg::I(inter as i32), Arg::I(nt as i32), Arg::F(t16_gain(inter < d, k2)), Arg::F(c.swiglu_limit)])?;
+        } else {
         g.launch(q.k["swiglu_rows_f16"], ((inter as u32).div_ceil(256), nt as u32, 1), 256, 0, &[Arg::P(q.gg), Arg::P(q.gu), Arg::P(w_p), Arg::P(q.h16), Arg::I(inter as i32), Arg::F(c.swiglu_limit)])?;
+        }
         if rot {
             g.launch(q.k["fwht_rows_f16"], ((inter / 128) as u32, nt as u32, 1), 128, 0, &[Arg::P(q.h16), Arg::I(inter as i32)])?;
         }
         if is_t16(dt) {
-            t16_linear(g, q.k, dt, dp, q.h16, q.h16, q.w16, q.go, nt, inter, d)?;
+            t16_linear(g, q.k, dt, dp, q.h16, q.h16, q.w16, q.go, nt, inter, d, true)?;
         } else {
             g.launch(dq_kernel(q.k, dt, inter), dq_grid(dt, d, inter), 256, 0, &[Arg::I(dt), Arg::P(dp), Arg::P(0), Arg::P(q.w16), Arg::I(d as i32), Arg::I(inter as i32)])?;
             g.gemm_f16(q.h16, q.w16, q.go, nt, inter, d, d)?;
@@ -512,8 +559,8 @@ impl GpuModel<'_> {
         let nx = n * cols;
         let mut xin = x;
         if act_fp8 {
-            g.launch(self.k["fake_fp8_copy"], ((nx as u32 / 32).div_ceil(8), 1, 1), 256, 0, &[Arg::P(x), Arg::P(pb.tmp.ptr), Arg::I(nx as i32)])?;
-            xin = pb.tmp.ptr;
+            g.launch(self.k["fake_fp8_copy"], ((nx as u32 / 32).div_ceil(8), 1, 1), 256, 0, &[Arg::P(x), Arg::P(pb.tmp_ptr()), Arg::I(nx as i32)])?;
+            xin = pb.tmp_ptr();
         }
         g.launch(self.k["to_f16"], ((nx as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(xin), Arg::P(pb.act16.ptr), Arg::I(nx as i32)])?;
         g.launch(dq_kernel(&self.k, ty, cols), dq_grid(ty, rows, cols), 256, 0, &[Arg::I(ty), Arg::P(wp), Arg::P(sp), Arg::P(pb.w16.ptr), Arg::I(rows as i32), Arg::I(cols as i32)])?;
@@ -748,14 +795,17 @@ impl GpuModel<'_> {
         }
         let _ = p0;
         let t_gather = t_h.elapsed().as_secs_f64() - t_hash;
-        self.g.htod_sync(pb.o.ptr, &ebuf)?;
+        // Tiny GEMVs read their f32 source directly; unlike GEMM they do not pack it
+        // before writing the destination. Keep Engram input separate from shared Q/tmp.
+        let input = if pb.tmp.is_none() && tn <= crate::handoff::MAXT { pb.w16.ptr } else { pb.attn_out() };
+        self.g.htod_sync(input, &ebuf)?;
         if std::env::var_os("DSX_PROF").is_some() {
             eprintln!("engram L{li}: hash {:.0} ms, gather {:.0} ms, upload {:.0} ms", t_hash * 1e3, t_gather * 1e3, (t_h.elapsed().as_secs_f64() - t_hash - t_gather) * 1e3);
         }
         let l = &self.layers[li];
         let kvw = l.engram_kv.as_ref().unwrap();
-        self.gemm(pb, kvw, pb.o.ptr, pb.tmp.ptr, tn)?;
-        self.g.launch(self.k["engram_gate_t"], (c.hc as u32, tn as u32, 1), 1024, 0, &[Arg::P(pb.h.ptr), Arg::P(pb.tmp.ptr), Arg::P(l.engram_qk.as_ref().unwrap().ptr), Arg::I(c.dim as i32), Arg::F(c.eps)])
+        self.gemm(pb, kvw, input, pb.tmp_ptr(), tn)?;
+        self.g.launch(self.k["engram_gate_t"], (c.hc as u32, tn as u32, 1), 1024, 0, &[Arg::P(pb.h.ptr), Arg::P(pb.tmp_ptr()), Arg::P(l.engram_qk.as_ref().unwrap().ptr), Arg::I(c.dim as i32), Arg::F(c.eps)])
     }
 
     fn prefill_attention(&mut self, pb: &PrefillBufs, li: usize, r0: usize, n: usize, tn: usize, p0: usize) -> Result<()> {
@@ -770,8 +820,10 @@ impl GpuModel<'_> {
         let l = &self.layers[li];
         self.gemm(pb, &l.q_a, x, pb.qr.ptr, n)?;
         self.rms_rows(pb.qr.ptr, &l.q_a_norm, pb.qr.ptr, c.q_lora, n, true)?;
-        self.gemm(pb, &l.q_b, pb.qr.ptr, pb.q.ptr, n)?;
-        self.rope_rows(pb.q.ptr, nh, hd, compressed, posr, n, false)?;
+        if pb.tmp.is_some() {
+            self.gemm(pb, &l.q_b, pb.qr.ptr, pb.q.ptr, n)?;
+            self.rope_rows(pb.q.ptr, nh, hd, compressed, posr, n, false)?;
+        }
         self.gemm(pb, &l.kv, x, pb.kv.ptr, n)?;
         self.rms_rows(pb.kv.ptr, &l.kv_norm, pb.kv.ptr, hd, n, false)?;
         self.rope_rows(pb.kv.ptr, 1, hd, compressed, posr, n, false)?;
@@ -842,6 +894,13 @@ impl GpuModel<'_> {
             }
             kcomp = c.idx_topk;
         }
+        // Finish every scratch user before Q overwrites the shared buffer. Indexer
+        // queries use qr, so delaying q_b leaves their values and all equations unchanged.
+        if pb.tmp.is_none() {
+            let l = &self.layers[li];
+            self.gemm(pb, &l.q_b, pb.qr.ptr, pb.q.ptr, n)?;
+            self.rope_rows(pb.q.ptr, nh, hd, compressed, posr, n, false)?;
+        }
         let _ = tn;
         let l = &self.layers[li];
         let comp_ptr = if kcomp > 0 { self.layers[self.comp_src].comp_cache.as_ref().unwrap().ptr } else { 0 };
@@ -852,21 +911,21 @@ impl GpuModel<'_> {
         let tq = std::time::Instant::now();
         if n > 8 {
             // many queries: tensor-core kernel (5x the CUDA-core one at 4K tokens, same results to a bf16 step)
-            pb.attn_tc.launch(&self.g, pb.q.ptr, pb.wins.ptr, rowp(pb.winidx.ptr, w, 4), w, comp_ptr, cidx, kcomp, l.sinks.ptr, pb.o.ptr, n, nh, hd)?;
+            pb.attn_tc.launch(&self.g, pb.q.ptr, pb.wins.ptr, rowp(pb.winidx.ptr, w, 4), w, comp_ptr, cidx, kcomp, l.sinks.ptr, pb.attn_out(), n, nh, hd)?;
         } else {
-            self.sparse_attn_small(n, pb.q.ptr, pb.wins.ptr, rowp(pb.winidx.ptr, w, 4), w, comp_ptr, cidx, kcomp, l.sinks.ptr, pb.o.ptr)?;
+            self.sparse_attn_small(n, pb.q.ptr, pb.wins.ptr, rowp(pb.winidx.ptr, w, 4), w, comp_ptr, cidx, kcomp, l.sinks.ptr, pb.attn_out())?;
         }
         if self.prof.is_some() {
             self.g.sync()?;
             *self.prof.as_mut().unwrap().entry("prefill . sparse_attn kernel").or_default() += tq.elapsed().as_secs_f64();
         }
-        self.rope_rows(pb.o.ptr, nh, hd, compressed, posr, n, true)?;
-        self.fake_fp8(pb.o.ptr, n * nh * hd)?;
+        self.rope_rows(pb.attn_out(), nh, hd, compressed, posr, n, true)?;
+        self.fake_fp8(pb.attn_out(), n * nh * hd)?;
         // grouped output projection: group gi takes o[:, gi*gsz..] -> r[:, gi*olora..]; done as per-group GEMMs
         let gsz = nh * hd / c.o_groups;
         for gi in 0..c.o_groups {
             // gather the group's columns: o is [n][nh*hd]; GEMM with ld = nh*hd needs a strided input -> copy via to_f16 per row block
-            self.gemm_group(pb, &l.o_a, gi * c.o_lora, c.o_lora, gsz, pb.o.ptr + (gi * gsz * 4) as u64, nh * hd, pb.r.ptr + (gi * c.o_lora * 4) as u64, c.o_groups * c.o_lora, n)?;
+            self.gemm_group(pb, &l.o_a, gi * c.o_lora, c.o_lora, gsz, pb.attn_out() + (gi * gsz * 4) as u64, nh * hd, pb.r.ptr + (gi * c.o_lora * 4) as u64, c.o_groups * c.o_lora, n)?;
         }
         let nr = n * c.o_groups * c.o_lora;
         self.g.launch(self.k["round_bf16"], ((nr as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(pb.r.ptr), Arg::I(nr as i32)])?;
@@ -996,9 +1055,9 @@ impl GpuModel<'_> {
         // router (exact f32)
         // inputs are bf16-rounded, so bf16 x bf16 with f32 accumulation is exact
         self.g.launch(self.k["to_bf16"], (((n * d) as u32).div_ceil(256), 1, 1), 256, 0, &[Arg::P(x), Arg::P(pb.act16.ptr), Arg::I((n * d) as i32)])?;
-        self.g.gemm_bf16(pb.act16.ptr, l.gate_w.buf.ptr, pb.tmp.ptr, n, d, c.n_experts, c.n_experts)?;
+        self.g.gemm_bf16(pb.act16.ptr, l.gate_w.buf.ptr, pb.tmp_ptr(), n, d, c.n_experts, c.n_experts)?;
         let (sel_buf, wts_buf) = (pb.gg.ptr, pb.go.ptr); // [n][k] each; both free until the experts run
-        self.g.launch(self.k["router_topk"], (n as u32, 1, 1), 32, 0, &[Arg::P(pb.tmp.ptr), Arg::P(l.gate_bias.ptr), Arg::P(sel_buf), Arg::P(wts_buf), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
+        self.g.launch(self.k["router_topk"], (n as u32, 1, 1), 32, 0, &[Arg::P(pb.tmp_ptr()), Arg::P(l.gate_bias.ptr), Arg::P(sel_buf), Arg::P(wts_buf), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
         // tokens inside an image span select with the vision bias (model.py Gate: bias_vl)
         if let Some(bvl) = &l.gate_bias_vl {
             for &(lo, hi) in &self.img_rows {
@@ -1008,7 +1067,7 @@ impl GpuModel<'_> {
                 }
                 let t0 = a - r0;
                 let (ek, k4) = ((t0 * c.n_experts * 4) as u64, (t0 * c.top_k * 4) as u64);
-                self.g.launch(self.k["router_topk"], ((b - a) as u32, 1, 1), 32, 0, &[Arg::P(pb.tmp.ptr + ek), Arg::P(bvl.ptr), Arg::P(sel_buf + k4), Arg::P(wts_buf + k4), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
+                self.g.launch(self.k["router_topk"], ((b - a) as u32, 1, 1), 32, 0, &[Arg::P(pb.tmp_ptr() + ek), Arg::P(bvl.ptr), Arg::P(sel_buf + k4), Arg::P(wts_buf + k4), Arg::I(c.n_experts as i32), Arg::I(c.top_k as i32), Arg::F(c.route_scale), Arg::P(self.bonus_ptr(li))])?;
             }
         }
         let sel: Vec<i32> = self.g.download(sel_buf, n * c.top_k)?;
@@ -1108,7 +1167,7 @@ impl GpuModel<'_> {
         let (o_sel, o_wts) = (al(n * c.n_experts * 4), al(n * c.n_experts * 4) + al(n * k * 4));
         let (o_out, o_scr) = (o_wts + al(n * k * 4), o_wts + al(n * k * 4) + al(n * d * 4));
         let need = o_scr + crate::experts::T16Ptrs::bytes(PRE_DEV_TB * k, d, inter);
-        let (dev_spans, spans) = if !dev_spans.is_empty() && need > pb.tmp.bytes {
+        let (dev_spans, spans) = if !dev_spans.is_empty() && need > pb.tmp_bytes() {
             // no room in the scratch: everything through dequant + GEMM
             let mut all = spans;
             all.extend(dev_spans);
@@ -1185,7 +1244,7 @@ impl GpuModel<'_> {
             // picks of the other experts point at one that is not resident here, so the kernels skip them
             let sentinel = (0..c.n_experts).find(|&e| !s0.has(li, e)).unwrap_or(0) as i32;
             let sel_dev: Vec<i32> = sel.iter().map(|&e| if on_dev[e as usize] { e } else { sentinel }).collect();
-            let base = pb.tmp.ptr;
+            let base = pb.tmp_ptr();
             self.up(pb, base + o_sel as u64, &sel_dev)?;
             self.up(pb, base + o_wts as u64, &wts)?;
             for t0 in (0..n).step_by(PRE_DEV_TB) {
