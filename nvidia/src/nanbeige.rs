@@ -45,7 +45,7 @@ struct Trellis {
     kernels: [(Kernel,u32,usize);2],
 }
 fn exl3_geometry(g:&Gpu,bits2:usize,m:usize,k:usize,n:usize) -> Result<(Kernel,u32,usize)> {
-    let suffix=if bits2==5 && std::env::var_os("DSX_NB_EXL3_NARROW").is_some(){"_narrow"}else{""};
+    let suffix=if bits2==5 && m==1 && std::env::var_os("DSX_NB_EXL3_NARROW").is_some(){"_narrow"}else{""};
     let kernel=g.kernel(&format!("nb_exl3_sq{bits2}_m{m}{suffix}"))?;
     let bits=bits2/2; let stage=if bits2%2>0 || bits%2>0 {8*4*(if bits2%2>0 {8*bits2} else {16*bits})*4} else {0};
     let maxrows=(80*1024/(32+64*m)/8*8).min(512);
@@ -264,7 +264,7 @@ impl NvLinear {
                 }
             } else {
                 launch(g,"nb_exl3_pre",((t*self.k/128) as u32,1,1),128,&[Arg::P(x),Arg::P(tr.su),Arg::P(s.rot.ptr),Arg::I(self.k as i32)])?;
-                flat(g,"nb_exl3_dequant",self.m*self.k,&[Arg::P(self.w),Arg::P(s.weight.ptr),Arg::I(self.m as i32),Arg::I(self.k as i32),Arg::I(tr.bits2 as i32)])?;
+                flat(g,if tr.bits2==5{"nb_exl3_dequant5"}else{"nb_exl3_dequant"},self.m*self.k,&[Arg::P(self.w),Arg::P(s.weight.ptr),Arg::I(self.m as i32),Arg::I(self.k as i32),Arg::I(tr.bits2 as i32)])?;
                 g.gemm_bf16(s.rot.ptr,s.weight.ptr,y,t,self.k,self.m,self.m)?;
                 launch(g,"nb_exl3_post",((t*self.m/128) as u32,1,1),128,&[Arg::P(y),Arg::P(tr.sv),Arg::I(self.m as i32)])?;
             }
@@ -497,7 +497,7 @@ impl Nanbeige {
         let exl3=exl3_path.as_ref().map(|p|SafeTensors::open(p,&[])).transpose()?;
         if exl3.is_some() {
             ensure!(std::env::var_os("DSX_NB_W2").is_none(),"choose EXL3 or experimental W2");
-            let mut names:Vec<String>=["nb_exl3_bf2h","nb_exl3_dequant","nb_exl3_pre","nb_exl3_post"].into_iter().map(String::from).collect();
+            let mut names:Vec<String>=["nb_exl3_bf2h","nb_exl3_dequant","nb_exl3_dequant5","nb_exl3_pre","nb_exl3_post"].into_iter().map(String::from).collect();
             for bits in [2,3,4,5,6,7,8,10,12,16] {for m in [1,4] {names.push(format!("nb_exl3_sq{bits}_m{m}"));}}
             names.extend(["nb_exl3_sq5_m1_narrow".to_owned(),"nb_exl3_sq5_m4_narrow".to_owned()]);
             g.add_kernels(include_bytes!(concat!(env!("OUT_DIR"),"/nanbeige-exl3.fatbin")),&names)?;
@@ -1608,7 +1608,7 @@ pub fn benchmark_memory() -> Result<serde_json::Value> {
 /// Independent packed-bit/rotation check for the imported GPU-only EXL3 path.
 pub fn validate_exl3() -> Result<serde_json::Value> {
     let mut g=Gpu::new(0)?;
-    let mut names:Vec<String>=["nb_exl3_bf2h","nb_exl3_dequant","nb_exl3_pre","nb_exl3_post"].into_iter().map(String::from).collect();
+    let mut names:Vec<String>=["nb_exl3_bf2h","nb_exl3_dequant","nb_exl3_dequant5","nb_exl3_pre","nb_exl3_post"].into_iter().map(String::from).collect();
     for bits in [2,3,4,5,6,7,8,10,12,16] {for m in [1,4] {names.push(format!("nb_exl3_sq{bits}_m{m}"));}}
     names.extend(["nb_exl3_sq5_m1_narrow".to_owned(),"nb_exl3_sq5_m4_narrow".to_owned()]);
             g.add_kernels(include_bytes!(concat!(env!("OUT_DIR"),"/nanbeige-exl3.fatbin")),&names)?;
@@ -1624,7 +1624,7 @@ pub fn validate_exl3() -> Result<serde_json::Value> {
     let mut rows=vec![];
     for bits2 in [3usize,4,5,6,7,8] {
         let packed:Vec<u32>=(0..n*k*bits2/64).map(|_|rng()).collect();let wd=g.upload(&packed)?;
-        flat(&g,"nb_exl3_dequant",n*k,&[Arg::P(wd.ptr),Arg::P(weights.ptr),Arg::I(n as i32),Arg::I(k as i32),Arg::I(bits2 as i32)])?;
+        flat(&g,if bits2==5{"nb_exl3_dequant5"}else{"nb_exl3_dequant"},n*k,&[Arg::P(wd.ptr),Arg::P(weights.ptr),Arg::I(n as i32),Arg::I(k as i32),Arg::I(bits2 as i32)])?;
         let dequant:Vec<u16>=g.download(weights.ptr,n*k)?;
         let mut mismatch=0;
         for r in 0..n {for c in 0..k {
