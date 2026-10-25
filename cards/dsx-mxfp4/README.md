@@ -20,9 +20,9 @@ tags:
 
 # DeepSeek-V4.1-Flash-1017 · dsx MXFP4 + 3-bit
 
-DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in 270 GB, built to run entirely from the HBM of one AMD Instinct
-MI325X with exact routing. Most routed experts keep the checkpoint's own MXFP4 weights; the least-used ones get a fitted
-3-bit codebook. Runs on [**dsx**](https://github.com/lxe/dsx)'s AMD runner (`amd/`, Rust + HIP). For a desktop with NVIDIA GPUs, see
+DeepSeek-V4.1-Flash-1017 (552B MoE + 196B Engram) in 270 GB, built for one AMD Instinct MI325X with exact routing.
+The experts and dense weights run from HBM; the separate Engram table uses NVMe and the host page cache. Most routed
+experts keep the checkpoint's own MXFP4 weights; the least-used ones get a fitted 3-bit codebook. Runs on [**dsx**](https://github.com/lxe/dsx)'s AMD runner (`amd/`, Rust + HIP). For a desktop with NVIDIA GPUs, see
 [dsx-t16](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16).
 
 ## Which build
@@ -93,6 +93,27 @@ One MI325X (256 GiB HBM3E), greedy, exact routing.
 
 Long prompts slow down with length because the attention indexer scores every earlier compressed position.
 
+## Serving profiles
+
+The same six GGUF shards support both profiles. At load time, the runner can re-quantize additional cold MXFP4
+experts to 3-bit to leave room for drafts and concurrent sessions. **No new GGUF download or export is needed.**
+
+| Profile, one MI325X | Routed experts in HBM | Measured decode | Quality vs FP8 |
+|---|---|---|---|
+| Published build, single stream | 8,992 MXFP4 / 6,368 3-bit | 110–114 tokens/s at 4K–256K context | KL 0.049 / top-1 90.6% |
+| Coding profile, native MTP + prompt lookup | 3,378 MXFP4 / 11,982 3-bit; no 2-bit | 102–108 tokens/s per session in two four-session code replays | Earlier placement eval: top-256 KL 0.076–0.083 / top-1 ~88.3% |
+
+The coding profile also measured 246 decode tokens/s in a single-session code replay and about 61 per session
+with eight sessions (486 total). Measurements used temperature 0.1, top_p 1.0 and thinking off. They are short
+all-active decode windows, excluding prefill; earlier four-session trials reached as low as 88 tokens/s per
+session. The quality figures for this profile come from an earlier evaluation with the same expert placement,
+not a fresh evaluation of the final serving build. The published-build quality and speed tables above retain
+their original configuration.
+
+The coding profile target-verifies the checkpoint's native five-token MTP proposals, supports sampled requests,
+and favors decoding between prompt chunks. See the [AMD README](https://github.com/lxe/dsx/blob/main/amd/README.md)
+and [profile settings](https://github.com/lxe/dsx/blob/main/amd/box/AGENTIC_MI325X.md) for memory and scheduling details.
+
 ## Run
 
 ```bash
@@ -113,6 +134,25 @@ DSXA_WEIGHTS=../dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf
 
 Open `http://localhost:8090/` for the web UI, or point any OpenAI-compatible client at `http://localhost:8090/v1`.
 
+### Coding profile
+
+After the download and build above, run these commands from the `dsx` repository. The native draft stack also
+needs the official checkpoint's shards 44–46:
+
+```bash
+hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir ../v41-1017 \
+  --include model-00044-of-00048.safetensors model-00045-of-00048.safetensors model-00046-of-00048.safetensors
+
+DSX_MODEL_DIR="$PWD/../v41-1017" \
+DSXA_WEIGHTS="$PWD/../dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf" \
+DSX_RANK="$PWD/../dsx-mxfp4/expert-rank.json" \
+  bash amd/box/serve-agentic-mi325x.sh
+```
+
+This starts up to eight sessions with a 256K batch context budget, temperature 0.1 and top_p 1.0. API and admin
+services bind to loopback; use an SSH tunnel for a remote GPU. Set `"reasoning_effort": "none"` in OpenAI requests
+to match the thinking-off measurements. Budget additional disk space for the official MTP shards.
+
 ## Hardware
 
 | | |
@@ -123,7 +163,7 @@ Open `http://localhost:8090/` for the web UI, or point any OpenAI-compatible cli
 | Software | ROCm 7, Rust |
 
 Other AMD GPUs and smaller memory are not supported by this build. For NVIDIA desktops, use
-[dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud).
+[dsx-t16](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16).
 
 ## How it was made
 
