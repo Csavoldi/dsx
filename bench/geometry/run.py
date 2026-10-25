@@ -37,8 +37,16 @@ def cleanup_run(agent,proxy,pane,session,proxy_log,agent_log,root):
         proxy_log.close();agent_log.close()
         (root/'cleanup.json').write_text(json.dumps({'proxy_exit':proxy.returncode,'errors':errors},indent=2)+'\n')
 
+def metric_window(metrics, started):
+    """Bind records to the agent lifetime; retain late endings of owned requests."""
+    begin=started['wall']; finish=begin+started.get('agent_wall_s',float('inf'))
+    owned=[x for x in metrics if begin <= x['start'] <= finish]
+    return owned, [x for x in metrics if not begin <= x['start'] <= finish]
+
 def summarize(root):
     metrics=[json.loads(l) for l in (root/'request-metrics.jsonl').read_text().splitlines() if l.strip()]
+    started=json.loads((root/'started.json').read_text())
+    metrics,outside=metric_window(metrics,started)
     ends=[x for x in metrics if x['event']=='end']; tools=[]; errors=[]
     for path in (root/'sessions').glob('*.jsonl'):
         for line in path.read_text().splitlines():
@@ -70,6 +78,7 @@ def summarize(root):
             if pending: diagnostics[kv['id']]=pending
         pending={}
     result['server_request_count']=len(server)
+    result['outside_run_request_numbers']=sorted({x['number'] for x in outside})
     result['started_requests']=sum(x.get('event')=='start' for x in metrics)
     result['unfinished_requests']=result['started_requests']-len(ends)
     result['complete_server_counter_coverage']=len(server)==len(ends)

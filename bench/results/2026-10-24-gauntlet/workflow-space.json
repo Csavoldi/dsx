@@ -1,0 +1,593 @@
+{
+  "label": "workflow-space",
+  "deferral": "3",
+  "binary_sha256": "fe4c1f1b5e229c056384367dfe87c5b14f425fdb510b17e62994ae4d6f19e60f",
+  "runtime_env": {
+    "DSX_T16_PAIR_GU": "1",
+    "DSX_LOOKUP_AUDIT": "1",
+    "DSX_RUNTIME_STATS": "1",
+    "DSX_ENGRAM_FP8": "0",
+    "DSX_GPU_SAMPLE": "1",
+    "DSX_ADAPT_STABLE": "1",
+    "DSX_ADAPT": "8",
+    "DSX_CPU_THREADS": "14",
+    "DSX_TOKEN_AUDIT": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/workflow-space-defer-3-01/raw-generations.jsonl"
+  },
+  "trials": [
+    {
+      "run": "workflow-space-d3-off-cube-01",
+      "shape": "cube",
+      "wall_s": 182.91102743148804,
+      "generated": 6637,
+      "tool_calls": 6,
+      "tool_errors": 1,
+      "requests": 7,
+      "decode_tok_s": 40.58235092696766,
+      "new_prefill_tok_s": 540.2964818874622,
+      "prefill_ms": 19158,
+      "decode_ms": 163544,
+      "new_prompt_tokens": 10351,
+      "runtime_totals": {
+        "steps": 6636,
+        "gpu_samples": 6636,
+        "gpu_fallbacks": 0,
+        "sample_s": 0.006727836999999974,
+        "emit_s": 0.032863707000000034,
+        "step_s": 163.43511204999993,
+        "adapt_host_s": 1.7655899879999835,
+        "model_prefill_s": 19.158977032,
+        "snapshot_s": 0.002347262,
+        "prefix_replayed_tokens": 0,
+        "routed_picks": 1592640,
+        "cpu_picks": 310006
+      },
+      "timed_out": true,
+      "agent_exit": 143,
+      "automated_pass": false,
+      "functional_pass": false,
+      "successful_agent_exit": false,
+      "comparison_eligible": true,
+      "seed_base": 8916991550389027,
+      "unfinished_requests": 0,
+      "complete_server_counter_coverage": true,
+      "review": {
+        "pass": false,
+        "source_sha256": "a26abe1960b74efe60b7d9c7d568c7e15a4b2eac726b229cfd6c87b397a227b9",
+        "geometry": "Six quadrilateral cube faces and an interpolated per-dot depth buffer are present. The shade table builds only two rows of each four-row braille cell, producing horizontal stripes. The scale clips the rotating cube vertically at80x24.",
+        "display": "The saved frame has distinct dense/sparse regions but large horizontal gaps; automated80x24 margin/size check fails.",
+        "completion": "Timed out after182.911s; no reviewed successful completion.",
+        "limit": "Source, saved PTY and three-size automated review identify program defects. They do not prove inference-level cause or a quantization regression."
+      },
+      "judge_phases": [
+        {
+          "columns": 80,
+          "rows": 24,
+          "fps": 30.117812480909773,
+          "frames": 49,
+          "distinct_masks": 49,
+          "max_dots": 3694,
+          "typical_width_fraction": 0.7125,
+          "typical_height_fraction": 0.9583333333333334,
+          "frames_with_margin": 7,
+          "measured_extents": 46,
+          "median_cells": 1840,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.6956521739130435,
+            "frames": 46,
+            "pass": true,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 110,
+          "rows": 32,
+          "fps": 32.10297593756063,
+          "frames": 52,
+          "distinct_masks": 52,
+          "max_dots": 7377,
+          "typical_width_fraction": 0.6636363636363637,
+          "typical_height_fraction": 0.84375,
+          "frames_with_margin": 16,
+          "measured_extents": 49,
+          "median_cells": 3410,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.46938775510204084,
+            "frames": 49,
+            "pass": true,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": true
+        },
+        {
+          "columns": 45,
+          "rows": 15,
+          "fps": 31.78633571064018,
+          "frames": 51,
+          "distinct_masks": 51,
+          "max_dots": 3383,
+          "typical_width_fraction": 0.6666666666666666,
+          "typical_height_fraction": 0.9333333333333333,
+          "frames_with_margin": 20,
+          "measured_extents": 48,
+          "median_cells": 630,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.6875,
+            "frames": 48,
+            "pass": true,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": true
+        }
+      ],
+      "started": {
+        "wall": 1792901343.2579308,
+        "shape": "cube",
+        "arm": "workflow-space-defer-3",
+        "pane": "%209",
+        "contract_version": 4,
+        "reasoning": "off",
+        "seed_base": 8916991550389027,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "task_sha256": "e05fca9096b321142daddac66c7002145aeaebd2fd9c311b38bbd7cf726083d2",
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "timeout_s": 180,
+        "server_log": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/workflow-space-defer-3-01/serve.out",
+        "acceptance_stop": true,
+        "judge_version": 7,
+        "normalize_capture_blanks": true,
+        "guidance_sha256": null,
+        "timed_out": true,
+        "agent_exit": 143,
+        "agent_wall_s": 182.91102743148804
+      },
+      "raw_hashes": {
+        "summary.json": "4731ef6e0893e56babfa1d3b76b94a3584f141cc262f728d378af92485ce09a3",
+        "review.json": "d2a3a2b544fd1825d644178e2b4c3cdc03ed22775724af756379d4af74f1a6d0",
+        "final-judge.json": "bd37dfe6c533f9226adb40bee284049ef3bc18340581c711659eee7e86a12a21",
+        "TASK.md": "e05fca9096b321142daddac66c7002145aeaebd2fd9c311b38bbd7cf726083d2",
+        "workspace/render.py": "a26abe1960b74efe60b7d9c7d568c7e15a4b2eac726b229cfd6c87b397a227b9",
+        "request-metrics.jsonl": "490325772512c2d4a18095572af4504a08df56e007b0f9b25368a6881ed33b11",
+        "agent.jsonl": "1f3615fa1a9b4552fa7f8868adcf3026b625040df53492586fc960ac29ec2b09",
+        "server.log": "038ecdda7dfae1338f6aa2e67830b718aa59502e6b6d27c7902580907b1975f1"
+      },
+      "capture_normalization": null
+    },
+    {
+      "run": "workflow-space-d3-off-tetrahedron-01",
+      "shape": "tetrahedron",
+      "wall_s": 181.46478629112244,
+      "generated": 6494,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "requests": 11,
+      "decode_tok_s": 40.14539879576167,
+      "new_prefill_tok_s": 321.00074207569173,
+      "prefill_ms": 18866,
+      "decode_ms": 161762,
+      "new_prompt_tokens": 6056,
+      "runtime_totals": {
+        "steps": 6493,
+        "gpu_samples": 6493,
+        "gpu_fallbacks": 0,
+        "sample_s": 0.009254043000000057,
+        "emit_s": 0.033297228000000005,
+        "step_s": 161.67624779100015,
+        "adapt_host_s": 1.7863810029999674,
+        "model_prefill_s": 18.865974615,
+        "snapshot_s": 0.003767384,
+        "prefix_replayed_tokens": 831,
+        "routed_picks": 1558320,
+        "cpu_picks": 325287
+      },
+      "timed_out": true,
+      "agent_exit": 143,
+      "automated_pass": false,
+      "functional_pass": false,
+      "successful_agent_exit": false,
+      "comparison_eligible": true,
+      "seed_base": 5879041265990362,
+      "unfinished_requests": 0,
+      "complete_server_counter_coverage": true,
+      "review": {
+        "pass": false,
+        "source_sha256": "be6a6f78e4622641fcb50ae02b3314aa55ceebedc7b1ad119f4b112b0719494d",
+        "geometry": "Four triangular faces are present. Brightness values1..4 are all packed as the same nonzero coverage, discarding face shading. The braille bit table is permuted. Camera comments and culling sign also disagree.",
+        "display": "The saved frame is an unshaded triangular silhouette with horizontal gaps; all three size phases fail shading certification.",
+        "completion": "Timed out after181.465s; no reviewed successful completion.",
+        "limit": "Source, saved PTY and three-size automated review identify program defects. They do not prove inference-level cause or a quantization regression."
+      },
+      "judge_phases": [
+        {
+          "columns": 80,
+          "rows": 24,
+          "fps": 30.20147542297373,
+          "frames": 49,
+          "distinct_masks": 49,
+          "max_dots": 1914,
+          "typical_width_fraction": 0.3,
+          "typical_height_fraction": 0.625,
+          "frames_with_margin": 46,
+          "measured_extents": 46,
+          "median_cells": 212,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.0,
+            "frames": 46,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 110,
+          "rows": 32,
+          "fps": 31.442798785383935,
+          "frames": 51,
+          "distinct_masks": 51,
+          "max_dots": 3363,
+          "typical_width_fraction": 0.37272727272727274,
+          "typical_height_fraction": 0.53125,
+          "frames_with_margin": 48,
+          "measured_extents": 48,
+          "median_cells": 369,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.0,
+            "frames": 48,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 45,
+          "rows": 15,
+          "fps": 32.72485236645876,
+          "frames": 53,
+          "distinct_masks": 53,
+          "max_dots": 2119,
+          "typical_width_fraction": 0.4,
+          "typical_height_fraction": 0.6666666666666666,
+          "frames_with_margin": 50,
+          "measured_extents": 50,
+          "median_cells": 86,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.0,
+            "frames": 50,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        }
+      ],
+      "started": {
+        "wall": 1792901533.2796328,
+        "shape": "tetrahedron",
+        "arm": "workflow-space-defer-3",
+        "pane": "%210",
+        "contract_version": 4,
+        "reasoning": "off",
+        "seed_base": 5879041265990362,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "task_sha256": "860f07a1570f99eed4cae131b2784eb567f4f8b3a8d4c6670e43f616b1b06cbb",
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "timeout_s": 180,
+        "server_log": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/workflow-space-defer-3-01/serve.out",
+        "acceptance_stop": true,
+        "judge_version": 7,
+        "normalize_capture_blanks": true,
+        "guidance_sha256": null,
+        "timed_out": true,
+        "agent_exit": 143,
+        "agent_wall_s": 181.46478629112244
+      },
+      "raw_hashes": {
+        "summary.json": "54e151e511482817cd0740923e378abfc735c623194f2a0adf810eacfb0e87fb",
+        "review.json": "f3192c550817a6e56c8b5ba78f988f5596bd36f1ed677e9dbe0da37cbf5d0097",
+        "final-judge.json": "25217e5ff62bdc4ee722b8574ccaad35725647823f8bfc49d6a89e087784d05f",
+        "TASK.md": "860f07a1570f99eed4cae131b2784eb567f4f8b3a8d4c6670e43f616b1b06cbb",
+        "workspace/render.py": "be6a6f78e4622641fcb50ae02b3314aa55ceebedc7b1ad119f4b112b0719494d",
+        "request-metrics.jsonl": "e4cbb461bc2eec95f37544b7f6fa8195c6aa0994c8debac630010f519f42bf52",
+        "agent.jsonl": "dc4b658ee9d7c57f7b40b7056b14a0ec76380ede89d90760f706100d9130b7a7",
+        "server.log": "89ac30a5c0d166fa8ce6686ad3ce704e928a2d5ac4e624fe3ba5b0d30b560884"
+      },
+      "capture_normalization": null
+    },
+    {
+      "run": "workflow-space-d3-off-octahedron-01",
+      "shape": "octahedron",
+      "wall_s": 184.20267367362976,
+      "generated": 5708,
+      "tool_calls": 21,
+      "tool_errors": 2,
+      "requests": 22,
+      "decode_tok_s": 40.82537639022995,
+      "new_prefill_tok_s": 364.50618952375805,
+      "prefill_ms": 36998,
+      "decode_ms": 139815,
+      "new_prompt_tokens": 13486,
+      "runtime_totals": {
+        "steps": 5707,
+        "gpu_samples": 5707,
+        "gpu_fallbacks": 0,
+        "sample_s": 0.017178842000000073,
+        "emit_s": 0.028037899999999963,
+        "step_s": 139.73384912799992,
+        "adapt_host_s": 1.5134359720000687,
+        "model_prefill_s": 36.997605053,
+        "snapshot_s": 0.009011857,
+        "prefix_replayed_tokens": 899,
+        "routed_picks": 1369680,
+        "cpu_picks": 262359
+      },
+      "timed_out": true,
+      "agent_exit": 143,
+      "automated_pass": false,
+      "functional_pass": false,
+      "successful_agent_exit": false,
+      "comparison_eligible": true,
+      "seed_base": 245489402430652,
+      "unfinished_requests": 0,
+      "complete_server_counter_coverage": true,
+      "review": {
+        "pass": false,
+        "source_sha256": "3b97d7b055c373178d98569e2d511a72a3cec59a2a12a07d7d1b59a3b73e003b",
+        "geometry": "The face list uses only vertex indices2..5, leaving both X-axis vertices unused and containing degenerate/repeated faces. It appends an ASCII shade character before each braille cell, increasing row widths and causing wrapping.",
+        "display": "Saved output consists of scattered/wrapped strips rather than a coherent octahedron. All three phases fail.",
+        "completion": "Timed out after184.203s; no reviewed successful completion.",
+        "limit": "Source, saved PTY and three-size automated review identify program defects. They do not prove inference-level cause or a quantization regression."
+      },
+      "judge_phases": [
+        {
+          "columns": 80,
+          "rows": 24,
+          "fps": 30.18265682651918,
+          "frames": 49,
+          "distinct_masks": 49,
+          "max_dots": 3741,
+          "typical_width_fraction": 1.0,
+          "typical_height_fraction": 0.8333333333333334,
+          "frames_with_margin": 11,
+          "measured_extents": 46,
+          "median_cells": 405,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.13003095975232198,
+            "shaded_frame_fraction": 0.0,
+            "frames": 46,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 110,
+          "rows": 32,
+          "fps": 31.412768918017893,
+          "frames": 51,
+          "distinct_masks": 51,
+          "max_dots": 6421,
+          "typical_width_fraction": 0.39090909090909093,
+          "typical_height_fraction": 0.84375,
+          "frames_with_margin": 17,
+          "measured_extents": 48,
+          "median_cells": 434,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0970873786407767,
+            "shaded_frame_fraction": 0.0,
+            "frames": 48,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 45,
+          "rows": 15,
+          "fps": 32.8489048723135,
+          "frames": 53,
+          "distinct_masks": 53,
+          "max_dots": 4699,
+          "typical_width_fraction": 1.0,
+          "typical_height_fraction": 0.8666666666666667,
+          "frames_with_margin": 2,
+          "measured_extents": 50,
+          "median_cells": 168,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.038461538461538464,
+            "shaded_frame_fraction": 0.0,
+            "frames": 50,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        }
+      ],
+      "started": {
+        "wall": 1792901721.2878864,
+        "shape": "octahedron",
+        "arm": "workflow-space-defer-3",
+        "pane": "%211",
+        "contract_version": 4,
+        "reasoning": "off",
+        "seed_base": 245489402430652,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "task_sha256": "fdd47329c47c691427c79054236d0beb82f8b992575d220883450909da6286fe",
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "timeout_s": 180,
+        "server_log": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/workflow-space-defer-3-01/serve.out",
+        "acceptance_stop": true,
+        "judge_version": 7,
+        "feedback_mode": "ephemeral-user",
+        "normalize_capture_blanks": true,
+        "guidance_sha256": null,
+        "timed_out": true,
+        "agent_exit": 143,
+        "agent_wall_s": 184.20267367362976
+      },
+      "raw_hashes": {
+        "summary.json": "884f237b6de688fdc9d3b3a7bc304b3fc78cd69c5585e7ed6509c91bb1ff13d0",
+        "review.json": "9c71897a7d7566cef665d0f92b28649719b4572011472fa8dff2eb3bdad94646",
+        "final-judge.json": "921af42bec87457e5c0efa91cd110c1852bd7fe6b2d8b3d30d9039846ca2e774",
+        "TASK.md": "fdd47329c47c691427c79054236d0beb82f8b992575d220883450909da6286fe",
+        "workspace/render.py": "3b97d7b055c373178d98569e2d511a72a3cec59a2a12a07d7d1b59a3b73e003b",
+        "request-metrics.jsonl": "654fcaa3f01f939fbc71555a52aa5ed6e236c6dc4a27b7fe89de00436bb08bc5",
+        "agent.jsonl": "b44efe91bc5065e0bd3e9cc60dfea2e1f15fe60609624ac2a8f923cb39defc4a",
+        "server.log": "84ab690aef4c724c13126103324e84a865ecc124bee54bfa625fe81ba0440761"
+      },
+      "capture_normalization": null
+    }
+  ],
+  "reviewed_completions": 0,
+  "total_tasks": 3,
+  "token_audit": {
+    "raw_sha256": "09929c316d175d4557e4a1239cb11ec6c7ef78e07b6ec97f6bb0ecc3a08bd0bd",
+    "records": 40,
+    "rows": [
+      {
+        "run": "workflow-space-d3-off-cube-01",
+        "requests": 7,
+        "started_requests": 7,
+        "outside_run_requests": [],
+        "unaudited_unfinished_requests": [],
+        "all_started_requests_audited": true,
+        "fresh_seeds": true,
+        "raw_processed_output_tokens": 6636,
+        "engine_generated": 6637,
+        "engine_minus_processed": 1,
+        "engine_count_within_sampled_bounds": true,
+        "extra_sampled_stopping_tokens": 7,
+        "prefix_replayed_tokens": 0,
+        "errors": []
+      },
+      {
+        "run": "workflow-space-d3-off-tetrahedron-01",
+        "requests": 11,
+        "started_requests": 11,
+        "outside_run_requests": [],
+        "unaudited_unfinished_requests": [],
+        "all_started_requests_audited": true,
+        "fresh_seeds": true,
+        "raw_processed_output_tokens": 6493,
+        "engine_generated": 6494,
+        "engine_minus_processed": 1,
+        "engine_count_within_sampled_bounds": true,
+        "extra_sampled_stopping_tokens": 11,
+        "prefix_replayed_tokens": 831,
+        "errors": []
+      },
+      {
+        "run": "workflow-space-d3-off-octahedron-01",
+        "requests": 22,
+        "started_requests": 22,
+        "outside_run_requests": [
+          "023.request.json",
+          "024.request.json"
+        ],
+        "unaudited_unfinished_requests": [],
+        "all_started_requests_audited": true,
+        "fresh_seeds": true,
+        "raw_processed_output_tokens": 5707,
+        "engine_generated": 5708,
+        "engine_minus_processed": 1,
+        "engine_count_within_sampled_bounds": true,
+        "extra_sampled_stopping_tokens": 22,
+        "prefix_replayed_tokens": 899,
+        "errors": []
+      }
+    ],
+    "postflight": {
+      "time": 1792902003.244609,
+      "health": {
+        "status": "ok",
+        "model": "deepseek-v4.1-flash",
+        "pending": 0
+      },
+      "server_pid": 4117949,
+      "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+      "model_identity": [
+        251592261632,
+        154277358,
+        1792707596293851835
+      ],
+      "rapl_long_uw": "4095875000",
+      "restored": true
+    },
+    "limit": "Raw IDs include an unprocessed stopping token; processed counts match measured model steps. Engine-generated counters count emitted tokens and may include a final cancelled token not processed into KV. Only completed client requests are reconciled; unfinished requests are listed separately without inventing missing engine counters. Request histories are text-only. Residency is recorded at request boundaries; within-request swaps need diagnostic tracing."
+  },
+  "postflight": {
+    "time": 1792902003.244609,
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "server_pid": 4117949,
+    "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+    "model_identity": [
+      251592261632,
+      154277358,
+      1792707596293851835
+    ],
+    "rapl_long_uw": "4095875000",
+    "restored": true
+  },
+  "peak_cpu_c": 85.0,
+  "limits": [
+    "Fresh request seeds and generated solutions differ; small groups are pilot evidence.",
+    "Each task has a180-second budget; workflow-space uses judge7, workflow-v8-compact uses judge8 with persistent tool feedback, compact guidance and blank-cell normalization. This is a composite workflow pilot, not an isolated causal comparison.",
+    "Source/display reviews are necessary; automated certification does not prove correct geometry or occlusion.",
+    "Cleanup failed after the final agent stopped; the owned proxy leaked. Two later native-score requests landed in its files. They are preserved but excluded by start time; octahedron own request count remains22. Controller restored stock serving; run cleanup status is failure."
+  ],
+  "controller_completion": {
+    "time": 1792902003.6394765,
+    "returncode": 1,
+    "postflight": {
+      "time": 1792902003.244609,
+      "health": {
+        "status": "ok",
+        "model": "deepseek-v4.1-flash",
+        "pending": 0
+      },
+      "server_pid": 4117949,
+      "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+      "model_identity": [
+        251592261632,
+        154277358,
+        1792707596293851835
+      ],
+      "rapl_long_uw": "4095875000",
+      "restored": true
+    },
+    "original_controller_returncode": 0,
+    "trial_error": "Runner cleanup failed after completed summaries; corrected status after inspection."
+  }
+}

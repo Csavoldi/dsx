@@ -19,6 +19,11 @@ class ProxyOwnership(unittest.TestCase):
                     if p is not None:
                         if p.poll() is None:p.terminate()
                         p.wait(timeout=5)
+    def test_later_foreign_requests_are_excluded_but_owned_late_end_is_retained(self):
+        records=[{'number':1,'start':9,'event':'start'}, {'number':2,'start':10,'event':'start'}, {'number':2,'start':10,'event':'end','end':31}, {'number':3,'start':21,'event':'end'}]
+        owned,outside=run.metric_window(records,{'wall':10,'agent_wall_s':10})
+        self.assertEqual([x['number'] for x in owned],[2,2])
+        self.assertEqual([x['number'] for x in outside],[1,3])
     def test_missing_pane_cannot_leak_the_owned_proxy(self):
         with tempfile.TemporaryDirectory() as d:
             root=pathlib.Path(d);proxy=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);a=(root/'a.log').open('w');b=(root/'b.log').open('w')
