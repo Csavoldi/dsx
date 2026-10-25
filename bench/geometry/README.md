@@ -22,3 +22,16 @@ First observed pass is sampled after file changes and may lag the first valid ar
 Record T16 weights, deferral, sampling, CPU policy, cache state, serving revision, and runtime flags. Separate agent-output savings from kernel throughput. Use repeated tasks and shape variants before adopting a candidate; one fast run is insufficient evidence of reliability.
 
 `preview.py display.txt display.png` converts a saved braille screen to a PNG dot mask for review using only the standard library. It does not include ANSI colors.
+
+`--server-log PATH` selects the actual log of a temporary serving candidate. Optional runtime diagnostics are associated with their engine request IDs. Summaries separately record unfinished requests and whether every completed client request has matching engine counters; timeout rates may cover only completed requests. A run with `excluded.json` or `interrupted.json` is ineligible for comparisons.
+
+`--acceptance-stop` is a separate workflow experiment. It uses judge version 5 to certify full-frame clearing and differentiated face shading, waits for the agent's successful display capture of the unchanged artifact, then disables tools and asks for a final summary. Failed visual checks can return a concise description of the functional defect after the agent has inspected that revision. The feedback does not supply a rendering algorithm. Unsupported terminal controls or incremental update styles are not automatically certified. Human review of shape and overall quality remains required; this workflow is not a kernel-speed comparison.
+
+Local checks for the completion guard (Node24 supports the TypeScript test import):
+
+```
+python3 bench/geometry/test-terminal.py
+node bench/geometry/test-stop.mjs
+```
+
+The terminal checks exercise clearing, RGB colors, delayed wrapping, meaningful shading, and rejection of residual trails. The stop-guard checks require a matching certificate and successful self-check, reject stale artifact hashes, and verify that subsequent tools are disabled.

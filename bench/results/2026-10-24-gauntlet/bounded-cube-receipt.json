@@ -1,0 +1,113 @@
+{
+  "shape": "cube",
+  "arm": "bounded-unpaired",
+  "contract_version": 4,
+  "reasoning": "off",
+  "seed_base": 8957888294091752,
+  "wall_s": 214.49132108688354,
+  "requests": 10,
+  "tool_calls": 10,
+  "generated": 6679,
+  "decode_tok_s": 39.2838447467636,
+  "new_prefill_tok_s": 632.5657325187366,
+  "automated_pass": true,
+  "functional_pass": true,
+  "agent_exit": 0,
+  "timed_out": false,
+  "unfinished_requests": 0,
+  "accepted_stop": {
+    "time": 1792890243.613,
+    "source_sha256": "fdcdbced23ec8938549ae1e447f1ea7614f4e34f0ce0d46e7e99be30d57dfeaf",
+    "judge_version": 5,
+    "self_check_time": 1792890243.612
+  },
+  "runtime_totals": {
+    "steps": 6679,
+    "sample_s": 4.455585835999996,
+    "emit_s": 0.03466559399999997,
+    "step_s": 165.47771616800028,
+    "adapt_host_s": 1.7795610669999835,
+    "model_prefill_s": 40.429874586,
+    "snapshot_s": 0.003403923,
+    "routed_picks": 1602960,
+    "cpu_picks": 324350
+  },
+  "lookup_totals": {
+    "tokens": 6679,
+    "attempts": 494,
+    "completed_blocks": 492,
+    "incomplete_blocks": 2,
+    "matched_future_tokens": 1159,
+    "audit_seconds": 0.050471015,
+    "accepted_prefix_histogram": [
+      59,
+      59,
+      22,
+      352
+    ],
+    "mean_matched_future_tokens": 2.355691056910569,
+    "limit": "Serial copy audit only; no speculative verifier or drafter speedup measured."
+  },
+  "review": {
+    "pass": true,
+    "reviewer": "Codex source and saved-display review",
+    "geometry_correct": true,
+    "filled_faces": true,
+    "shading_present": true,
+    "occlusion_present": true,
+    "framing_good": true,
+    "findings": [
+      "Eight cube vertices and six quad faces are triangulated for per-dot depth-tested drawing.",
+      "Rotated 3D face normals choose visibly different braille densities. The saved display shows filled front and side planes.",
+      "The object fits with margins; judge v5 passes resize, frame clearing, shading, animation and Ctrl-C checks at all three sizes.",
+      "The agent captured its display, the stop extension disabled further tools, and it exited normally with a completion summary."
+    ]
+  },
+  "run": "bounded-off-cube-01",
+  "receipts": {
+    "TASK.md": {
+      "bytes": 1561,
+      "sha256": "e4f61c92552ed4c5bb8bd7a24b6c8db9f4e78fa9e42c1d7bf32c84cc2643d5a2"
+    },
+    "started.json": {
+      "bytes": 597,
+      "sha256": "a99a637b7913da5c667ceaeeb5b8ade1b98104cb7ced233d2fc323e1a9c2d027"
+    },
+    "summary.json": {
+      "bytes": 15519,
+      "sha256": "a222b4db284bc92f39db2ecbe538bc1d969153719a86c9d4793de1ef9878fba8"
+    },
+    "review.json": {
+      "bytes": 718,
+      "sha256": "a8a00d61b15364c62dbba4a2b9f748bc1f4fe03a451d512a01a367d28c025e1d"
+    },
+    "final-judge.json": {
+      "bytes": 2776,
+      "sha256": "1e6d65f656117dc4e908df3a7a9fdaaa65cd14c514fd8f7be6c204c812f1e08f"
+    },
+    "accepted-stop.json": {
+      "bytes": 175,
+      "sha256": "86174bd35bb2e006a45b63291c698682f38a5e10a7a11078236c9c6c10d0c487"
+    },
+    "self-check.json": {
+      "bytes": 153,
+      "sha256": "33ea2373f51486652e01f9a8481c2aad4dc0fa5088ded51e89c49256e4a3c275"
+    },
+    "host-state.json": {
+      "bytes": 1085,
+      "sha256": "1b303138539cfbcd08bca82fe7a414737c8927695e5cca729d2bf003118ed6d2"
+    },
+    "workspace/render.py": {
+      "bytes": 9527,
+      "sha256": "fdcdbced23ec8938549ae1e447f1ea7614f4e34f0ce0d46e7e99be30d57dfeaf"
+    },
+    "request-metrics.jsonl": {
+      "bytes": 12292,
+      "sha256": "1d4aa2f7c87d72ed4974df6d14c178c50e42c4d5011a58943575c9258fb359c7"
+    },
+    "server.log": {
+      "bytes": 20452,
+      "sha256": "077e2eb50f7dde9dca92a1475380ae7a18df1026c932c90b66484aff1e414ec0"
+    }
+  }
+}
