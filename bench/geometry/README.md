@@ -9,6 +9,12 @@ python3 bench/geometry/run.py cube /absolute/new/run-directory --arm stock --rea
 python3 bench/geometry/run.py tetrahedron /absolute/new/run-directory --arm stock --reasoning low
 ```
 
+During a run, `progress.txt` reports the current request, whether text or code/tool arguments are streaming, and the age of the last model delta. The display pane shows only the submitted animation, so it may remain blank while code is generated or repaired. To watch recorded activity without sending model requests:
+
+```
+python3 bench/geometry/status.py /absolute/run-directory --watch
+```
+
 The output directory must not exist. Each run owns an isolated agent configuration, workspace, display session, and recording proxy on port 8987. Run tasks sequentially. The runner uses the current server without restarting it; configuring a server candidate is a separate operation. The default timeout is six minutes. `--guidance PATH` appends a recorded instruction for a labeled behavior comparison.
 
 Temperature and top-p are both 1.0, matching the [official model card's recommended sampling parameters](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/blob/main/README.md). Every run creates a fresh random seed base, and every request uses a distinct derived seed recorded in the actual upstream request and proxy metrics. Reasoning is `off` or `low`, explicitly mapped to DSX's supported API effort. Context capacity is 131,072 and the per-request output limit is 8,192 tokens.

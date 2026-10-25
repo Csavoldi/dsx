@@ -2,6 +2,7 @@
 """Run one isolated Pi geometry task against the existing DSX server."""
 import argparse, hashlib, json, os, pathlib, re, secrets, shlex, signal, statistics, string, subprocess, sys, time, urllib.request
 from judge import judge, EXPECTED
+from status import snapshot, format_status
 HERE=pathlib.Path(__file__).resolve().parent
 
 def command(args,**kw): return subprocess.run(args,check=True,capture_output=True,text=True,**kw).stdout
@@ -103,8 +104,11 @@ def main():
         if a.acceptance_stop: args[1:1]=['--extension',str(HERE/'acceptance-stop.ts')]
         agent=subprocess.Popen(args,cwd=root/'workspace',env=env,stdout=agent_log,stderr=subprocess.STDOUT,start_new_session=True)
         (root/'runtime.json').write_text(json.dumps({'runner_pid':os.getpid(),'agent_pid':agent.pid,'proxy_pid':proxy.pid,'argv':args},indent=2)+'\n')
-        last=None;attempt=0;first_pass=False
+        last=None;attempt=0;first_pass=False;last_status=0
         while agent.poll() is None and time.time()-started['wall']<a.timeout:
+            if time.monotonic()-last_status>=5:
+                status=snapshot(root);(root/'progress.txt').write_text(format_status(status))
+                print(json.dumps(dict(status,event='progress')),flush=True);last_status=time.monotonic()
             source=root/'workspace/render.py';mesh=root/'workspace/mesh.json'
             if source.exists():
                 digest=hashlib.sha256(source.read_bytes()+(mesh.read_bytes() if mesh.exists() else b'')).hexdigest()
@@ -129,6 +133,7 @@ def main():
         (root/'display.txt').write_text(command(['tmux','capture-pane','-p','-t',pane]))
         (root/'server.log').write_text(command(['ssh','-o','BatchMode=yes','192.168.0.102','cat '+shlex.quote(a.server_log)]))
         print(json.dumps(summarize(root),indent=2),flush=True)
+        (root/'progress.txt').write_text(format_status(snapshot(root)))
     finally:
         if agent is not None and agent.poll() is None: os.killpg(agent.pid,signal.SIGTERM);agent.wait(timeout=10)
         command(['tmux','send-keys','-t',pane,'C-c']);time.sleep(.2)
