@@ -78,3 +78,10 @@ suffix-8 counters must match the live lookup audit exactly. Optional
 conditional decode-only cost model; it does not measure speculative acceptance
 or a task speedup. `python3 bench/geometry/test-lookup.py` checks complete,
 rejected and unfinished proposals and excludes unavailable future continuations.
+
+An optional style-only prompt experiment is available with
+`--guidance bench/geometry/COMPACT_GUIDANCE.md`. It asks for a focused
+implementation without long docstrings or unrelated scaffolding. It supplies no
+rendering algorithm or geometry. Label these tasks separately: the added prompt
+can change generated solutions, and reduced output tokens alone do not prove
+better completion. The complete task and guidance hash are recorded.

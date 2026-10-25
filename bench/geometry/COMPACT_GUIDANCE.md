@@ -1,0 +1,1 @@
+Keep the implementation focused and compact. Avoid long explanatory docstrings, repeated section commentary, and scaffolding unrelated to this demo. Check the result once, repair a functional failure if needed, then finish.
