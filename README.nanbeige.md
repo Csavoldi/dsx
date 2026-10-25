@@ -29,7 +29,7 @@ Thinking defaults to off. Requests can enable it through `chat_template_kwargs.e
 
 ## Context and cache
 
-`--ctx 262144` reserves capacity for 256K tokens. The 3-bit KV codec uses signed 128-wide Hadamard rotations, eight Lloyd-Max centroids, and a fitted BF16 norm, using 50 bytes per head per token. The canonical KV allocation occupies 10.15625 GiB. A BF16 recent window preserves the latest 2,048 keys and values. This codec does not implement the complete QJL TurboQuant algorithm.
+`--ctx 262144` reserves capacity for 256K tokens. The 3-bit KV codec uses signed 128-wide Hadamard rotations, eight Lloyd-Max centroids, and a fitted BF16 norm, using 50 bytes per head per token. The canonical KV allocation occupies 10.15625 GiB. A BF16 recent window preserves the latest 2,048 keys and values. Its 2,592 slots also cover a 512-token prefill batch and 32-token cutoff alignment. Snapshot copies use the exact GPU payload size, excluding host allocation padding. This codec does not implement the complete QJL TurboQuant algorithm.
 
 `--host-embed` gathers exact embedding rows from the CPU-mapped table. `--head-bits 4`, `6`, or `8` quantizes the output head at load time; zero preserves the 16-bit head. These are runtime choices and do not change the published EXL3 files.
 

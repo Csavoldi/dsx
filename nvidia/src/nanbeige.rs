@@ -544,7 +544,7 @@ impl Nanbeige {
         let scratch = attention_scratch_bytes + 128 * 1024 * 1024;
         let scratch = scratch
             + if kv_bits == 3 {
-                52 * 2 * 8 * 2560 * 128 * 2
+                52 * 2 * 8 * 2592 * 128 * 2
             } else {
                 0
             };
@@ -589,7 +589,7 @@ impl Nanbeige {
         };
         let norm = upload("model.norm.weight")?;
         let recent = g.alloc(if kv_bits == 3 {
-            52 * 2 * 8 * 2560 * 128 * 2
+            52 * 2 * 8 * 2592 * 128 * 2
         } else {
             2
         })?;
@@ -623,13 +623,13 @@ impl Nanbeige {
                 vc: g.alloc(ctx * token_bytes)?,
                 kr: recent.ptr
                     + if kv_bits == 3 {
-                        (i * 2 * 8 * 2560 * 128 * 2) as u64
+                        (i * 2 * 8 * 2592 * 128 * 2) as u64
                     } else {
                         0
                     },
                 vr: recent.ptr
                     + if kv_bits == 3 {
-                        ((i * 2 + 1) * 8 * 2560 * 128 * 2) as u64
+                        ((i * 2 + 1) * 8 * 2592 * 128 * 2) as u64
                     } else {
                         0
                     },
@@ -1418,13 +1418,13 @@ impl crate::server::Engine for Engine {
         let cached_logits = if exact_snapshot { lcp=prompt.len(); Some(self.snapshot.as_ref().unwrap().2.clone()) } else { None };
         let matched = lcp;
         let mut source = if lcp > 0 { "gpu" } else { "cold" };
-        // The 2560-slot BF16 ring covers 2048 recent keys plus a 512-token
+        // The 2592-slot BF16 ring covers 2048 recent keys plus a 512-token
         // prefill guard. Reserve 32 slots for cutoff alignment and 8 for speculation.
-        let safe_rewind = 2560usize - 2048 - 32 - 8;
+        let safe_rewind = 2592usize - 2048 - 32 - 8;
         if self.model.kv_bits == 3 && self.model.pos.saturating_sub(lcp) > safe_rewind {
             if let Some((pos, host, _)) = &self.snapshot {
                 if *pos <= lcp + safe_rewind {
-                    self.model.g.htod_sync(self.model._recent.ptr, host.as_slice::<u8>())?;
+                    self.model.g.htod_sync(self.model._recent.ptr, &host.as_slice::<u8>()[..self.model._recent.bytes])?;
                     lcp = (*pos).min(lcp);
                     source = "pinned_ram_snapshot";
                 } else { lcp = 0; source = "cold_snapshot_too_new"; }
@@ -1442,7 +1442,7 @@ impl crate::server::Engine for Engine {
             let (pos, host, logits) = self.snapshot.as_mut().unwrap();
             self.model
                 .g
-                .dtoh(host.as_mut_slice::<u8>(), self.model._recent.ptr)?;
+                .dtoh(&mut host.as_mut_slice::<u8>()[..self.model._recent.bytes], self.model._recent.ptr)?;
             self.model.g.sync()?;
             *pos = self.model.pos;
             *logits = current.clone();
@@ -1658,22 +1658,23 @@ pub fn validate_exl3() -> Result<serde_json::Value> {
 /// Check causal attention, GQA head mapping, split merges, and both KV storage paths
 /// against an independent f64 softmax over independently decoded packed values.
 pub fn validate_attention() -> Result<serde_json::Value> {
-    let g=Gpu::new(0)?;let ctx=8192usize;let pos=4096usize;let count=65usize;
+    let g=Gpu::new(0)?;let ctx=8192usize;let unaligned=std::env::var_os("DSX_NB_ATTN_AUDIT_UNALIGNED").is_some();let pos=if unaligned{4097usize}else{4096usize};let count=if unaligned{512usize}else{65usize};
     let centroids=[-2.1519457f32,-1.3439093,-0.7560053,-0.2450942,0.2450942,0.7560053,1.3439093,2.1519457];
     let mut seed=1977u32;let mut rng=||{seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);seed};
     let mut caches=vec![];let mut recents=vec![];
     for _ in 0..2 {
-        let mut cache=vec![0u8;8*ctx*50];let mut recent=vec![0u16;8*2560*128];
+        let mut cache=vec![0u8;8*ctx*50];let mut recent=vec![0u16;8*2592*128];
         for h in 0..8 {for p in 0..pos+count {let off=(h*ctx+p)*50;let norm=half::bf16::from_f32(0.5);cache[off..off+2].copy_from_slice(&norm.to_bits().to_le_bytes());
-            for block in 0..16 {let mut bits=0u32;for j in 0..8 {let code=(rng()>>29) as usize;bits|=(code as u32)<<(j*3);recent[(h*2560+p%2560)*128+block*8+j]=half::bf16::from_f32(centroids[code]*norm.to_f32()).to_bits();}cache[off+2+block*3..off+5+block*3].copy_from_slice(&bits.to_le_bytes()[..3]);}
+            for block in 0..16 {let mut bits=0u32;for j in 0..8 {let code=(rng()>>29) as usize;bits|=(code as u32)<<(j*3);recent[(h*2592+p%2592)*128+block*8+j]=half::bf16::from_f32(centroids[code]*norm.to_f32()).to_bits();}cache[off+2+block*3..off+5+block*3].copy_from_slice(&bits.to_le_bytes()[..3]);}
         }}caches.push(cache);recents.push(recent);
     }
-    let q:Vec<f32>=(0..count*7168).map(|_|half::bf16::from_f32((rng() as i32 as f32)/i32::MAX as f32*8.).to_f32()).collect();
+    let mut q:Vec<f32>=(0..count*7168).map(|_|half::bf16::from_f32((rng() as i32 as f32)/i32::MAX as f32*8.).to_f32()).collect();
+    if unaligned {for head in 0..56 {let off=(head/7*ctx+2048)*50;for j in 0..128 {let b=off+2+(j/8)*3;let v=(caches[0][b] as u32)|((caches[0][b+1] as u32)<<8)|((caches[0][b+2] as u32)<<16);let code=((v>>(j%8*3))&7) as usize;q[head*128+j]=half::bf16::from_f32(centroids[code]*16.).to_f32();}}}
     let qd=g.upload(&q)?;let kd=g.upload(&caches[0])?;let vd=g.upload(&caches[1])?;let kr=g.upload(&recents[0])?;let vr=g.upload(&recents[1])?;let pd=g.upload(&[pos as i32])?;
     let tmp=g.alloc(count*56*ctx.div_ceil(128)*130*4)?;let out=g.alloc(count*7168*2)?;
     let decode=|which:usize,h:usize,p:usize,j:usize| -> f64 {let off=(h*ctx+p)*50;let b=off+2+(j/8)*3;let v=(caches[which][b] as u32)|((caches[which][b+1] as u32)<<8)|((caches[which][b+2] as u32)<<16);half::bf16::from_f32(centroids[((v>>(j%8*3))&7) as usize]*0.5).to_f32() as f64};
     let mut expected=vec![];
-    for t in [0usize,3,8,15,16,31,32,63,64] {for head in [0usize,6,7,55] {let mut scores=vec![];for p in 0..=pos+t {let mut dot=0.;for j in 0..128 {dot+=q[t*7168+head*128+j] as f64*decode(0,head/7,p,j);}scores.push(dot/(128f64).sqrt());}
+    for t in [0usize,3,8,15,16,31,32,63,64,count-1] {for head in [0usize,6,7,55] {let mut scores=vec![];for p in 0..=pos+t {let mut dot=0.;for j in 0..128 {dot+=q[t*7168+head*128+j] as f64*decode(0,head/7,p,j);}scores.push(dot/(128f64).sqrt());}
         let max=scores.iter().copied().fold(f64::NEG_INFINITY,f64::max);let weights:Vec<f64>=scores.iter().map(|s|(s-max).exp()).collect();let den: f64=weights.iter().sum();let mut y=vec![0.;128];for p in 0..=pos+t {for j in 0..128 {y[j]+=weights[p]*decode(1,head/7,p,j)/den;}}
         expected.push((t,head,y));
     }}
