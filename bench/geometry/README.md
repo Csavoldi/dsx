@@ -108,3 +108,10 @@ note, while completion still requires the successful check of the current file.
 Each new run archives the harness sources and their hashes in `harness/` and
 loads its extension from that immutable copy. Later development cannot change a
 running task's guard; saved sources identify the behavior behind its receipt.
+
+Proxy readiness requires the new process's run path, PID and unique startup
+nonce. A listener left by another run cannot satisfy that check. Cleanup always
+terminates the owned proxy even if the display pane has already disappeared;
+`cleanup.json` records those errors. A proxy startup failure excludes the run
+before starting an agent. Verify these paths without inference with
+`python3 bench/geometry/test-proxy-owner.py`.

@@ -10,7 +10,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*args):pass
  def do_GET(self):
   if self.path=='/health':
-   b=b'{"status":"ok"}';self.send_response(200);self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b);return
+   b=json.dumps({'status':'ok','run':str(ROOT),'pid':os.getpid(),'nonce':os.environ.get('GAUNTLET_PROXY_NONCE')}).encode();self.send_response(200);self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b);return
   c=http.client.HTTPConnection('192.168.0.102',8090,timeout=10);c.request('GET',self.path);r=c.getresponse();b=r.read();self.send_response(r.status);self.send_header('Content-Type',r.getheader('Content-Type','application/json'));self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b);c.close()
  def do_POST(self):
   num=next(IDS);t0=time.time();mono=time.perf_counter();body=self.rfile.read(int(self.headers.get('Content-Length','0')));prefix=ROOT/'requests'/f'{num:03}'
