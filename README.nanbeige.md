@@ -17,9 +17,10 @@ CUDA_ARCHS=120 cargo build -p dsx --features cuda --release \
   --bin dsx-nanbeige --bin dsx-nanbeige-server
 
 hf download lxe/Nanbeige4.3-33B-EXL3-2.5bpw --local-dir models/nanbeige-exl3
-DSX_NB_ATTN8=2 DSX_NB_PART_SIZE=16384 DSX_NB_EXL3_NARROW=1 \
+DSX_NB_BATCH=4096 DSX_NB_ATTN8=2 DSX_NB_PART_SIZE=16384 \
+DSX_NB_EXL3_NARROW=1 DSX_NB_EXL3_EXPERIMENT=pf4 \
   ./target/release/dsx-nanbeige-server --model models/nanbeige-exl3 \
-  --ctx 262144 --kv-bits 3 --host-embed --head-bits 4 --lookup 8 \
+  --ctx 262144 --kv-bits 3 --host-embed --head-bits 4 --lookup 3 \
   --host 127.0.0.1 --port 8095
 ```
 
@@ -37,7 +38,21 @@ Prefix reuse checks the longest common token prefix. Short rewinds reuse GPU cac
 
 Prompt lookup proposes up to eight tokens from repeated text and verifies them with the target model. The coding workload had low acceptance and little benefit; repeated copying had high acceptance. Changing verification shapes can change floating-point rounding and free-running output, even with greedy sampling.
 
-## Measured performance
+## Current performance
+
+The `nanbeige` branch is intended for integration into DSX `main`; it currently builds a separate `dsx-nanbeige-server` binary. The deployed EXL3 configuration uses four-row trellis prefetching, lookup width 3, 3-bit KV, a 4-bit runtime head, and CPU embedding lookup. Verification-batch graphs remain off.
+
+| Request | Input tokens | Output tokens | Populated context after generation | Decode tok/s | Accepted / proposed lookup tokens |
+|---|---:|---:|---:|---:|---:|
+| Rust sorted-slice merge | 49 | 512 | 561 | 72.65 | 79 / 141 |
+| PostgreSQL monthly ranking | 56 | 512 | 568 | 66.98 | 34 / 81 |
+| Probability explanation | 64 | 512 | 576 | 70.25 | 49 / 116 |
+
+The aggregate rate was **69.88 tok/s**, calculated from 1536 output tokens divided by total decode time. All runs allocated **262144-token capacity**. A cold **3968-token** prefix took **1.93977 seconds**, or **2045.60 prefill tok/s**. These capped responses were not graded for task completion. The 100 tok/s general-decode target remains unmet. Raw inputs, acceptance counts, and limits are in [the current receipt](validation/nanbeige/continue-prefetch-summary.json).
+
+The matched 128-target precision check measured perplexity 12.70363 before prefetching and 12.70233 afterward, mean KL 0.0018954, and 96.875% top-1 agreement. This compares runtime configurations with the same weight files; it does not establish a quality improvement. Source-versus-quant drift is recorded separately below.
+
+## Earlier performance measurements
 
 Measurements below used one RTX 5090 with 32 GiB VRAM, an i7-13700, and 128 GiB DDR5-5200. The desktop remained active. All local rows allocated 262,144-token capacity, used 3-bit KV, a 4-bit runtime head, and CPU embedding lookup. The INT8 prefill path was enabled; EXL3 used direct cached loads and NVFP4 used DP4A decode.
 
@@ -83,7 +98,7 @@ The earlier 8K graph and fixed-shape equivalence receipts remain as historical c
 
 The 4,096-token batch option processed a cold 3,968-token WikiText prefix in 1.8862 seconds (2,103.75 tok/s) and the 16,384-token retrieval prompt in 11.8008 seconds (1,388.38 tok/s), returning the correct key. The corresponding 128-token perplexity check was 12.7036. These are short-sample measurements; the lower perplexity does not establish a quality improvement. Larger batches use canonical 3-bit KV for keys that have left the BF16 ring.
 
-The deployed EXL3 configuration uses `DSX_NB_BATCH=4096`, `DSX_NB_ATTN8=2`, `DSX_NB_PART_SIZE=16384`, `DSX_NB_EXL3_NARROW=1`, and `--ctx 262144 --kv-bits 3 --host-embed --head-bits 4 --lookup 3`. At batch 2,048, the same decode policy measured 63.13 tok/s serial coding and 65.11 with lookup; repeated copying measured 151.97 with lookup. The 100 tok/s general-generation target remains unmet.
+The deployed EXL3 configuration uses `DSX_NB_BATCH=4096`, `DSX_NB_ATTN8=2`, `DSX_NB_PART_SIZE=16384`, `DSX_NB_EXL3_NARROW=1`, `DSX_NB_EXL3_EXPERIMENT=pf4`, and `--ctx 262144 --kv-bits 3 --host-embed --head-bits 4 --lookup 3`. At batch 2,048, the same decode policy measured 63.13 tok/s serial coding and 65.11 with lookup; repeated copying measured 151.97 with lookup. The 100 tok/s general-generation target remains unmet.
 
 ## Pi file paths
 

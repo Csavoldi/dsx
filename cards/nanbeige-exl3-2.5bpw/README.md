@@ -121,10 +121,10 @@ hf download lxe/Nanbeige4.3-33B-EXL3-2.5bpw \
 
 Use an EXL3-capable loader such as [ExLlamaV3](https://github.com/turboderp-org/exllamav3). Load the downloaded directory as the model path and use the included tokenizer and chat template. Ordinary Transformers and llama.cpp loaders do not interpret EXL3 trellis weights.
 
-The measured Rust/CUDA implementation is the [DSX Nanbeige branch](https://github.com/lxe/dsx/tree/codex/nanbeige-nvfp4), measured at commit `316b510`. See its [Nanbeige instructions](https://github.com/lxe/dsx/blob/codex/nanbeige-nvfp4/README.nanbeige.md). This experimental path currently targets SM120.
+The measured Rust/CUDA implementation is the [DSX Nanbeige branch](https://github.com/lxe/dsx/tree/nanbeige), measured at commit `316b510`. See its [Nanbeige instructions](https://github.com/lxe/dsx/blob/nanbeige/README.nanbeige.md). This experimental path currently targets SM120.
 
 ```bash
-git clone --branch codex/nanbeige-nvfp4 https://github.com/lxe/dsx.git
+git clone --branch nanbeige https://github.com/lxe/dsx.git
 cd dsx
 CUDA_ARCHS=120 cargo build -p dsx --features cuda --release --bin dsx-nanbeige-server
 DSX_NB_BATCH=4096 DSX_NB_ATTN8=2 DSX_NB_PART_SIZE=16384 DSX_NB_EXL3_NARROW=1 \

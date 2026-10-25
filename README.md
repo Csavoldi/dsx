@@ -1,8 +1,8 @@
 <h1 align="center">dsx</h1>
 
-<p align="center"><b>DeepSeek-V4.1-Flash-1017 (552 B + 196 B Engram) on your old gaming PC</b><br>
-two RTX 3090s and 128 GB of RAM · ~35 tokens/s · full routing, no expert pruning · OpenAI- and
-Anthropic-compatible API · chat in the browser, pictures, thinking levels</p>
+<p align="center"><b>Model-specific inference in Rust and CUDA</b><br>
+DeepSeek-V4.1-Flash on two RTX 3090s · Nanbeige4.3-33B on one RTX 5090<br>
+shared serving infrastructure and browser UI</p>
 
 <p align="center">
 <a href="https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--t16-yellow" alt="Model: dsx-t16"></a>
@@ -11,10 +11,25 @@ Anthropic-compatible API · chat in the browser, pictures, thinking levels</p>
 <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-13-76B900?logo=nvidia" alt="CUDA 13"></a>
 </p>
 
+## Choose a model
+
+DSX has separate GPU backends for DeepSeek and Nanbeige. Select a model by building and starting its server binary; each binary uses the shared DSX worker, sampler, GPU utilities, and browser UI.
+
+| Model | Branch | Server | Measured hardware and throughput | Instructions |
+|---|---|---|---|---|
+| DeepSeek-V4.1-Flash-1017 | [`main`](https://github.com/lxe/dsx/tree/main) | `dsx-server` | Two RTX 3090s + 128 GB RAM; about 35 decode tok/s and 530 prefill tok/s on a 3000-token prompt | [DeepSeek setup below](#deepseek-quick-start) |
+| Nanbeige4.3-33B, EXL3 2.5 bpw | [`nanbeige`](https://github.com/lxe/dsx/tree/nanbeige), experimental | `dsx-nanbeige-server` | One RTX 5090; 69.88 decode tok/s across three short-prompt requests, 2045.60 cold prefill tok/s on 3968 tokens | [Nanbeige setup and measurements](README.nanbeige.md) |
+
+These figures come from different models, hardware, and workloads. Nanbeige allocated 262144-token context capacity; its three decode requests populated 561–576 tokens, and its longest tested EXL3 retrieval prompt was 16384 tokens. Task-completion evaluation is pending. The [benchmark receipt](validation/nanbeige/continue-prefetch-summary.json) includes prompt lengths, speculative acceptance, precision drift, and measurement limits.
+
+The `nanbeige` branch is intended for integration into `main` and remains separate while the new backend is evaluated. Both backends already share `core/` readers, the `server::Engine` worker contract, request scheduling, cancellation, sampling, and the embedded web UI. Nanbeige supplies its own dense attention, KV cache, quantized projections, chat template, and OpenAI protocol adapter. DeepSeek retains its MoE, MLA, Engram, and expert-offloading implementation. No source-directory move is needed to keep these execution paths separate.
+
+## DeepSeek runner
+
 Models this size usually need a datacenter. dsx runs
 **[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)** (DeepSeek, MIT license;
 a 552 B mixture of experts plus a 196 B Engram memory) on a desktop with two RTX 3090s, 128 GB of RAM and an NVMe
-drive. It's an engine written in Rust and CUDA for this one model. The experts each token uses most stay on the GPUs,
+drive. The DeepSeek backend is written in Rust and CUDA for this architecture. The experts each token uses most stay on the GPUs,
 the next ones in RAM where the CPU computes them. The GPUs and CPU compute their assigned experts in parallel,
 and the main GPU waits for the partial results before combining them. Optional expert deferral reduces that wait.
 
@@ -56,7 +71,7 @@ free-generation result used different generated text and is not a controlled spe
 and cache warm-up affect serving speed; [measurement status](docs/current-state.md) records the configurations,
 quality caveats and raw logs. Unsloth's UD-IQ1_M measured ~12 tokens/s in the earlier llama.cpp comparison on this PC.
 
-## Quick start
+## DeepSeek quick start
 
 Download the build (the Engram table and tokenizer are inside it):
 
@@ -144,7 +159,7 @@ pi --provider dsx --model deepseek-v4.1-flash:off
 
 With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and point `baseUrl` at the server's URL.
 
-## Requirements
+## DeepSeek requirements
 
 | | |
 |---|---|
