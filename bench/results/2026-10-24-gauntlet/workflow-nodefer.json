@@ -1,0 +1,570 @@
+{
+  "label": "workflow-nodefer",
+  "deferral": "none",
+  "binary_sha256": "fe4c1f1b5e229c056384367dfe87c5b14f425fdb510b17e62994ae4d6f19e60f",
+  "runtime_env": {
+    "DSX_T16_PAIR_GU": "1",
+    "DSX_LOOKUP_AUDIT": "1",
+    "DSX_RUNTIME_STATS": "1",
+    "DSX_ENGRAM_FP8": "0",
+    "DSX_GPU_SAMPLE": "1",
+    "DSX_ADAPT_STABLE": "1",
+    "DSX_ADAPT": "8",
+    "DSX_CPU_THREADS": "14",
+    "DSX_TOKEN_AUDIT": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/workflow-nodefer-defer-none-01/raw-generations.jsonl"
+  },
+  "trials": [
+    {
+      "run": "workflow-nodefer-dnone-off-cube-01",
+      "shape": "cube",
+      "wall_s": 181.8061442375183,
+      "generated": 5707,
+      "tool_calls": 8,
+      "tool_errors": 2,
+      "requests": 9,
+      "decode_tok_s": 34.79474938879032,
+      "new_prefill_tok_s": 352.7417280486379,
+      "prefill_ms": 17106,
+      "decode_ms": 164019,
+      "new_prompt_tokens": 6034,
+      "runtime_totals": {
+        "steps": 5706,
+        "gpu_samples": 5706,
+        "gpu_fallbacks": 0,
+        "sample_s": 0.007796017999999952,
+        "emit_s": 0.03171310300000001,
+        "step_s": 163.93299285000023,
+        "adapt_host_s": 1.5414083669999967,
+        "model_prefill_s": 17.107770784,
+        "snapshot_s": 0.00305706,
+        "prefix_replayed_tokens": 0,
+        "routed_picks": 1369440,
+        "cpu_picks": 285300
+      },
+      "timed_out": true,
+      "agent_exit": 143,
+      "automated_pass": false,
+      "functional_pass": false,
+      "successful_agent_exit": false,
+      "comparison_eligible": true,
+      "seed_base": 7707216995767402,
+      "unfinished_requests": 0,
+      "complete_server_counter_coverage": true,
+      "review": {
+        "pass": false,
+        "source_sha256": "67dba78159e05cc5a7bcb92fc9779049d9973fccef1bbee014a0722e8c7005cf",
+        "geometry": "The source defines a cube and uses sorted face fills with differentiated dot density. Its framebuffer is only one dot per terminal column before packing two horizontal dots per cell, and it doubles vertical projection scale. The displayed solid is horizontally compressed and displaced into the left half.",
+        "display": "Recognizable shaded rotating solid with margins, but a layout defect. Judge8 recognizes its legitimate synchronized-update controls and certifies all three sizes; the original judge7 rejects those controls.",
+        "artifact_usable_with_layout_limitations": true,
+        "corrected_judge_version": 8,
+        "corrected_automated_pass": true,
+        "completion": "The original agent timed out after181.81seconds; it is not a successful task completion. Preserve both the checker limitation and the artifact layout limitation.",
+        "limit": "The checker defect prevented automatic acceptance, so this case must not be attributed solely to model quality. The corrected artifact check does not retroactively establish a normal agent completion."
+      },
+      "judge_phases": [
+        {
+          "columns": 80,
+          "rows": 24,
+          "fps": 30.259913782578028,
+          "frames": 49,
+          "distinct_masks": 49,
+          "max_dots": 1033,
+          "typical_width_fraction": 0.225,
+          "typical_height_fraction": 0.7083333333333334,
+          "frames_with_margin": 46,
+          "measured_extents": 46,
+          "median_cells": 1920,
+          "frame_certification": {
+            "supported_full_frame": false,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.2826086956521739,
+            "frames": 46,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 110,
+          "rows": 32,
+          "fps": 31.77854286571872,
+          "frames": 51,
+          "distinct_masks": 51,
+          "max_dots": 2114,
+          "typical_width_fraction": 0.20909090909090908,
+          "typical_height_fraction": 0.8125,
+          "frames_with_margin": 48,
+          "measured_extents": 48,
+          "median_cells": 3520,
+          "frame_certification": {
+            "supported_full_frame": false,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.4583333333333333,
+            "frames": 48,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 45,
+          "rows": 15,
+          "fps": 31.20205439604185,
+          "frames": 50,
+          "distinct_masks": 50,
+          "max_dots": 1872,
+          "typical_width_fraction": 0.24444444444444444,
+          "typical_height_fraction": 0.8,
+          "frames_with_margin": 47,
+          "measured_extents": 47,
+          "median_cells": 675,
+          "frame_certification": {
+            "supported_full_frame": false,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.46808510638297873,
+            "frames": 47,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        }
+      ],
+      "started": {
+        "wall": 1792900135.5562263,
+        "shape": "cube",
+        "arm": "workflow-nodefer-defer-none",
+        "pane": "%204",
+        "contract_version": 4,
+        "reasoning": "off",
+        "seed_base": 7707216995767402,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "task_sha256": "691fff560c9c595493a1cab7ab5a4491bfa8ec62cfe293dbbce09ee375c1c56f",
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "timeout_s": 180,
+        "server_log": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/workflow-nodefer-defer-none-01/serve.out",
+        "acceptance_stop": true,
+        "judge_version": 7,
+        "normalize_capture_blanks": false,
+        "timed_out": true,
+        "agent_exit": 143,
+        "agent_wall_s": 181.8061442375183
+      },
+      "raw_hashes": {
+        "summary.json": "b96a3d966f8dd38cc98f307c7c5ffad853be936f14578d7282fbed5e5a91cffb",
+        "review.json": "601af829bce5f399a40957ee9a21936e22e1067baf3821e648dea62c9667e245",
+        "final-judge.json": "129c0373e097b5fd3d8e7755ee69f13088271217911b32cf606fa35105594129",
+        "TASK.md": "691fff560c9c595493a1cab7ab5a4491bfa8ec62cfe293dbbce09ee375c1c56f",
+        "workspace/render.py": "67dba78159e05cc5a7bcb92fc9779049d9973fccef1bbee014a0722e8c7005cf",
+        "request-metrics.jsonl": "1b4316db01901c1d7e4671ef258a214429ace43844fcb3a324da574482d5791e",
+        "agent.jsonl": "23e9f0c6323b79629c9e86d5e2591578698bb3160eb828bd5d870b937785f53f",
+        "server.log": "7b55b842dfa74b8e13a5e2ccc59bd69f96c7910bf29667985fb69161a8f7c557"
+      },
+      "capture_normalization": null
+    },
+    {
+      "run": "workflow-nodefer-dnone-off-tetrahedron-01",
+      "shape": "tetrahedron",
+      "wall_s": 180.72000646591187,
+      "generated": 5711,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "requests": 6,
+      "decode_tok_s": 34.646347603996674,
+      "new_prefill_tok_s": 535.1148980118771,
+      "prefill_ms": 15492,
+      "decode_ms": 164837,
+      "new_prompt_tokens": 8290,
+      "runtime_totals": {
+        "steps": 5711,
+        "gpu_samples": 5711,
+        "gpu_fallbacks": 0,
+        "sample_s": 0.004928654000000058,
+        "emit_s": 0.03008537999999996,
+        "step_s": 164.7581075170003,
+        "adapt_host_s": 1.571182144999986,
+        "model_prefill_s": 15.491274616,
+        "snapshot_s": 0.0020617079999999998,
+        "prefix_replayed_tokens": 832,
+        "routed_picks": 1370640,
+        "cpu_picks": 285633
+      },
+      "timed_out": true,
+      "agent_exit": 143,
+      "automated_pass": false,
+      "functional_pass": false,
+      "successful_agent_exit": false,
+      "comparison_eligible": true,
+      "seed_base": 8027638210127196,
+      "unfinished_requests": 0,
+      "complete_server_counter_coverage": true,
+      "review": {
+        "pass": false,
+        "geometry": "The tetrahedron is projected too small at larger sizes and loses differentiated shading at 45x15. The depth test also selects larger camera-space depth although its camera convention makes smaller depth nearer.",
+        "display": "Small shaded solid at 80x24 and 110x32; insufficient size and smallest-terminal face separation.",
+        "completion": "180.72-second timeout.",
+        "source_sha256": "dbd985a32078549f43184ce76bbd51ab07227cd863dbff714e2e0ba02aa73b79",
+        "limit": "Submitted artifact preserved. Identifies code-level defects without attributing why the model generated them."
+      },
+      "judge_phases": [
+        {
+          "columns": 80,
+          "rows": 24,
+          "fps": 28.574552514992778,
+          "frames": 46,
+          "distinct_masks": 46,
+          "max_dots": 302,
+          "typical_width_fraction": 0.175,
+          "typical_height_fraction": 0.20833333333333334,
+          "frames_with_margin": 43,
+          "measured_extents": 43,
+          "median_cells": 1840,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.627906976744186,
+            "frames": 43,
+            "pass": true,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 110,
+          "rows": 32,
+          "fps": 29.336246806263688,
+          "frames": 48,
+          "distinct_masks": 48,
+          "max_dots": 575,
+          "typical_width_fraction": 0.21818181818181817,
+          "typical_height_fraction": 0.15625,
+          "frames_with_margin": 45,
+          "measured_extents": 45,
+          "median_cells": 3410,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.8666666666666667,
+            "frames": 45,
+            "pass": true,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 45,
+          "rows": 15,
+          "fps": 30.001736115060773,
+          "frames": 49,
+          "distinct_masks": 48,
+          "max_dots": 275,
+          "typical_width_fraction": 0.17777777777777778,
+          "typical_height_fraction": 0.26666666666666666,
+          "frames_with_margin": 46,
+          "measured_extents": 46,
+          "median_cells": 630,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.0,
+            "frames": 46,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        }
+      ],
+      "started": {
+        "wall": 1792900323.568421,
+        "shape": "tetrahedron",
+        "arm": "workflow-nodefer-defer-none",
+        "pane": "%205",
+        "contract_version": 4,
+        "reasoning": "off",
+        "seed_base": 8027638210127196,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "task_sha256": "8f7a8fc783b5c3fbb33f9b45328a6f2c50bbebc09641c68b1e0d4bf218bee4d2",
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "timeout_s": 180,
+        "server_log": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/workflow-nodefer-defer-none-01/serve.out",
+        "acceptance_stop": true,
+        "judge_version": 7,
+        "normalize_capture_blanks": false,
+        "guidance_sha256": null,
+        "timed_out": true,
+        "agent_exit": 143,
+        "agent_wall_s": 180.72000646591187
+      },
+      "raw_hashes": {
+        "summary.json": "b25fd9a5b6089f5d740427e6d747c43b035cb9fa8323f907622beb1576be22c2",
+        "review.json": "ef6e688827bc08b2605ac8ad6b8b6c4a7cd7ddbb707932f95cad8b377a93d92d",
+        "final-judge.json": "e27caaad9506b8401a5ea1c9e6b66a1e0c3804c362fe5cedee8feed379440a42",
+        "TASK.md": "8f7a8fc783b5c3fbb33f9b45328a6f2c50bbebc09641c68b1e0d4bf218bee4d2",
+        "workspace/render.py": "dbd985a32078549f43184ce76bbd51ab07227cd863dbff714e2e0ba02aa73b79",
+        "request-metrics.jsonl": "a0eb6a8bfb5a3ccd2306d33640e5f882b265e4d9afcd200df8aa89a88490baa9",
+        "agent.jsonl": "409159a1fdc3b730bbe20b6e1127d8151eb38da91e61feeff1a9f2b696c199c0",
+        "server.log": "2944ca1d979aa598ce1eb0733334ba86c1425010f4d99212dfcfaead5fc68b10"
+      },
+      "capture_normalization": null
+    },
+    {
+      "run": "workflow-nodefer-dnone-off-octahedron-01",
+      "shape": "octahedron",
+      "wall_s": 180.5664975643158,
+      "generated": 4902,
+      "tool_calls": 10,
+      "tool_errors": 0,
+      "requests": 10,
+      "decode_tok_s": 34.70786485032145,
+      "new_prefill_tok_s": 474.4082028777586,
+      "prefill_ms": 23699,
+      "decode_ms": 141236,
+      "new_prompt_tokens": 11243,
+      "runtime_totals": {
+        "steps": 4902,
+        "gpu_samples": 4902,
+        "gpu_fallbacks": 0,
+        "sample_s": 0.008125660000000052,
+        "emit_s": 0.02658288000000002,
+        "step_s": 141.1687701310001,
+        "adapt_host_s": 1.3282008630000641,
+        "model_prefill_s": 23.698628808000002,
+        "snapshot_s": 0.003528023,
+        "prefix_replayed_tokens": 832,
+        "routed_picks": 1176480,
+        "cpu_picks": 241336
+      },
+      "timed_out": true,
+      "agent_exit": 143,
+      "automated_pass": false,
+      "functional_pass": false,
+      "successful_agent_exit": false,
+      "comparison_eligible": true,
+      "seed_base": 2690456430496315,
+      "unfinished_requests": 1,
+      "complete_server_counter_coverage": true,
+      "review": {
+        "pass": false,
+        "geometry": "The renderer computes an ASCII shade character per dot, then packs every non-space character into an enabled braille dot. Different non-space shades collapse into the same visible density.",
+        "display": "Uniformly filled silhouette at all three sizes; every phase has zero differentiated-shading frames.",
+        "completion": "180.57-second timeout.",
+        "source_sha256": "d1496fbd55fa6ac7a0e1a467fc5af290dcb28bc09f59e7958f87c34e786412d8",
+        "limit": "Submitted artifact preserved. Identifies code-level defects without attributing why the model generated them."
+      },
+      "judge_phases": [
+        {
+          "columns": 80,
+          "rows": 24,
+          "fps": 30.24275467982589,
+          "frames": 49,
+          "distinct_masks": 49,
+          "max_dots": 2034,
+          "typical_width_fraction": 0.65,
+          "typical_height_fraction": 0.2916666666666667,
+          "frames_with_margin": 46,
+          "measured_extents": 46,
+          "median_cells": 1840,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.0,
+            "frames": 46,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 110,
+          "rows": 32,
+          "fps": 31.664407330527656,
+          "frames": 51,
+          "distinct_masks": 51,
+          "max_dots": 3834,
+          "typical_width_fraction": 0.7272727272727273,
+          "typical_height_fraction": 0.34375,
+          "frames_with_margin": 48,
+          "measured_extents": 48,
+          "median_cells": 3410,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.0,
+            "frames": 48,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 45,
+          "rows": 15,
+          "fps": 31.824517722440078,
+          "frames": 51,
+          "distinct_masks": 51,
+          "max_dots": 3408,
+          "typical_width_fraction": 0.6,
+          "typical_height_fraction": 0.4,
+          "frames_with_margin": 48,
+          "measured_extents": 48,
+          "median_cells": 630,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.0,
+            "frames": 48,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        }
+      ],
+      "started": {
+        "wall": 1792900510.593341,
+        "shape": "octahedron",
+        "arm": "workflow-nodefer-defer-none",
+        "pane": "%206",
+        "contract_version": 4,
+        "reasoning": "off",
+        "seed_base": 2690456430496315,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "task_sha256": "ce9b9d1c6d1a2770de9134ef44fb3219a0ddf315c7605b6e995ba1814f5da90b",
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "timeout_s": 180,
+        "server_log": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/workflow-nodefer-defer-none-01/serve.out",
+        "acceptance_stop": true,
+        "judge_version": 7,
+        "normalize_capture_blanks": false,
+        "guidance_sha256": null,
+        "timed_out": true,
+        "agent_exit": 143,
+        "agent_wall_s": 180.5664975643158
+      },
+      "raw_hashes": {
+        "summary.json": "d4ed68a63f3e602a7aa76f51c7d30affa8e10e52a7b74357c1c75cd7b11dc4d5",
+        "review.json": "d9738333c6dd21c76405f18fce8668f0aea81c5b90edda91c15b91e4ec48d573",
+        "final-judge.json": "307cf2b25024c1fec71b78353ed3a4c6d2ac2e415ecfced44c8df3cb92edd8dc",
+        "TASK.md": "ce9b9d1c6d1a2770de9134ef44fb3219a0ddf315c7605b6e995ba1814f5da90b",
+        "workspace/render.py": "d1496fbd55fa6ac7a0e1a467fc5af290dcb28bc09f59e7958f87c34e786412d8",
+        "request-metrics.jsonl": "f0c0970e34a0acc41822956f2ec4bee26bb8c7f78270bf4529ab66823fa59932",
+        "agent.jsonl": "03efff2e3e918c0229c80849c4fc520b7a086581fdaa239ba1e0d7f35245150e",
+        "server.log": "791df50ce56f4db2440c1abecd108bf3f55c5f5717b948035409a6fcc7c61949"
+      },
+      "capture_normalization": null
+    }
+  ],
+  "reviewed_completions": 0,
+  "total_tasks": 3,
+  "token_audit": {
+    "raw_sha256": "abaed72d9c64c471abacf71989afd19988c485d2a70009b752a7be8ae91a7135",
+    "records": 25,
+    "rows": [
+      {
+        "run": "workflow-nodefer-dnone-off-cube-01",
+        "requests": 9,
+        "started_requests": 9,
+        "unaudited_unfinished_requests": [],
+        "all_started_requests_audited": true,
+        "fresh_seeds": true,
+        "raw_processed_output_tokens": 5706,
+        "engine_generated": 5707,
+        "engine_minus_processed": 1,
+        "engine_count_within_sampled_bounds": true,
+        "extra_sampled_stopping_tokens": 9,
+        "prefix_replayed_tokens": 0,
+        "errors": []
+      },
+      {
+        "run": "workflow-nodefer-dnone-off-tetrahedron-01",
+        "requests": 6,
+        "started_requests": 6,
+        "unaudited_unfinished_requests": [],
+        "all_started_requests_audited": true,
+        "fresh_seeds": true,
+        "raw_processed_output_tokens": 5711,
+        "engine_generated": 5711,
+        "engine_minus_processed": 0,
+        "engine_count_within_sampled_bounds": true,
+        "extra_sampled_stopping_tokens": 6,
+        "prefix_replayed_tokens": 832,
+        "errors": []
+      },
+      {
+        "run": "workflow-nodefer-dnone-off-octahedron-01",
+        "requests": 10,
+        "started_requests": 11,
+        "unaudited_unfinished_requests": [
+          {
+            "request": "011.request.json",
+            "seed": 2690456430496326,
+            "raw_generation_present": false
+          }
+        ],
+        "all_started_requests_audited": false,
+        "fresh_seeds": true,
+        "raw_processed_output_tokens": 4902,
+        "engine_generated": 4902,
+        "engine_minus_processed": 0,
+        "engine_count_within_sampled_bounds": true,
+        "extra_sampled_stopping_tokens": 10,
+        "prefix_replayed_tokens": 832,
+        "errors": []
+      }
+    ],
+    "postflight": {
+      "time": 1792900793.7545762,
+      "health": {
+        "status": "ok",
+        "model": "deepseek-v4.1-flash",
+        "pending": 0
+      },
+      "server_pid": 3747096,
+      "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+      "model_identity": [
+        251592261632,
+        154277358,
+        1792707596293851835
+      ],
+      "rapl_long_uw": "4095875000",
+      "restored": true
+    },
+    "limit": "Raw IDs include an unprocessed stopping token; processed counts match measured model steps. Engine-generated counters count emitted tokens and may include a final cancelled token not processed into KV. Only completed client requests are reconciled; unfinished requests are listed separately without inventing missing engine counters. Request histories are text-only. Residency is recorded at request boundaries; within-request swaps need diagnostic tracing."
+  },
+  "postflight": {
+    "time": 1792900793.7545762,
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "server_pid": 3747096,
+    "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+    "model_identity": [
+      251592261632,
+      154277358,
+      1792707596293851835
+    ],
+    "rapl_long_uw": "4095875000",
+    "restored": true
+  },
+  "peak_cpu_c": 83.0,
+  "limits": [
+    "Fresh request seeds and generated solutions differ; small groups are pilot evidence.",
+    "Each task has a fixed180-second budget and judge7. Do not compare success rates directly with historical300-second/judge5 groups.",
+    "Source/display reviews are necessary; automated certification does not prove correct geometry or occlusion."
+  ]
+}

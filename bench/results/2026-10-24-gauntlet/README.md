@@ -186,3 +186,37 @@ repairs do not change the submitted artifacts or their failed completion status.
 These tests explain code-level failures without attributing them to a particular
 inference approximation. A matching no-deferral batch follows to gather more
 actual completion evidence before deciding whether deferral's speed is useful.
+
+## Prefill attribution and the second deferral control
+
+A bounded [Nsight capture](aux-prefill-profile.json) attributes the rejected
+streaming configuration. GPU0 host-to-device traffic falls from 68.78 to 62.95
+GB, but GPU1 peer-copy traffic rises from 0.68 to 6.34 GB. GPU0's combined kernel
+and copy busy fraction falls from 96.0% to 81.2% of the capture span. GPU1's
+kernel busy fraction is only 20.6% without streaming and 22.2% with it; its extra
+traffic, rather than a large increase in compute, consumes the x4 path. The
+capture span grows from 4.44 to 4.85 seconds. These are instrumented attribution
+measurements at matched placement, not replacements for the untraced ABBA rates
+or measurements of SM occupancy. A smaller auxiliary work share would need its
+own measurement before use.
+
+The matching no-deferral, judge-7, 180-second task batch also completed **zero
+of three tasks**, at 34.79 / 34.65 / 34.71 decode tokens/s for cube, tetrahedron
+and octahedron. The cube exposes another checker limitation: synchronized-update
+controls were unsupported in version 7. Version 8 certifies the unchanged
+artifact, though source/display review records its horizontally displaced,
+compressed layout. The tetrahedron is too small and loses shading at the smallest
+size; the octahedron converts every non-space ASCII shade into an enabled Braille
+dot, collapsing its face densities. [Batch receipts](workflow-nodefer.json)
+preserve these distinctions and every original timeout. Neither matching batch
+establishes a completion advantage from removing deferral.
+
+The final octahedron request was unfinished when the run stopped, so its raw
+engine token receipt and final usage are unavailable. Counters cover the ten
+completed requests and must not be presented as totals for all eleven starts.
+The saved requests also show that a functional-feedback user note appeared in
+request 10 and disappeared in request 11. The latter queued 16,749 prompt tokens
+and never produced a first delta before the deadline. That changing prefix can
+force a full prefill because the engine retains only its latest prompt snapshot.
+Version 8 now attaches feedback to stored tool results to preserve history;
+actual request/token verification of the new path is the next validation step.
