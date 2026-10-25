@@ -28,14 +28,15 @@ fn row_limited_drafts(sessions: usize, budget: usize, limit: usize) -> usize {
 }
 
 pub(crate) fn init_tuning_from_env() -> Result<()> {
-    for (name, atom, max) in [
-        ("DSXA_DRAFT_LIMIT", &DRAFT_LIMIT, MAX_DRAFTS),
-        ("DSXA_LOOKUP_LIMIT", &LOOKUP_LIMIT, MAX_DRAFTS),
-        ("DSXA_VERIFY_ROWS", &VERIFY_ROW_BUDGET, crate::batch::BMAX),
+    for (name, atom, min, max) in [
+        ("DSXA_DRAFT_LIMIT", &DRAFT_LIMIT, 0, MAX_DRAFTS),
+        ("DSXA_LOOKUP_LIMIT", &LOOKUP_LIMIT, 0, MAX_DRAFTS),
+        ("DSXA_LOOKUP_CONTEXT", &LOOKUP_CONTEXT, 3, 12),
+        ("DSXA_VERIFY_ROWS", &VERIFY_ROW_BUDGET, 0, crate::batch::BMAX),
     ] {
         if let Ok(value) = std::env::var(name) {
             let value: usize = value.parse()?;
-            anyhow::ensure!(value <= max, "{name} must be 0..{max}");
+            anyhow::ensure!((min..=max).contains(&value), "{name} must be {min}..{max}");
             atom.store(value, std::sync::atomic::Ordering::Relaxed);
         }
     }
