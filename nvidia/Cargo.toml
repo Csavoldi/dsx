@@ -48,3 +48,8 @@ required-features = ["cuda"]
 [features]
 default = []
 cuda = ["dep:cudarc"]
+
+[[bin]]
+name = "spec-bench"
+path = "src/bin/spec-bench.rs"
+required-features = ["cuda"]
