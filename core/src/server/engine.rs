@@ -82,7 +82,7 @@ pub trait BatchEngine: Send {
 #[derive(Debug)]
 pub enum Event {
     Token(u32),
-    Done { finish: Finish },
+    Done { finish: Finish, stats: GenStats },
     Error(String),
 }
 
@@ -218,7 +218,7 @@ fn run_job(engine: &mut dyn Engine, job: Job) {
         Ok(f) => {
             // the worker's own stop/length/disconnect checks win over what the engine says
             let f = if hit_stop { Finish::Stop } else if hit_len { Finish::Length } else if gone { Finish::Cancelled } else { f };
-            let _ = tx.send(Event::Done { finish: f });
+            let _ = tx.send(Event::Done { finish: f, stats: st });
             format!("{f:?}")
         }
         Err(e) => {
@@ -271,7 +271,7 @@ fn run_batch(mut engine: Box<dyn BatchEngine>, rx: std_mpsc::Receiver<Job>, pend
                     "Error".to_string()
                 }
                 (Some(f), None) => {
-                    let _ = r.tx.send(Event::Done { finish: *f });
+                    let _ = r.tx.send(Event::Done { finish: *f, stats: GenStats { cached_prompt_tokens:engine.cached_prompt_tokens(id), ..Default::default() } });
                     format!("{f:?}")
                 }
                 _ => "?".into(),
@@ -303,7 +303,7 @@ fn run_batch(mut engine: Box<dyn BatchEngine>, rx: std_mpsc::Receiver<Job>, pend
                 continue;
             }
             if j.params.max_new == 0 {
-                let _ = j.tx.send(Event::Done { finish: Finish::Length });
+                let _ = j.tx.send(Event::Done { finish: Finish::Length, stats:GenStats::default() });
                 pend.fetch_sub(1, Ordering::SeqCst);
                 continue;
             }

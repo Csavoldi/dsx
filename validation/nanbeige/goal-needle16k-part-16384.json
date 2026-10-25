@@ -1,0 +1,32 @@
+{
+  "engine": "dsx-nanbeige",
+  "prefill_attention": "2",
+  "weights": "NVFP4",
+  "ctx": 262144,
+  "kv_bits": 3,
+  "head_q8": false,
+  "head_bits": 4,
+  "input_tokens": 16384,
+  "output_tokens": 7,
+  "output_ids": [
+    41815,
+    84082,
+    152369,
+    152395,
+    152411,
+    152375,
+    152413
+  ],
+  "text": "LANTERN-4827",
+  "prefill_seconds": 8.481040551,
+  "decode_seconds": 0.191847441,
+  "decode_tps": 36.48732536390725,
+  "wall_seconds": 8.672913692,
+  "lookup": {
+    "attempts": 1,
+    "drafted_tokens": 8,
+    "accepted_tokens": 2,
+    "generated_tokens": 7,
+    "max_draft": 8
+  }
+}

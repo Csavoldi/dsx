@@ -1,0 +1,43 @@
+{
+  "context_position": 4096,
+  "rows": 65,
+  "sampled_heads": [
+    0,
+    6,
+    7,
+    55
+  ],
+  "reference": "independent f64 causal softmax, independently decoded 3bit KV, BF16 recent window",
+  "results": [
+    {
+      "kernel": "parallel",
+      "max_abs_error": 0.0019352502798518634,
+      "relative_rms_error": 0.001593467123624604,
+      "splits": 33
+    },
+    {
+      "kernel": "gqa",
+      "max_abs_error": 0.0019352502798518634,
+      "relative_rms_error": 0.0015934671888345833,
+      "splits": 9
+    },
+    {
+      "kernel": "prefill_tc",
+      "max_abs_error": 0.0019352502798518634,
+      "relative_rms_error": 0.001593469355611505,
+      "splits": 1
+    },
+    {
+      "kernel": "prefill_i8",
+      "max_abs_error": 0.01309875710930579,
+      "relative_rms_error": 0.010741093894582892,
+      "splits": 1
+    },
+    {
+      "kernel": "prefill_i8pv",
+      "max_abs_error": 0.013480336448661432,
+      "relative_rms_error": 0.012755808366379457,
+      "splits": 1
+    }
+  ]
+}

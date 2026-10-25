@@ -28,6 +28,16 @@ struct Args {
     model: PathBuf,
     #[arg(long, default_value_t = 8192)]
     ctx: usize,
+    #[arg(long, default_value_t = 16)]
+    kv_bits: usize,
+    #[arg(long)]
+    host_embed: bool,
+    #[arg(long)]
+    head_q8: bool,
+    #[arg(long, default_value_t = 0)]
+    head_bits: usize,
+    #[arg(long, default_value_t = 0)]
+    lookup: usize,
     #[arg(long, default_value_t = 8095)]
     port: u16,
     #[arg(long, default_value = "127.0.0.1")]
@@ -267,6 +277,7 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
         let mut count: usize = 0;
         let mut finish = "length";
         let mut error = None;
+        let mut model_stats = dsx::server::GenStats::default();
         while let Some(e) = events.recv().await {
             if stream && tx.is_closed() {
                 break;
@@ -288,7 +299,8 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
                         }
                     }
                 }
-                EngineEvent::Done { finish: f } => {
+                EngineEvent::Done { finish: f, stats } => {
+                    model_stats=stats;
                     finish = if f == Finish::Stop { "stop" } else { "length" };
                     break;
                 }
@@ -340,11 +352,13 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
                 .map(|t| t.duration_since(started).as_secs_f64())
                 .unwrap_or(started.elapsed().as_secs_f64());
             let decode = first_token.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.);
-            let timings = json!({"prompt_n":prompt_tokens,"prompt_ms":prefill*1000.,"prompt_per_second":prompt_tokens as f64/prefill.max(1e-9),"predicted_n":count,"predicted_ms":decode*1000.,"predicted_per_second":(count.saturating_sub(1)) as f64/decode.max(1e-9)});
+            let uncached=prompt_tokens.saturating_sub(model_stats.cached_prompt_tokens);
+            let model_prefill=model_stats.prefill.map(|d|d.as_secs_f64()).unwrap_or(prefill);
+            let timings = json!({"prompt_n":uncached,"cached_n":model_stats.cached_prompt_tokens,"ttft_ms":prefill*1000.,"prompt_ms":model_prefill*1000.,"prompt_per_second":uncached as f64/model_prefill.max(1e-9),"predicted_n":count,"predicted_ms":decode*1000.,"predicted_per_second":(count.saturating_sub(1)) as f64/decode.max(1e-9)});
             let mut final_chunk = chunk(&id, json!({}), json!(finish));
             final_chunk["timings"] = timings.clone();
             send(final_chunk);
-            let usage = json!({"prompt_tokens":prompt_tokens,"completion_tokens":count,"total_tokens":prompt_tokens+count});
+            let usage = json!({"prompt_tokens":prompt_tokens,"prompt_tokens_details":{"cached_tokens":model_stats.cached_prompt_tokens},"completion_tokens":count,"total_tokens":prompt_tokens+count});
             if stream {
                 send(
                     json!({"id":id,"object":"chat.completion.chunk","model":"nanbeige4.3-33b","choices":[],"usage":usage}),
@@ -376,7 +390,7 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
 }
 async fn props(State(s): State<Arc<App>>) -> Json<Value> {
     Json(
-        json!({"default_generation_settings":{"id":0,"id_task":-1,"n_ctx":s.ctx,"is_processing":s.engine.pending()>0,"params":{"n_predict":-1,"temperature":1.,"top_k":0,"top_p":0.95,"min_p":0.,"max_tokens":4096,"stream":true,"stop":[],"samplers":["top_p","temperature"],"chat_format":"Nanbeige","reasoning_format":"deepseek","reasoning_in_content":false}},"total_slots":1,"model_path":"nanbeige4.3-33b","model_alias":"nanbeige4.3-33b","role":"model","modalities":{"vision":false,"audio":false,"video":false},"chat_template":include_str!("../../templates/nanbeige.jinja"),"bos_token":"<|im_start|>","eos_token":"<|im_end|>","build_info":"DSX Nanbeige NVFP4 SM120","ui_settings":{}}),
+        json!({"default_generation_settings":{"id":0,"id_task":-1,"n_ctx":s.ctx,"is_processing":s.engine.pending()>0,"params":{"n_predict":-1,"temperature":1.,"top_k":0,"top_p":0.95,"min_p":0.,"max_tokens":4096,"stream":true,"stop":[],"samplers":["top_p","temperature"],"chat_format":"Nanbeige","reasoning_format":"deepseek","reasoning_in_content":false}},"total_slots":1,"model_path":"nanbeige4.3-33b","model_alias":"nanbeige4.3-33b","role":"model","modalities":{"vision":false,"audio":false,"video":false},"chat_template":include_str!("../../templates/nanbeige.jinja"),"bos_token":"<|im_start|>","eos_token":"<|im_end|>","build_info":"DSX Nanbeige SM120","ui_settings":{}}),
     )
 }
 async fn slots(State(s): State<Arc<App>>) -> Json<Value> {
@@ -394,15 +408,21 @@ async fn main() -> Result<()> {
     let ctx = a.ctx;
     let model = a.model.clone();
     let ng = a.no_graphs;
+    let kv_bits = a.kv_bits;
+    let lookup = a.lookup;
+    let head_bits = if a.head_q8 { 8 } else { a.head_bits };
+    let host_embed = a.host_embed;
     let engine = EngineHandle::spawn(move || {
-        let mut m = Nanbeige::load(&model, ctx)?;
+        let mut m = Nanbeige::load_with_cache(&model, ctx, kv_bits, host_embed, head_bits)?;
         m.graphs_enabled = !ng;
-        Ok(Box::new(Engine::new(m)))
+        let mut engine = Engine::new(m);
+        engine.lookup = lookup;
+        Ok(Box::new(engine))
     })?;
     let app = Arc::new(App { engine, tok, ctx });
-    let router=Router::new().route("/health",get(||async{Json(json!({"status":"ok","engine":"DSX Nanbeige NVFP4"}))})).route("/v1/models",get(||async{Json(json!({"object":"list","data":[{"id":"nanbeige4.3-33b","object":"model","owned_by":"local"}]}))})).route("/v1/chat/completions",post(chat)).route("/props",get(props)).route("/slots",get(slots)).route("/tools",get(dsx::server::webui::no_tools)).route("/v1/chat/completions/streams",get(dsx::server::webui::no_streams)).fallback(dsx::server::webui::asset).with_state(app);
+    let router=Router::new().route("/health",get(||async{Json(json!({"status":"ok","engine":"DSX Nanbeige"}))})).route("/v1/models",get(||async{Json(json!({"object":"list","data":[{"id":"nanbeige4.3-33b","object":"model","owned_by":"local"}]}))})).route("/v1/chat/completions",post(chat)).route("/props",get(props)).route("/slots",get(slots)).route("/tools",get(dsx::server::webui::no_tools)).route("/v1/chat/completions/streams",get(dsx::server::webui::no_streams)).fallback(dsx::server::webui::asset).with_state(app);
     let listener = tokio::net::TcpListener::bind((a.host.as_str(), a.port)).await?;
-    eprintln!("DSX Nanbeige NVFP4 listening on {}:{}", a.host, a.port);
+    eprintln!("DSX Nanbeige listening on {}:{}", a.host, a.port);
     axum::serve(listener, router).await?;
     Ok(())
 }

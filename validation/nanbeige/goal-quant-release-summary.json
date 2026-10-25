@@ -1,0 +1,64 @@
+{
+  "nvfp4-dp4a": {
+    "ppl": 10.360523823325824,
+    "head_bits": 4,
+    "ctx": 262144,
+    "workloads": {
+      "code": {
+        "serial_tps": 54.37217812550434,
+        "lookup_tps": 55.971624831470805,
+        "exact_output_ids": false,
+        "lookup": {
+          "attempts": 11,
+          "drafted_tokens": 85,
+          "accepted_tokens": 12,
+          "generated_tokens": 256,
+          "max_draft": 8
+        }
+      },
+      "copy": {
+        "serial_tps": 51.956119775090336,
+        "lookup_tps": 199.76064016827286,
+        "exact_output_ids": true,
+        "lookup": {
+          "attempts": 74,
+          "drafted_tokens": 546,
+          "accepted_tokens": 434,
+          "generated_tokens": 512,
+          "max_draft": 8
+        }
+      }
+    }
+  },
+  "exl3-2.5bpw": {
+    "ppl": 12.758083373035943,
+    "head_bits": 4,
+    "ctx": 262144,
+    "workloads": {
+      "code": {
+        "serial_tps": 60.77817560784193,
+        "lookup_tps": 58.937884101845526,
+        "exact_output_ids": false,
+        "lookup": {
+          "attempts": 11,
+          "drafted_tokens": 88,
+          "accepted_tokens": 14,
+          "generated_tokens": 256,
+          "max_draft": 8
+        }
+      },
+      "copy": {
+        "serial_tps": 60.99155554533264,
+        "lookup_tps": 121.14064825832793,
+        "exact_output_ids": true,
+        "lookup": {
+          "attempts": 74,
+          "drafted_tokens": 546,
+          "accepted_tokens": 434,
+          "generated_tokens": 512,
+          "max_draft": 8
+        }
+      }
+    }
+  }
+}

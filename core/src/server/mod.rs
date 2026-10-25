@@ -442,9 +442,9 @@ fn inference_stream(
             timing.lock().unwrap().token();
             Some(InferenceChunk::Token { token_id: t })
         }
-        Event::Done { finish: Finish::Stop } => Some(InferenceChunk::Finish { finish_reason: InferenceFinishReason::Stop }),
-        Event::Done { finish: Finish::Length } => Some(InferenceChunk::Finish { finish_reason: InferenceFinishReason::Length }),
-        Event::Done { finish: Finish::Cancelled } => None,
+        Event::Done { finish: Finish::Stop, .. } => Some(InferenceChunk::Finish { finish_reason: InferenceFinishReason::Stop }),
+        Event::Done { finish: Finish::Length, .. } => Some(InferenceChunk::Finish { finish_reason: InferenceFinishReason::Length }),
+        Event::Done { finish: Finish::Cancelled, .. } => None,
         Event::Error(e) => {
             *failed.lock().unwrap() = Some(e);
             None

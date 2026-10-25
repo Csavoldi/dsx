@@ -1,45 +1,80 @@
-# DSX Nanbeige NVFP4 fork
+# DSX Nanbeige Rust and CUDA runner
 
-This branch adds a Nanbeige4.3-33B engine to DSX. It runs directly in Rust and CUDA, using native SM120 NVFP4 multiplication through CUDA's cuBLASLt library. It does not launch vLLM, PyTorch, or llama.cpp.
+This branch runs the dense Nanbeige4.3-33B model in DSX's Rust and CUDA runtime on an RTX 5090. It supports native NVFP4 weights and standard EXL3 `mul1` trellis weights, an OpenAI-compatible API, the embedded DSX web UI, and Pi tool calls. Inference does not launch vLLM, PyTorch, or llama.cpp. The EXL3 conversion and independent reference evaluations use ExLlamaV3 and PyTorch separately.
 
-The original DSX checkout is `/home/lxe/dsx-correctness`, pinned at `53819a1781527e9e4f2c09ded29ba666dc9fc84f`. This fork retains DSX's GPU context, memory and launch boundary, safetensors reader, token sampler, FIFO engine worker, cancellation handling, and embedded web UI. Nanbeige uses ordinary dense Llama attention and feed-forward layers, so its model execution and kernels are separate from DeepSeek's MoE, MLA, Engram and expert streaming code.
+The fork started at DSX commit `53819a1781527e9e4f2c09ded29ba666dc9fc84f`. It retains DSX's GPU boundary, safetensors reader, sampler, FIFO engine worker, cancellation handling, and web UI. Nanbeige's dense Llama execution is separate from DeepSeek's MoE, MLA, Engram, and expert streaming paths.
 
-## Checkpoint
+## Weights
 
-`primitive-ai/Nanbeige4.3-33B-NVFP4` revision `4171a7d6eabfffc37b9d89629fb75d28fd5c2c5d`. All downloaded files were checked against the pinned inventory and the published LFS SHA256 hashes. The pack is 22,070,410,112 bytes across four safetensors files. It contains 364 NVFP4 decoder matrices; embeddings, output head and normalization weights remain BF16.
+The NVFP4 path uses `primitive-ai/Nanbeige4.3-33B-NVFP4` revision `4171a7d6eabfffc37b9d89629fb75d28fd5c2c5d`. The 22,070,410,112-byte pack was checked against its published hashes. Each projection retains its own inverse global scales, packed E2M1 values, and E4M3 scales per 16 weights.
 
-The checkpoint's global scales are inverse scales. Each projection retains its own weight and activation global scales. Weights use packed E2M1 values and E4M3 scales per 16 values. The loader swizzles scale storage for native cuBLASLt FP4 multiplication without requantizing weights. Activation quantization happens on the GPU.
+The EXL3 pack is `lxe/Nanbeige4.3-33B-EXL3-2.5bpw`, converted from the original BF16 checkpoint at `c1093c501cc6460427c0ac634db7223d0450c0ee`. Its 364 decoder matrices use 2.5 bpw trellises, the standard `0x83DCD12D` codebook, and the upstream tensor layout. It is distinct from DSX T16's custom codebook. Embedding and norms remain BF16; the shipped head is FP16. The two weight shards total 14,402,849,061 bytes. Calibration used 32 rows of 512 tokens, with converter patches and hashes included in the model repository.
 
-## Run
+## Build and run
 
-```sh
-CUDA_ARCHS=120 cargo build -p dsx --features cuda --release --bin dsx-nanbeige --bin dsx-nanbeige-server
-./target/release/dsx-nanbeige --inspect
-./target/release/dsx-nanbeige --validate
-./target/release/dsx-nanbeige-server --ctx 8192 --port 8095
+```bash
+CUDA_ARCHS=120 cargo build -p dsx --features cuda --release \
+  --bin dsx-nanbeige --bin dsx-nanbeige-server
+
+hf download lxe/Nanbeige4.3-33B-EXL3-2.5bpw --local-dir models/nanbeige-exl3
+DSX_NB_ATTN8=2 DSX_NB_PART_SIZE=16384 DSX_NB_EXL3_NARROW=1 \
+  ./target/release/dsx-nanbeige-server --model models/nanbeige-exl3 \
+  --ctx 262144 --kv-bits 3 --host-embed --head-bits 4 --lookup 8 \
+  --host 127.0.0.1 --port 8095
 ```
 
-The API exposes `/health`, `/v1/models`, and `/v1/chat/completions`, including streaming, reasoning separation, XML tool calls, tool result replay and prefix reuse. Chat rendering uses the checkpoint's original Jinja template with Python-compatible methods and JSON formatting. The server uses DSX's single owning engine thread for the CUDA context.
+For NVFP4, provide that checkpoint directory instead and omit `DSX_NB_EXL3_NARROW`. `DSX_NB_DP4A=1` selects the experimental integer-dot-product NVFP4 decode kernel. Its first-layer validation was bit-identical to native cuBLASLt on the tested input; full-model sampling can differ because reductions and verification shapes differ.
 
-Thinking defaults to off. A request can enable it with `chat_template_kwargs.enable_thinking`; reasoning effort levels do not impose a token budget in this model. The earlier Doom attempt was stopped at the user's request after extended reasoning without implementation.
+Thinking defaults to off. Requests can enable it through `chat_template_kwargs.enable_thinking`. The original checkpoint's Jinja template renders history and XML tool calls. The API supports `/health`, `/props`, `/v1/models`, and `/v1/chat/completions`, including streaming, reasoning separation, tool results, and measured cached-token counts.
 
-## Validation and limitations
+## Context and cache
 
-Receipts are stored in `/home/lxe/nanbeige-runner/receipts`. The independent CPU check computes E2M1/E4M3 decoding and activation quantization, then compares selected projection rows with native SM120 output. It also checks identical batch rows. Separate tests cover reasoning delimiters, template history, and typed XML tool arguments.
+`--ctx 262144` reserves capacity for 256K tokens. The 3-bit KV codec uses signed 128-wide Hadamard rotations, eight Lloyd-Max centroids, and a fitted BF16 norm, using 50 bytes per head per token. The canonical KV allocation occupies 10.15625 GiB. A BF16 recent window preserves the latest 2,048 keys and values. This codec does not implement the complete QJL TurboQuant algorithm.
 
-The initial native path measured about 45 output tokens/s on a 256-token greedy Python coding response at short context. A custom SIMT decode experiment measured about 39 and remains opt-in (`--simt-decode`). These measurements do not establish an improvement over the prior llama.cpp runner. CUDA graph and ordinary execution produced the same 256 output token IDs in the initial check.
+`--host-embed` gathers exact embedding rows from the CPU-mapped table. `--head-bits 4`, `6`, or `8` quantizes the output head at load time; zero preserves the 16-bit head. These are runtime choices and do not change the published EXL3 files.
 
-This first implementation uses BF16 KV storage and an 8K service context. It does not yet implement the 96K quantized KV cache of the previous llama.cpp setup. Memory checks reject configurations that do not fit; no CPU expert offload applies to this dense model. The checkpoint publisher has not provided completed BF16 quality-drift measurements. Local arithmetic, code and tool smoke checks establish execution behavior, not retained benchmark quality.
+Prefix reuse checks the longest common token prefix. Short rewinds reuse GPU cache; longer rewinds restore a pinned-RAM snapshot of the BF16 recent window. Exact prompt retries restore saved logits as well as KV state. The cache audit verified matching warm, cold, and retried outputs after a 600-token generation and rollback. API usage reports cached tokens separately, so cache hits do not inflate prefill throughput.
 
-A fixed 32-token multiplication shape keeps prefill and decode numerics consistent. A 25-token prompt and a 250-token prompt spanning multiple chunks produced bit-identical final logits for batched and sequential execution across all 166,912 vocabulary entries. Before fixing the shape, different cuBLASLt algorithm selections caused differences to grow through the network.
+Prompt lookup proposes up to eight tokens from repeated text and verifies them with the target model. The coding workload had low acceptance and little benefit; repeated copying had high acceptance. Changing verification shapes can change floating-point rounding and free-running output, even with greedy sampling.
 
-The live API measured 43.86 output tokens/s on a 256-token greedy coding response at 8K capacity. Pi completed real bash, write and read calls with thinking off. The generated prime-checking function passed 10,021 integer cases against an independent reference. Selected receipts are copied into `validation/nanbeige/`. The active endpoint is http://100.76.24.95:8095 and the user service is `dsx-nanbeige.service`. `/home/lxe/nanbeige-runner/run-pi.sh` starts Pi against the custom server.
+## Measured performance
 
-The prototype prefill attention kernel uses partitioned online softmax rather than a tuned tensor-core FlashAttention kernel. Prefill performance and long-context attention remain optimization work. GPU counter profiling was attempted; this host currently denies access to NVIDIA performance counters. No host-wide profiling configuration was changed.
+Measurements below used one RTX 5090 with 32 GiB VRAM, an i7-13700, and 128 GiB DDR5-5200. The desktop remained active. All local rows allocated 262,144-token capacity, used 3-bit KV, a 4-bit runtime head, and CPU embedding lookup. The INT8 prefill path was enabled; EXL3 used direct cached loads and NVFP4 used DP4A decode.
 
-## Source files
+| Workload | NVFP4 | EXL3 2.5 bpw |
+|---|---:|---:|
+| Coding, 30 input + 256 output tokens, serial | 54.37 tok/s | 60.78 tok/s |
+| Same coding request, prompt lookup | 55.97 tok/s | 58.94 tok/s |
+| Repeated copying, 628 input + 512 output tokens, serial | 51.96 tok/s | 60.99 tok/s |
+| Repeated copying with prompt lookup | 199.76 tok/s | 121.14 tok/s |
+| Cold 16,384-token retrieval prompt, prefill | 1,931.84 tok/s | 920.93 tok/s |
 
-- `nvidia/src/nanbeige.rs`: model loader, NVFP4 plans, dense forward pass, prefix reuse, graph capture and DSX Engine adapter.
-- `nvidia/src/kernels/nanbeige.cuh`: activation quantization, scale swizzle, normalization, RoPE, causal attention, residuals, SwiGLU and experimental GEMV.
-- `nvidia/src/bin/nanbeige-server.rs`: Nanbeige prompt and OpenAI protocol adapter.
-- `nvidia/templates/nanbeige.jinja`: upstream chat template.
+The copy workload accepted 434 of 546 proposed tokens and matched serial output IDs. The coding lookup output differed from serial and accepted 12 of 85 proposals with NVFP4 and 14 of 88 with EXL3. Copy speed does not establish general coding throughput.
+
+A separate NVFP4 test populated 262,016 tokens and retrieved the buried key correctly. Prefill took 1,579.32 seconds, or 165.90 tok/s. Its seven-token answer took 1.315 seconds, or 5.32 tok/s. This is the populated-context result; the short-prompt rows above measure a different workload. The EXL3 pack's local retrieval test populated 16,384 tokens and passed. A populated 256K test with EXL3 remains pending.
+
+The 100 tok/s general generation target has not been reached. Shorter-prompt prefill exceeds 2,000 tok/s with NVFP4; that rate does not apply to a populated 256K context. Raw receipts are under `validation/nanbeige/`.
+
+## Quality and validation
+
+The quality fixture is a 4,096-token prefix of WikiText-2 raw validation, scoring its final 128 tokens. This short sample is a precision check, not a task-completion benchmark.
+
+| Configuration | Perplexity |
+|---|---:|
+| Source checkpoint, ExLlamaV3 reference forward | 10.2676 |
+| EXL3 2.5 bpw, same reference forward | 11.8915 |
+| EXL3, DSX with INT8 prefill, 3-bit KV and 4-bit head | 12.7581 |
+| NVFP4, DSX with INT8 prefill, DP4A decode, 3-bit KV and 4-bit head | 10.3605 |
+
+The two reference rows ran on a 96 GB RTX PRO 6000 Blackwell. Their mean KL was 0.17443 and next-token agreement was 85.9375%. The DSX rows additionally include runtime precision choices and a batched prefix followed by tokenwise teacher forcing. They do not isolate weight quantization alone. Coding, reasoning, and agent task-completion quality remain unmeasured for this quant.
+
+Independent checks compare packed EXL3 decoding with a CPU implementation, compare fused GEMV with BF16 dequantization and rotations, and compare attention with an f64 causal-softmax reference. The 65-row attention check covers partial tiles, multiple tiles, and several GQA heads. Template history, reasoning stream boundaries, and typed XML tool arguments have passing tests. The fractional quantizer patch produced identical indices and values to the original implementation on a 17-tile check.
+
+The earlier 8K graph and fixed-shape equivalence receipts remain as historical checks. They do not establish bitwise equivalence for the newer prefill, quantized attention, and speculative paths.
+
+## Implementation
+
+- `nvidia/src/nanbeige.rs`: weight loading, native FP4 plans, EXL3 execution, KV allocation, graph capture, prefix reuse, and sampler integration.
+- `nvidia/src/kernels/nanbeige.cuh`: quantization, normalization, RoPE, attention, head kernels, and NVFP4 GEMV experiments.
+- `nvidia/src/kernels/nanbeige-exl3.cu`: standalone EXL3 kernels, with MIT-licensed upstream headers and provenance under `vendor/exllamav3/`.
+- `nvidia/src/bin/nanbeige-server.rs`: chat template, OpenAI protocol, tools, reasoning, web UI, and cache-aware timing metadata.
