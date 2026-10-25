@@ -56,8 +56,18 @@ def render_check(workspace, seconds=1.6):
             frames=re.split(r'\x1b\[(?:0;0|1;1)?H',data.decode('utf-8','replace'))[1:]
             masks=[''.join(c for c in frame if 0x2800<=ord(c)<=0x28ff) for frame in frames]
             dots=[sum((ord(c)-0x2800).bit_count() for c in frame) for frame in masks]
-            phase={'columns':cols,'rows':rows,'fps':len(frames)/max(elapsed,.001),'frames':len(frames),'distinct_masks':len(set(masks)), 'max_dots':max(dots,default=0),'median_cells': sorted(map(len,masks))[len(masks)//2] if masks else 0}
-            phase['pass']=15<=phase['fps']<=65 and phase['distinct_masks']>=8 and phase['max_dots']>=cols*rows*.12
+            extents=[]
+            row_masks=[re.sub(r'\x1b\[[0-9;?]*[A-Za-z]','',f).splitlines() for f in frames]
+            for rows_text in row_masks[2:-1]:
+                points=[]
+                for y,line in enumerate(rows_text[:rows]):
+                    for x,c in enumerate(line[:cols]):
+                        if 0x2801<=ord(c)<=0x28ff: points.append((x,y))
+                if points:
+                    xs,ys=zip(*points);extents.append(((max(xs)-min(xs)+1)/cols,(max(ys)-min(ys)+1)/rows,min(xs)>0 and max(xs)<cols-1 and min(ys)>0 and max(ys)<rows-1))
+            typical=sorted(extents)[len(extents)//2] if extents else (0,0,False)
+            phase={'columns':cols,'rows':rows,'fps':len(frames)/max(elapsed,.001),'frames':len(frames),'distinct_masks':len(set(masks)), 'max_dots':max(dots,default=0),'typical_width_fraction':typical[0],'typical_height_fraction':typical[1],'frames_with_margin':sum(e[2] for e in extents),'measured_extents':len(extents),'median_cells': sorted(map(len,masks))[len(masks)//2] if masks else 0}
+            phase['pass']=15<=phase['fps']<=65 and phase['distinct_masks']>=8 and phase['max_dots']>=cols*rows*.12 and .2<=typical[0]<=.95 and .2<=typical[1]<=.95
             phases.append(phase)
         if proc.poll() is None: os.killpg(proc.pid,signal.SIGINT)
         tail,_=read_for(.5); output+=tail
@@ -71,17 +81,17 @@ def render_check(workspace, seconds=1.6):
         os.close(master);os.close(slave)
 
 def judge(workspace, shape, out):
-    started=time.time(); result={'judge_version':3,'shape':shape,'timestamp':started,'pass':False}
+    started=time.time(); result={'judge_version':4,'shape':shape,'timestamp':started,'pass':False}
     try:
         source=(workspace/'render.py').read_text(); tree=ast.parse(source)
         imports={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
         imports.update((n.module or '').split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom))
         result['stdlib_only']=all(m in sys.stdlib_module_names for m in imports)
         result['source_sha256']=hashlib.sha256(source.encode()).hexdigest()
-        result['mesh']=mesh_check(workspace/'mesh.json',shape)
+        result['mesh']=mesh_check(workspace/'mesh.json',shape) if (workspace/'mesh.json').exists() else {'pass':None,'status':'not_submitted','limit':'Geometry must be checked in source and display review.'}
         result['renderer'],data=render_check(workspace)
         out.with_suffix('.pty').write_bytes(data)
-        result['pass']=result['stdlib_only'] and result['mesh']['pass'] and result['renderer']['pass']
+        result['pass']=result['stdlib_only'] and result['mesh']['pass'] is not False and result['renderer']['pass']
     except Exception as e: result['error']=repr(e)
     result['judge_s']=time.time()-started;out.write_text(json.dumps(result,indent=2)+'\n');return result
 

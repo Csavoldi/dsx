@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run one isolated Pi geometry task against the existing DSX server."""
-import argparse, hashlib, json, os, pathlib, re, secrets, shlex, signal, statistics, subprocess, sys, time, urllib.request
+import argparse, hashlib, json, os, pathlib, re, secrets, shlex, signal, statistics, string, subprocess, sys, time, urllib.request
 from judge import judge, EXPECTED
 HERE=pathlib.Path(__file__).resolve().parent
 
@@ -53,19 +53,12 @@ def main():
     (root/'config/models.json').write_text(json.dumps(config,indent=2)+'\n')
     session='dsx-geometry-'+root.name
     pane=command(['tmux','new-session','-d','-s',session,'-x','110','-y','32','-P','-F','#{pane_id}']).strip()
-    task=f'''Create a small working terminal demo of a rotating solid 3D {a.shape} in render.py, using Python's standard library and Unicode braille. Make the solid recognizable with visible faces and simple shading. Keep the animation within the terminal, adapt to its size, and exit cleanly on Ctrl-C with the cursor restored. Aim for a smooth animation around 30 fps; exact appearance is up to you.
-
-Save the actual mesh used by render.py in mesh.json: "vertices" contains x,y,z coordinates and "faces" contains zero-based vertex indices around each polygon. Use a centered regular {a.shape} and load this file from the script directory.
-
-Your display is tmux pane {pane}. Run the demo there: tmux send-keys -t {pane} 'cd {root}/workspace && python3 render.py' Enter. One quick check with tmux capture-pane -p -t {pane} is enough. If it crashes, repair the functional problem and recheck. Stop once it works; do not polish the aesthetics or repeatedly inspect similar frames. Leave the demo running and give a brief completion summary.
-
-Work only in this task directory and the named display pane. Do not access other services, agents, panes, credentials, or project directories. Do not install packages. Never run the endless animation in your own tool shell. To restart the display after a necessary repair: tmux send-keys -t {pane} C-c.
-'''
+    task=string.Template((HERE/'PROMPT.md').read_text()).substitute(shape=a.shape,pane=pane,workspace=str(root/'workspace'))
     if a.guidance: task+='\n'+a.guidance.read_text()
     (root/'TASK.md').write_text(task)
     health=json.load(urllib.request.urlopen('http://192.168.0.102:8090/health',timeout=10));assert health['status']=='ok' and health['pending']==0,health
     (root/'host-state.json').write_text(command(['ssh','-o','BatchMode=yes','192.168.0.102','python3 -'],input=(HERE/'host-state.py').read_text()))
-    started={'wall':time.time(),'shape':a.shape,'arm':a.arm,'pane':pane,'contract_version':3,'reasoning':a.reasoning,'seed_base':secrets.randbits(53),'temperature':1.0,'top_p':1.0,'task_sha256':hashlib.sha256(task.encode()).hexdigest(),'health':health,'timeout_s':a.timeout}
+    started={'wall':time.time(),'shape':a.shape,'arm':a.arm,'pane':pane,'contract_version':4,'reasoning':a.reasoning,'seed_base':secrets.randbits(53),'temperature':1.0,'top_p':1.0,'task_sha256':hashlib.sha256(task.encode()).hexdigest(),'health':health,'timeout_s':a.timeout}
     (root/'started.json').write_text(json.dumps(started,indent=2)+'\n')
     env=dict(os.environ,GAUNTLET_RUN=str(root),GAUNTLET_PORT=str(a.port),PI_CODING_AGENT_DIR=str(root/'config'),PI_TELEMETRY='0',GAUNTLET_SEED_BASE=str(started['seed_base']));env.pop('NODE_OPTIONS',None)
     proxy_log=(root/'proxy.log').open('w');agent_log=(root/'agent.jsonl').open('w')
@@ -82,10 +75,11 @@ Work only in this task directory and the named display pane. Do not access other
         last=None;attempt=0;first_pass=False
         while agent.poll() is None and time.time()-started['wall']<a.timeout:
             source=root/'workspace/render.py';mesh=root/'workspace/mesh.json'
-            if source.exists() and mesh.exists():
-                digest=hashlib.sha256(source.read_bytes()+mesh.read_bytes()).hexdigest()
+            if source.exists():
+                digest=hashlib.sha256(source.read_bytes()+(mesh.read_bytes() if mesh.exists() else b'')).hexdigest()
                 if digest!=last:
-                    last=digest;attempt+=1;(root/'revisions'/f'{attempt:03}.py').write_bytes(source.read_bytes());(root/'revisions'/f'{attempt:03}.mesh.json').write_bytes(mesh.read_bytes())
+                    last=digest;attempt+=1;(root/'revisions'/f'{attempt:03}.py').write_bytes(source.read_bytes())
+                    if mesh.exists(): (root/'revisions'/f'{attempt:03}.mesh.json').write_bytes(mesh.read_bytes())
                     result=judge(root/'workspace',a.shape,root/f'judge-{attempt:03}.json')
                     print(json.dumps({'event':'judge','attempt':attempt,'elapsed_s':time.time()-started['wall'],'pass':result['pass'],'error':result.get('error')}),flush=True)
                     first_pass|=result['pass']
