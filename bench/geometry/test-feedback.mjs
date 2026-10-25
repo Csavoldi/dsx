@@ -13,6 +13,12 @@ try{
  const next={messages:[...first.messages,{role:'assistant',content:'repair'},{role:'tool',content:'done'}]};assert.equal(handlers.before_provider_request({payload:next}),undefined);
  assert.deepEqual(next.messages.slice(0,first.messages.length),first.messages,'Feedback remains in the stored tool result prefix');
  assert.equal(handlers.tool_result(event),undefined,'No duplicate feedback for an unchanged source');
- const journal=readFileSync(join(root,'functional-feedback.jsonl'),'utf8').trim().split('\n');assert.equal(journal.length,1);assert.equal(JSON.parse(journal[0]).delivery,'persisted-tool-result');
+ writeFileSync(join(root,'workspace/render.py'),'# blank revision\n');
+ const blankHash=createHash('sha256').update(readFileSync(join(root,'workspace/render.py'))).digest('hex');
+ writeFileSync(join(root,'latest-check.json'),JSON.stringify({pass:false,judge_version:8,source_sha256:blankHash,renderer:{phases:[{max_dots:0,frame_certification:{supported_full_frame:true}}]}}));
+ const blank=handlers.tool_result({...event,toolCallId:'blank',content:[{type:'text',text:' '.repeat(30)}]});assert.match(blank.content.at(-1).text,/No visible braille dots/);
+ writeFileSync(join(root,'acceptance.json'),JSON.stringify({pass:true,judge_version:8,source_sha256:blankHash}));
+ assert.equal(handlers.tool_call({}),undefined,'A blank self-check attempt cannot satisfy the successful-display guard');
+ const journal=readFileSync(join(root,'functional-feedback.jsonl'),'utf8').trim().split('\n');assert.equal(journal.length,2);assert.equal(JSON.parse(journal[0]).delivery,'persisted-tool-result');
  console.log('Persistent feedback checks passed: tool-result delivery, unchanged follow-up prefix, one note per revision, no transient user-message injection.');
 }finally{rmSync(root,{recursive:true,force:true});}

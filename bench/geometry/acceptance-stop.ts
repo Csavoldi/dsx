@@ -27,13 +27,13 @@ export default function (pi: ExtensionAPI) {
   }
   function functionalFeedback(): string | undefined {
     try {
-      const check=read("latest-check.json"), self=read("self-check.json"), current=hash();
+      const check=read("latest-check.json"), self=read(judgeVersion>=8 ? "self-check-attempt.json" : "self-check.json"), current=hash();
       if (check.judge_version!==judgeVersion || check.source_sha256!==current || self.source_sha256!==current || feedbackHash===current || check.pass) return;
       const failures:string[]=[];
       for (const phase of check.renderer?.phases ?? []) {
         if (phase.max_dots===0) failures.push("No visible braille dots were rendered.");
         const cert=phase.frame_certification;
-        if (judgeVersion>=7 && cert?.supported_full_frame) {
+        if (judgeVersion>=7 && cert?.supported_full_frame && phase.max_dots!==0) {
           if (phase.typical_width_fraction>.95 || phase.typical_height_fraction>.95) failures.push("The solid reaches the terminal boundary; leave a clear visible margin.");
           if (phase.typical_width_fraction<.2 || phase.typical_height_fraction<.2) failures.push("The solid is too small to occupy a substantial part of the terminal.");
         }
@@ -60,6 +60,9 @@ export default function (pi: ExtensionAPI) {
         normalized = true;
       }
       const visibleDots=Array.from(output).filter(c=>c.charCodeAt(0)>0x2800 && c.charCodeAt(0)<=0x28ff).length;
+      if (judgeVersion>=8 && !event.isError && event.toolName === "bash" && command.includes("tmux") && command.includes("capture-pane") && command.includes(pane)) {
+        writeFileSync(join(root,"self-check-attempt.json"),JSON.stringify({time:Date.now()/1000,source_sha256:hash(),tool_call_id:event.toolCallId,visible_dots:visibleDots})+"\n");
+      }
       if (visibleDots>=20 && !output.includes("Traceback (most recent call last)") && !event.isError && event.toolName === "bash" && command.includes("tmux") && command.includes("capture-pane") && command.includes(pane)) {
         writeFileSync(join(root,"self-check.json"),JSON.stringify({time:Date.now()/1000,source_sha256:hash(),tool_call_id:event.toolCallId})+"\n");
       }

@@ -102,3 +102,6 @@ legacy behavior remains available for existing comparisons. Version 8 records
 each delivered note in `functional-feedback.jsonl`; check it with
 `node bench/geometry/test-feedback.mjs`. Actual request histories and cache
 counters must still verify persistence and its latency effect in a live run.
+Version 8 records an attempted display capture separately from a successful
+visible-Braille check. A blank capture can therefore receive a functional-failure
+note, while completion still requires the successful check of the current file.
