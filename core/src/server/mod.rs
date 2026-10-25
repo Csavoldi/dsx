@@ -366,6 +366,7 @@ where
         top_p: io.top_p.unwrap_or(cfg.default_top_p),
         seed,
         stop_token_ids: st.stop_ids.clone(),
+        thinking_close: st.think.filter(|(open,_)| prompt.last()==Some(open)).map(|(_,close)|close),
         hesitation,
         images: Arc::new(images),
     };

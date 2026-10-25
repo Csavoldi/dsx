@@ -91,3 +91,60 @@ mod tests {
         );
     }
 }
+
+/// An opt-in generation policy for backends that support a forced thinking close.
+/// The caller still consumes its normal sample/RNG draw, then applies this policy.
+pub struct TokenBudget {
+    pub limit: usize,
+    pub close: u32,
+    pub reasoning_tokens: usize,
+    pub forced: bool,
+    active: bool,
+}
+impl TokenBudget {
+    pub fn new(limit: usize, close: u32) -> Self {
+        Self {
+            limit,
+            close,
+            reasoning_tokens: 0,
+            forced: false,
+            active: true,
+        }
+    }
+    pub fn select(&mut self, sampled: u32) -> u32 {
+        if !self.active {
+            return sampled;
+        }
+        if sampled == self.close {
+            self.active = false;
+            return sampled;
+        }
+        if self.reasoning_tokens >= self.limit {
+            self.active = false;
+            self.forced = true;
+            return self.close;
+        }
+        self.reasoning_tokens += 1;
+        sampled
+    }
+}
+#[cfg(test)]
+mod budget_tests {
+    use super::TokenBudget;
+    #[test]
+    fn closes_once_at_the_budget_then_leaves_answer_samples_unchanged() {
+        let mut b = TokenBudget::new(3, 99);
+        assert_eq!([1, 2, 3, 4, 5, 6].map(|x| b.select(x)), [1, 2, 3, 99, 5, 6]);
+        assert_eq!(b.reasoning_tokens, 3);
+        assert!(b.forced);
+    }
+    #[test]
+    fn natural_early_close_and_boundary_close_are_not_forced() {
+        for limit in [1, 3] {
+            let mut b = TokenBudget::new(limit, 99);
+            assert_eq!([1, 99, 2, 3].map(|x| b.select(x)), [1, 99, 2, 3]);
+            assert_eq!(b.reasoning_tokens, 1);
+            assert!(!b.forced);
+        }
+    }
+}

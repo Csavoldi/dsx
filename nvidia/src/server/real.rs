@@ -56,6 +56,14 @@ pub fn real_engine(args: &RealEngineArgs) -> Result<Box<dyn Engine>> {
 
 impl Engine for Real {
     fn generate(&mut self, prompt: &[u32], p: &GenParams, emit: &mut dyn FnMut(u32) -> bool) -> Result<Finish> {
+        let mut thinking_budget = if let Some(close)=p.thinking_close {
+            std::env::var("DSX_THINKING_BUDGET").ok().map(|raw| -> Result<_> {
+                let limit=raw.parse::<usize>()?;
+                anyhow::ensure!((1..=8192).contains(&limit), "DSX_THINKING_BUDGET must be 1..8192");
+                Ok(dsx_core::server::reasoning::TokenBudget::new(limit,close))
+            }).transpose()?
+        } else {None};
+        let mut forced_thinking_tokens=Vec::<serde_json::Value>::new();
         let token_audit_path = std::env::var("DSX_TOKEN_AUDIT").ok();
         let t0 = Instant::now();
         let profile = std::env::var("DSX_RUNTIME_STATS").is_ok_and(|v| v == "1");
@@ -114,7 +122,7 @@ impl Engine for Real {
         let (mut sample_s, mut emit_s, mut step_s, mut steps) = (0.0, 0.0, 0.0, 0usize);
         let adapt_before = self.gm.adapt_s;
         let picks_before = self.gm.cpu_picks();
-        for _ in 0..p.max_new {
+        for output_index in 0..p.max_new {
             if let Some(h) = &hes {
                 for &i in h.ids.iter() {
                     if let Some(l) = logits.get_mut(i as usize) {
@@ -123,7 +131,9 @@ impl Engine for Real {
                 }
             }
             let clock = profile.then(Instant::now);
-            let tok = gpu_next.take().unwrap_or_else(|| sampler.sample(&logits));
+            let sampled = gpu_next.take().unwrap_or_else(|| sampler.sample(&logits));
+            let tok=thinking_budget.as_mut().map_or(sampled,|budget|budget.select(sampled));
+            if tok!=sampled {forced_thinking_tokens.push(serde_json::json!({"output_index":output_index,"sampled":sampled,"forced":tok}));}
             if let Some(t) = clock { sample_s += t.elapsed().as_secs_f64(); }
             if let Some(ids) = &mut output_ids { ids.push(tok); }
             if hes.as_ref().is_some_and(|h| tok == h.close) {
@@ -158,7 +168,7 @@ impl Engine for Real {
         }
         if profile {
             let picks = self.gm.cpu_picks();
-            tracing::info!(stats = %serde_json::json!({"steps":steps,"gpu_sampling":gpu_sampling,"gpu_samples":gpu_samples,"gpu_fallbacks":gpu_fallbacks,"sample_s":sample_s,"emit_s":emit_s,"step_s":step_s,"adapt_host_s":self.gm.adapt_s-adapt_before,"model_prefill_s":model_prefill_s,"snapshot_s":snapshot_s,"prefix_lcp":lcp,"prefix_start":start,"prefix_replayed_tokens":lcp-start,"routed_picks":picks.0-picks_before.0,"cpu_picks":picks.1-picks_before.1}), "runtime stats");
+            tracing::info!(stats = %serde_json::json!({"steps":steps,"thinking_budget":thinking_budget.as_ref().map(|b|b.limit),"reasoning_tokens":thinking_budget.as_ref().map(|b|b.reasoning_tokens),"forced_thinking_close":thinking_budget.as_ref().is_some_and(|b|b.forced),"gpu_sampling":gpu_sampling,"gpu_samples":gpu_samples,"gpu_fallbacks":gpu_fallbacks,"sample_s":sample_s,"emit_s":emit_s,"step_s":step_s,"adapt_host_s":self.gm.adapt_s-adapt_before,"model_prefill_s":model_prefill_s,"snapshot_s":snapshot_s,"prefix_lcp":lcp,"prefix_start":start,"prefix_replayed_tokens":lcp-start,"routed_picks":picks.0-picks_before.0,"cpu_picks":picks.1-picks_before.1}), "runtime stats");
         }
         if let Some(audit) = lookup_audit {
             tracing::info!(stats = %audit.report(), "lookup audit");
@@ -166,7 +176,7 @@ impl Engine for Real {
         self.stats = GenStats { prefill: Some(prefill), decode: Some(td.elapsed()), cached_prompt_tokens: start };
         if let (Some(path),Some(output)) = (token_audit_path,output_ids) {
             use std::io::Write;
-            let record = serde_json::json!({"event":"raw_generation","seed":p.seed,"temperature":p.temperature,"top_p":p.top_p,"prompt_token_ids":prompt,"output_token_ids":output,"processed_output_tokens":self.cached.len()-prompt.len(),"prefix_lcp":lcp,"prefix_start":start,"initial_residency":initial_residency,"final_residency":self.gm.validation_residency(),"gpu_sampling":gpu_sampling,"backend_finish":format!("{fin:?}"),"limit":"Raw sampled IDs include a stopping/cancelled token that may not have been processed; use processed_output_tokens when replaying KV/cache history."});
+            let record = serde_json::json!({"event":"raw_generation","thinking_budget":thinking_budget.as_ref().map(|b|b.limit),"forced_thinking_tokens":forced_thinking_tokens,"seed":p.seed,"temperature":p.temperature,"top_p":p.top_p,"prompt_token_ids":prompt,"output_token_ids":output,"processed_output_tokens":self.cached.len()-prompt.len(),"prefix_lcp":lcp,"prefix_start":start,"initial_residency":initial_residency,"final_residency":self.gm.validation_residency(),"gpu_sampling":gpu_sampling,"backend_finish":format!("{fin:?}"),"limit":"Chosen IDs include explicitly recorded forced thinking-close tokens and a stopping/cancelled token that may not have been processed; use processed_output_tokens when replaying KV/cache history."});
             let write = || -> std::io::Result<()> {
                 let mut f=std::fs::OpenOptions::new().create(true).append(true).open(path)?;
                 writeln!(f,"{record}")

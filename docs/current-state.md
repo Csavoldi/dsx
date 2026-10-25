@@ -199,3 +199,13 @@ The override accepts only 1–100 and replaces only the template-generated leadi
 header, preserving conversation text. With no override, prompt bytes are
 unchanged. `validation-encode` honors the same process-local override so saved
 requests can be encoded consistently with the serving window.
+
+`DSX_THINKING_BUDGET=N` is an opt-in NVIDIA generation-policy experiment (1–8192
+tokens). For a request whose prompt opens a thinking span, it emits the normal
+sampled reasoning tokens up to the limit, then forces the thinking-close token
+if the model has not closed naturally. Sampling still consumes its normal RNG
+draw; after closure, answer sampling continues normally. Thinking-off requests
+are unchanged. This intentionally changes generation and can reduce quality; it
+requires actual coding-task validation. The raw-token audit records each forced
+position, original sampled ID and chosen close ID, and runtime stats report the
+applied budget and reasoning-token count. It is not a lossless optimization.
