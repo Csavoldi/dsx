@@ -1,0 +1,129 @@
+{
+  "root": "/home/lxe/dsx-gauntlet-20261024/quality-008-a8-d3-stable",
+  "postflight": {
+    "pid": 2391421,
+    "server_md5": "363ced3dada78d1271549592de700e3d",
+    "model_identity": [
+      251592261632,
+      154277358,
+      1792707596293851835
+    ],
+    "power_uw": "4095875000",
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "restored": true
+  },
+  "partial": false,
+  "raw_sha256": {
+    "baseline-repeat.f32": "5d168933494d1c8b3f6ff4230a8a65918cfa931efcb428b09c9c3ba031b83160",
+    "baseline-repeat.log": "d5ad0ffcec25b522cc3863ea9b2dd4e38bd38714fc12762b3665508d4a2e94ed",
+    "baseline-repeat.routes.jsonl": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+    "baseline.f32": "5d168933494d1c8b3f6ff4230a8a65918cfa931efcb428b09c9c3ba031b83160",
+    "baseline.log": "153fdb879553bab75740e49270d3c8e91857fad16e5f35e24042e4dda7e0df5a",
+    "baseline.routes.jsonl": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+    "continuation.ids": "06c751ffa9832250cd73deb1f3f93550a7bc569debbfc29aa5a4ee00bd8fc170",
+    "events.jsonl": "88d472686293753db442c99c402a196a4a937a7ee12e984ea2077d99777e3e4d",
+    "gpu-sample.f32": "5d168933494d1c8b3f6ff4230a8a65918cfa931efcb428b09c9c3ba031b83160",
+    "gpu-sample.log": "80be344c6fbe5831051b9e2bdb2698a1b8d03ec76d705111948d5f0d5a5b7ba7",
+    "gpu-sample.routes.jsonl": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+    "hardware.jsonl": "e331de8981356733e2cda6b29ad5866c77e06dbea9886e76225bde5c8d1f0952",
+    "postflight.json": "6ca51b8bf6ef9acf6b22d1f2df00a49a2542737c079d4fbc30a8d2b20ec58908",
+    "preflight.json": "85da71e31955f608cf1985df2c4fdf25eeacbd9b7911d9c47124a79f6692d04c",
+    "server-before.log": "05cb60e1fbb1b10043bf673cb20f4a4c5aeeefc3d30beb031b5d789de0855df1"
+  },
+  "comparisons": [
+    {
+      "reference": "baseline",
+      "candidate": "gpu-sample",
+      "rows": 129,
+      "values": 16677120,
+      "changed_values": 0,
+      "mean_kl": 0.0,
+      "max_kl": 0,
+      "top1_changes": 0,
+      "same_initial_residency": true,
+      "same_placement_trace": true,
+      "same_routing_trace": true,
+      "changed_sampled_draws": 0
+    },
+    {
+      "reference": "baseline",
+      "candidate": "baseline-repeat",
+      "rows": 129,
+      "values": 16677120,
+      "changed_values": 0,
+      "mean_kl": 0.0,
+      "max_kl": 0,
+      "top1_changes": 0,
+      "same_initial_residency": true,
+      "same_placement_trace": true,
+      "same_routing_trace": true,
+      "changed_sampled_draws": 0
+    }
+  ],
+  "arms": {
+    "baseline": {
+      "initial_residency_sha256": "fae8dd06a795868e932d9d2051756de6ee26cddbf44cb1eb247275ec722426e4",
+      "placement_trace_sha256": "9e849a701ba3cda6389e3c10a40215cfba3dcf2c8a25a424301397d12a473c3d",
+      "routing_trace_sha256": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+      "route_rows": 5120,
+      "cpu_immediate": 3445,
+      "cpu_deferred": 5251,
+      "deferred_mass_fraction": {
+        "mean": 0.12747984732124237,
+        "p50": 0.1241165870894941,
+        "p95": 0.3202890817381756,
+        "max": 0.4907644188707836
+      },
+      "cpu_partition_mismatches": [],
+      "gpu_fallbacks": 0,
+      "seed": 2262683844767188,
+      "placement_change_steps": 128
+    },
+    "gpu-sample": {
+      "initial_residency_sha256": "fae8dd06a795868e932d9d2051756de6ee26cddbf44cb1eb247275ec722426e4",
+      "placement_trace_sha256": "9e849a701ba3cda6389e3c10a40215cfba3dcf2c8a25a424301397d12a473c3d",
+      "routing_trace_sha256": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+      "route_rows": 5120,
+      "cpu_immediate": 3445,
+      "cpu_deferred": 5251,
+      "deferred_mass_fraction": {
+        "mean": 0.12747984732124237,
+        "p50": 0.1241165870894941,
+        "p95": 0.3202890817381756,
+        "max": 0.4907644188707836
+      },
+      "cpu_partition_mismatches": [],
+      "gpu_fallbacks": 0,
+      "seed": 2262683844767188,
+      "placement_change_steps": 128
+    },
+    "baseline-repeat": {
+      "initial_residency_sha256": "fae8dd06a795868e932d9d2051756de6ee26cddbf44cb1eb247275ec722426e4",
+      "placement_trace_sha256": "9e849a701ba3cda6389e3c10a40215cfba3dcf2c8a25a424301397d12a473c3d",
+      "routing_trace_sha256": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+      "route_rows": 5120,
+      "cpu_immediate": 3445,
+      "cpu_deferred": 5251,
+      "deferred_mass_fraction": {
+        "mean": 0.12747984732124237,
+        "p50": 0.1241165870894941,
+        "p95": 0.3202890817381756,
+        "max": 0.4907644188707836
+      },
+      "cpu_partition_mismatches": [],
+      "gpu_fallbacks": 0,
+      "seed": 2262683844767188,
+      "placement_change_steps": 128
+    }
+  },
+  "limits": [
+    "The same continuation from the earlier adaptive replay was reused.",
+    "This demonstrates removal of the observed equal-score eviction-order divergence on this prefix, not universal determinism or better end-task quality.",
+    "Archived and current CUDA images share the same current diagnostic host wrapper.",
+    "No production startup default has been changed."
+  ]
+}

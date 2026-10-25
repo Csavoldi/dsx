@@ -52,7 +52,7 @@ def summarize(root):
     result['diagnostics']=diagnostics
     runtime=[v['runtime'] for v in diagnostics.values() if 'runtime' in v]
     if runtime:
-        result['runtime_totals']={key:sum(x.get(key,0) for x in runtime) for key in ['steps','gpu_samples','gpu_fallbacks','sample_s','emit_s','step_s','adapt_host_s','model_prefill_s','snapshot_s','routed_picks','cpu_picks']}
+        result['runtime_totals']={key:sum(x.get(key,0) for x in runtime) for key in ['steps','gpu_samples','gpu_fallbacks','sample_s','emit_s','step_s','adapt_host_s','model_prefill_s','snapshot_s','prefix_replayed_tokens','routed_picks','cpu_picks']}
         result['gpu_sampling_requests']=sum(bool(x.get('gpu_sampling')) for x in runtime)
     lookup=[v['lookup'] for v in diagnostics.values() if 'lookup' in v]
     if lookup:

@@ -56,6 +56,7 @@ pub fn real_engine(args: &RealEngineArgs) -> Result<Box<dyn Engine>> {
 
 impl Engine for Real {
     fn generate(&mut self, prompt: &[u32], p: &GenParams, emit: &mut dyn FnMut(u32) -> bool) -> Result<Finish> {
+        let token_audit_path = std::env::var("DSX_TOKEN_AUDIT").ok();
         let t0 = Instant::now();
         let profile = std::env::var("DSX_RUNTIME_STATS").is_ok_and(|v| v == "1");
         anyhow::ensure!(!prompt.is_empty(), "empty prompt");
@@ -97,6 +98,8 @@ impl Engine for Real {
         self.snap = Some(self.gm.snapshot()?);
         let snapshot_s = snapshot_clock.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         self.cached = key;
+        let initial_residency = token_audit_path.as_ref().map(|_| self.gm.validation_residency());
+        let mut output_ids = token_audit_path.as_ref().map(|_| Vec::with_capacity(p.max_new.min(8192)));
         let prefill = t0.elapsed();
         let td = Instant::now();
         let mut sampler = Sampler::from_params(p);
@@ -122,6 +125,7 @@ impl Engine for Real {
             let clock = profile.then(Instant::now);
             let tok = gpu_next.take().unwrap_or_else(|| sampler.sample(&logits));
             if let Some(t) = clock { sample_s += t.elapsed().as_secs_f64(); }
+            if let Some(ids) = &mut output_ids { ids.push(tok); }
             if hes.as_ref().is_some_and(|h| tok == h.close) {
                 hes = None;
             }
@@ -154,12 +158,22 @@ impl Engine for Real {
         }
         if profile {
             let picks = self.gm.cpu_picks();
-            tracing::info!(stats = %serde_json::json!({"steps":steps,"gpu_sampling":gpu_sampling,"gpu_samples":gpu_samples,"gpu_fallbacks":gpu_fallbacks,"sample_s":sample_s,"emit_s":emit_s,"step_s":step_s,"adapt_host_s":self.gm.adapt_s-adapt_before,"model_prefill_s":model_prefill_s,"snapshot_s":snapshot_s,"routed_picks":picks.0-picks_before.0,"cpu_picks":picks.1-picks_before.1}), "runtime stats");
+            tracing::info!(stats = %serde_json::json!({"steps":steps,"gpu_sampling":gpu_sampling,"gpu_samples":gpu_samples,"gpu_fallbacks":gpu_fallbacks,"sample_s":sample_s,"emit_s":emit_s,"step_s":step_s,"adapt_host_s":self.gm.adapt_s-adapt_before,"model_prefill_s":model_prefill_s,"snapshot_s":snapshot_s,"prefix_lcp":lcp,"prefix_start":start,"prefix_replayed_tokens":lcp-start,"routed_picks":picks.0-picks_before.0,"cpu_picks":picks.1-picks_before.1}), "runtime stats");
         }
         if let Some(audit) = lookup_audit {
             tracing::info!(stats = %audit.report(), "lookup audit");
         }
         self.stats = GenStats { prefill: Some(prefill), decode: Some(td.elapsed()), cached_prompt_tokens: start };
+        if let (Some(path),Some(output)) = (token_audit_path,output_ids) {
+            use std::io::Write;
+            let record = serde_json::json!({"event":"raw_generation","seed":p.seed,"temperature":p.temperature,"top_p":p.top_p,"prompt_token_ids":prompt,"output_token_ids":output,"processed_output_tokens":self.cached.len()-prompt.len(),"prefix_lcp":lcp,"prefix_start":start,"initial_residency":initial_residency,"final_residency":self.gm.validation_residency(),"gpu_sampling":gpu_sampling,"backend_finish":format!("{fin:?}"),"limit":"Raw sampled IDs include a stopping/cancelled token that may not have been processed; use processed_output_tokens when replaying KV/cache history."});
+            let write = || -> std::io::Result<()> {
+                let mut f=std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+                writeln!(f,"{record}")
+            };
+            if let Err(error)=write() {tracing::warn!(%error,"token audit write failed");}
+        }
+
         let _ = Duration::ZERO;
         Ok(fin)
     }
