@@ -1,0 +1,576 @@
+{
+  "manifest": {
+    "seed_base": 1216025369061329,
+    "fixtures": {
+      "setup": {
+        "path": "/home/lxe/dsx-gauntlet-20261024/workflow-nodefer-dnone-off-octahedron-01/requests/010.request.json",
+        "sha256": "5d00a38bebe33932da4b01b192023369f1be02fe54f7633c9ff26d904ae46bff"
+      },
+      "dropped": {
+        "path": "/home/lxe/dsx-gauntlet-20261024/workflow-nodefer-dnone-off-octahedron-01/requests/011.request.json",
+        "sha256": "05fc1e2ea7adbef6ab358b8bc58adee33f8dc7c886c00b3d498c8b2a1677aa30"
+      },
+      "retained": {
+        "path": "/home/lxe/dsx-gauntlet-20261024/feedback-prefix-retained.request.json",
+        "sha256": "a0fe9101419b2ddaf103eaf8ad0e998c42baa2ba62955b582f022a6e16e4be5e"
+      }
+    },
+    "order": [
+      "dropped",
+      "retained",
+      "retained",
+      "dropped"
+    ],
+    "limit": "One-token request latency/cache replay on saved tool histories; not a coding completion or quality comparison. Setup requests are excluded from target latency."
+  },
+  "candidate_ready": {
+    "time": 1792906353.5041068,
+    "env": {
+      "DSX_T16_PAIR_GU": "1",
+      "DSX_LOOKUP_AUDIT": "1",
+      "DSX_RUNTIME_STATS": "1",
+      "DSX_ENGRAM_FP8": "0",
+      "DSX_GPU_SAMPLE": "1",
+      "DSX_ADAPT_STABLE": "1",
+      "DSX_ADAPT": "8",
+      "DSX_CPU_THREADS": "14",
+      "DSX_TOKEN_AUDIT": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/cache-feedback-replay-02/raw-generations.jsonl"
+    },
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "binary_sha256": "fe4c1f1b5e229c056384367dfe87c5b14f425fdb510b17e62994ae4d6f19e60f",
+    "command": "env -u DSX_DEFER -u DSX_REASONING_SCORE -u DSX_THINKING_BUDGET DSX_T16_PAIR_GU=1 DSX_LOOKUP_AUDIT=1 DSX_RUNTIME_STATS=1 DSX_ENGRAM_FP8=0 DSX_GPU_SAMPLE=1 DSX_ADAPT_STABLE=1 DSX_ADAPT=8 DSX_CPU_THREADS=14 DSX_TOKEN_AUDIT=/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/cache-feedback-replay-02/raw-generations.jsonl /home/lxe/ai/ds41/guard.sh gauntletserve 118 /home/lxe/ai/ds41/codex-gauntlet-20261024/stable-server/dsx-server --model /home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf --host 0.0.0.0 --port 8090 --ctx 131072 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 --arena-gb 110 --rank /home/lxe/ai/ds41/calib/rank.json --vision /home/lxe/ai/ds41/hf-t16/vision.safetensors --defer-rank 3 2>&1 | tee /home/lxe/ai/ds41/codex-gauntlet-20261024/windows/cache-feedback-replay-02/serve.out",
+    "maximum_candidate_seconds": 900
+  },
+  "rows": [
+    {
+      "number": 1,
+      "case": "dropped",
+      "role": "setup",
+      "start": 1792906354.6295414,
+      "elapsed_s": 19.410985436988994,
+      "seed": 1216025369061330,
+      "response_id": "chatcmpl-6add94720000",
+      "usage": {
+        "prompt_tokens": 16044,
+        "completion_tokens": 1,
+        "total_tokens": 16045,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 16044
+      },
+      "prompt_tokens": 16044,
+      "prefix_lcp": 0,
+      "prefix_start": 0,
+      "new_prompt_tokens": 16044,
+      "prefix_replayed_tokens": 0,
+      "server": {
+        "engine": {
+          "id": "chatcmpl-6add94720000",
+          "prompt_tokens": "16044",
+          "cached_prompt_tokens": "0",
+          "generated": "1",
+          "queue_ms": "0",
+          "prefill_ms": "19360",
+          "decode_ms": "0",
+          "prefill_tps": "828.7",
+          "decode_tps": "0.00",
+          "finish": "Length"
+        },
+        "runtime": {
+          "steps": 0,
+          "gpu_sampling": true,
+          "gpu_samples": 0,
+          "gpu_fallbacks": 0,
+          "sample_s": 0.000934496,
+          "emit_s": 7.616e-06,
+          "step_s": 0.0,
+          "adapt_host_s": 0.0,
+          "model_prefill_s": 19.359915427,
+          "snapshot_s": 0.000282208,
+          "prefix_lcp": 0,
+          "prefix_start": 0,
+          "prefix_replayed_tokens": 0,
+          "routed_picks": 0,
+          "cpu_picks": 0
+        }
+      }
+    },
+    {
+      "number": 2,
+      "case": "dropped",
+      "role": "dropped",
+      "start": 1792906374.0414615,
+      "elapsed_s": 20.39458993205335,
+      "seed": 1216025369061331,
+      "response_id": "chatcmpl-6add94860001",
+      "usage": {
+        "prompt_tokens": 16749,
+        "completion_tokens": 1,
+        "total_tokens": 16750,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 16749
+      },
+      "prompt_tokens": 16749,
+      "prefix_lcp": 16009,
+      "prefix_start": 0,
+      "new_prompt_tokens": 16749,
+      "prefix_replayed_tokens": 16009,
+      "server": {
+        "engine": {
+          "id": "chatcmpl-6add94860001",
+          "prompt_tokens": "16749",
+          "cached_prompt_tokens": "0",
+          "generated": "1",
+          "queue_ms": "0",
+          "prefill_ms": "20359",
+          "decode_ms": "0",
+          "prefill_tps": "822.7",
+          "decode_tps": "0.00",
+          "finish": "Length"
+        },
+        "runtime": {
+          "steps": 0,
+          "gpu_sampling": true,
+          "gpu_samples": 0,
+          "gpu_fallbacks": 0,
+          "sample_s": 0.000740396,
+          "emit_s": 5.85e-06,
+          "step_s": 0.0,
+          "adapt_host_s": 0.0,
+          "model_prefill_s": 20.358965218,
+          "snapshot_s": 0.000352919,
+          "prefix_lcp": 16009,
+          "prefix_start": 0,
+          "prefix_replayed_tokens": 16009,
+          "routed_picks": 0,
+          "cpu_picks": 0
+        }
+      }
+    },
+    {
+      "number": 3,
+      "case": "retained",
+      "role": "setup",
+      "start": 1792906394.436959,
+      "elapsed_s": 18.380397551925853,
+      "seed": 1216025369061332,
+      "response_id": "chatcmpl-6add949a0002",
+      "usage": {
+        "prompt_tokens": 16044,
+        "completion_tokens": 1,
+        "total_tokens": 16045,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 16044
+      },
+      "prompt_tokens": 16044,
+      "prefix_lcp": 16009,
+      "prefix_start": 0,
+      "new_prompt_tokens": 16044,
+      "prefix_replayed_tokens": 16009,
+      "server": {
+        "engine": {
+          "id": "chatcmpl-6add949a0002",
+          "prompt_tokens": "16044",
+          "cached_prompt_tokens": "0",
+          "generated": "1",
+          "queue_ms": "0",
+          "prefill_ms": "18345",
+          "decode_ms": "0",
+          "prefill_tps": "874.5",
+          "decode_tps": "0.00",
+          "finish": "Length"
+        },
+        "runtime": {
+          "steps": 0,
+          "gpu_sampling": true,
+          "gpu_samples": 0,
+          "gpu_fallbacks": 0,
+          "sample_s": 0.000910542,
+          "emit_s": 7.217e-06,
+          "step_s": 0.0,
+          "adapt_host_s": 0.0,
+          "model_prefill_s": 18.345241125,
+          "snapshot_s": 0.00035653,
+          "prefix_lcp": 16009,
+          "prefix_start": 0,
+          "prefix_replayed_tokens": 16009,
+          "routed_picks": 0,
+          "cpu_picks": 0
+        }
+      }
+    },
+    {
+      "number": 4,
+      "case": "retained",
+      "role": "retained",
+      "start": 1792906412.8179846,
+      "elapsed_s": 3.5355500449659303,
+      "seed": 1216025369061333,
+      "response_id": "chatcmpl-6add94ac0003",
+      "usage": {
+        "prompt_tokens": 16781,
+        "completion_tokens": 1,
+        "total_tokens": 16782,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 16781
+      },
+      "prompt_tokens": 16781,
+      "prefix_lcp": 16044,
+      "prefix_start": 16044,
+      "new_prompt_tokens": 737,
+      "prefix_replayed_tokens": 0,
+      "server": {
+        "engine": {
+          "id": "chatcmpl-6add94ac0003",
+          "prompt_tokens": "16781",
+          "cached_prompt_tokens": "16044",
+          "generated": "1",
+          "queue_ms": "0",
+          "prefill_ms": "3500",
+          "decode_ms": "0",
+          "prefill_tps": "210.6",
+          "decode_tps": "0.00",
+          "finish": "Length"
+        },
+        "runtime": {
+          "steps": 0,
+          "gpu_sampling": true,
+          "gpu_samples": 0,
+          "gpu_fallbacks": 0,
+          "sample_s": 0.000756693,
+          "emit_s": 5.735e-06,
+          "step_s": 0.0,
+          "adapt_host_s": 0.0,
+          "model_prefill_s": 3.499786677,
+          "snapshot_s": 0.000344357,
+          "prefix_lcp": 16044,
+          "prefix_start": 16044,
+          "prefix_replayed_tokens": 0,
+          "routed_picks": 0,
+          "cpu_picks": 0
+        }
+      }
+    },
+    {
+      "number": 5,
+      "case": "retained",
+      "role": "setup",
+      "start": 1792906416.3540733,
+      "elapsed_s": 18.43708310998045,
+      "seed": 1216025369061334,
+      "response_id": "chatcmpl-6add94b00004",
+      "usage": {
+        "prompt_tokens": 16044,
+        "completion_tokens": 1,
+        "total_tokens": 16045,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 16044
+      },
+      "prompt_tokens": 16044,
+      "prefix_lcp": 16043,
+      "prefix_start": 0,
+      "new_prompt_tokens": 16044,
+      "prefix_replayed_tokens": 16043,
+      "server": {
+        "engine": {
+          "id": "chatcmpl-6add94b00004",
+          "prompt_tokens": "16044",
+          "cached_prompt_tokens": "0",
+          "generated": "1",
+          "queue_ms": "0",
+          "prefill_ms": "18400",
+          "decode_ms": "0",
+          "prefill_tps": "871.9",
+          "decode_tps": "0.00",
+          "finish": "Length"
+        },
+        "runtime": {
+          "steps": 0,
+          "gpu_sampling": true,
+          "gpu_samples": 0,
+          "gpu_fallbacks": 0,
+          "sample_s": 0.000898642,
+          "emit_s": 8.839e-06,
+          "step_s": 0.0,
+          "adapt_host_s": 0.0,
+          "model_prefill_s": 18.400183029,
+          "snapshot_s": 0.000365863,
+          "prefix_lcp": 16043,
+          "prefix_start": 0,
+          "prefix_replayed_tokens": 16043,
+          "routed_picks": 0,
+          "cpu_picks": 0
+        }
+      }
+    },
+    {
+      "number": 6,
+      "case": "retained",
+      "role": "retained",
+      "start": 1792906434.7918482,
+      "elapsed_s": 3.5416573379188776,
+      "seed": 1216025369061335,
+      "response_id": "chatcmpl-6add94c20005",
+      "usage": {
+        "prompt_tokens": 16781,
+        "completion_tokens": 1,
+        "total_tokens": 16782,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 16781
+      },
+      "prompt_tokens": 16781,
+      "prefix_lcp": 16044,
+      "prefix_start": 16044,
+      "new_prompt_tokens": 737,
+      "prefix_replayed_tokens": 0,
+      "server": {
+        "engine": {
+          "id": "chatcmpl-6add94c20005",
+          "prompt_tokens": "16781",
+          "cached_prompt_tokens": "16044",
+          "generated": "1",
+          "queue_ms": "0",
+          "prefill_ms": "3506",
+          "decode_ms": "0",
+          "prefill_tps": "210.2",
+          "decode_tps": "0.00",
+          "finish": "Length"
+        },
+        "runtime": {
+          "steps": 0,
+          "gpu_sampling": true,
+          "gpu_samples": 0,
+          "gpu_fallbacks": 0,
+          "sample_s": 0.000787128,
+          "emit_s": 7.417e-06,
+          "step_s": 0.0,
+          "adapt_host_s": 0.0,
+          "model_prefill_s": 3.505756334,
+          "snapshot_s": 0.000338733,
+          "prefix_lcp": 16044,
+          "prefix_start": 16044,
+          "prefix_replayed_tokens": 0,
+          "routed_picks": 0,
+          "cpu_picks": 0
+        }
+      }
+    },
+    {
+      "number": 7,
+      "case": "dropped",
+      "role": "setup",
+      "start": 1792906438.3341749,
+      "elapsed_s": 18.455171453999355,
+      "seed": 1216025369061336,
+      "response_id": "chatcmpl-6add94c60006",
+      "usage": {
+        "prompt_tokens": 16044,
+        "completion_tokens": 1,
+        "total_tokens": 16045,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 16044
+      },
+      "prompt_tokens": 16044,
+      "prefix_lcp": 16043,
+      "prefix_start": 0,
+      "new_prompt_tokens": 16044,
+      "prefix_replayed_tokens": 16043,
+      "server": {
+        "engine": {
+          "id": "chatcmpl-6add94c60006",
+          "prompt_tokens": "16044",
+          "cached_prompt_tokens": "0",
+          "generated": "1",
+          "queue_ms": "0",
+          "prefill_ms": "18420",
+          "decode_ms": "0",
+          "prefill_tps": "871.0",
+          "decode_tps": "0.00",
+          "finish": "Length"
+        },
+        "runtime": {
+          "steps": 0,
+          "gpu_sampling": true,
+          "gpu_samples": 0,
+          "gpu_fallbacks": 0,
+          "sample_s": 0.000896669,
+          "emit_s": 7.018e-06,
+          "step_s": 0.0,
+          "adapt_host_s": 0.0,
+          "model_prefill_s": 18.420461136,
+          "snapshot_s": 0.000357996,
+          "prefix_lcp": 16043,
+          "prefix_start": 0,
+          "prefix_replayed_tokens": 16043,
+          "routed_picks": 0,
+          "cpu_picks": 0
+        }
+      }
+    },
+    {
+      "number": 8,
+      "case": "dropped",
+      "role": "dropped",
+      "start": 1792906456.7903407,
+      "elapsed_s": 20.583316800999455,
+      "seed": 1216025369061337,
+      "response_id": "chatcmpl-6add94d80007",
+      "usage": {
+        "prompt_tokens": 16749,
+        "completion_tokens": 1,
+        "total_tokens": 16750,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 16749
+      },
+      "prompt_tokens": 16749,
+      "prefix_lcp": 16009,
+      "prefix_start": 0,
+      "new_prompt_tokens": 16749,
+      "prefix_replayed_tokens": 16009,
+      "server": {
+        "engine": {
+          "id": "chatcmpl-6add94d80007",
+          "prompt_tokens": "16749",
+          "cached_prompt_tokens": "0",
+          "generated": "1",
+          "queue_ms": "0",
+          "prefill_ms": "20548",
+          "decode_ms": "0",
+          "prefill_tps": "815.1",
+          "decode_tps": "0.00",
+          "finish": "Length"
+        },
+        "runtime": {
+          "steps": 0,
+          "gpu_sampling": true,
+          "gpu_samples": 0,
+          "gpu_fallbacks": 0,
+          "sample_s": 0.000726282,
+          "emit_s": 6.859e-06,
+          "step_s": 0.0,
+          "adapt_host_s": 0.0,
+          "model_prefill_s": 20.547907429,
+          "snapshot_s": 0.000354045,
+          "prefix_lcp": 16009,
+          "prefix_start": 0,
+          "prefix_replayed_tokens": 16009,
+          "routed_picks": 0,
+          "cpu_picks": 0
+        }
+      }
+    }
+  ],
+  "summary": {
+    "dropped": {
+      "requests": 2,
+      "response_elapsed_s": 20.488953366526403,
+      "model_prefill_s": 20.4534363235,
+      "engine_prefill_ms": 20453.5,
+      "new_prompt_tokens": [
+        16749,
+        16749
+      ],
+      "prefix_replayed_tokens": [
+        16009,
+        16009
+      ]
+    },
+    "retained": {
+      "requests": 2,
+      "response_elapsed_s": 3.538603691442404,
+      "model_prefill_s": 3.5027715055,
+      "engine_prefill_ms": 3503.0,
+      "new_prompt_tokens": [
+        737,
+        737
+      ],
+      "prefix_replayed_tokens": [
+        0,
+        0
+      ]
+    }
+  },
+  "response_latency_reduction_percent": 82.72921203860243,
+  "postflight": {
+    "time": 1792906573.5827048,
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "server_pid": 1049913,
+    "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+    "model_identity": [
+      251592261632,
+      154277358,
+      1792707596293851835
+    ],
+    "rapl_long_uw": "4095875000",
+    "restored": true
+  },
+  "raw_sha256": {
+    "cache-feedback-replay-02/raw-generations.jsonl": "d40c8ac5c0f019ca05c6880096c45346e10bccc4f8e2c75b55cad639e49a8c69",
+    "cache-feedback-api-02/requests.json": "190f1e67b4eae1abd0bce964a92544d2ad691de56c0bfc1c0729b5772ff455b2",
+    "cache-feedback-replay-02/serve.out": "f7c9351d24c6ab5089b7187991c71ff4de5c6d3bed8b12a2a5a5791ae6f17c3e"
+  },
+  "limits": [
+    "Actual one-token HTTP response latency/cache replay on saved coding histories; setup costs excluded. This is not a coding completion or quality comparison.",
+    "Retained history is a constructed counterfactual preserving the old user feedback; the implemented fix persists feedback in tool results. Live note persistence was verified separately.",
+    "Fresh seeds, fixed T16 weights, rank3 deferral, paired/GPU sampler/stable cache enabled. Adaptation8 remains on; boundary residency is saved in raw audits rather than assumed identical.",
+    "Two ABBA target samples per case; no claim of generalized p95 latency or end-to-end task speedup.",
+    "The one-token setup leaves only the16044-token prompt in KV, so retained targets prefill737tokens. The earlier untimed counterfactual included101processed continuation tokens and predicted636; these are distinct setup histories."
+  ],
+  "source_commit": "9392fb2",
+  "client_sha256": "8ceee85b136b7957fd4d51936382d1002ed392883bdb50950185800958358afb",
+  "http_cache_reporting": "The HTTP usage fields report0cache hits even for retained targets with raw/engine prefix_start16044. Current inference_stream hardcodes initial PromptUsage hit count0; rely on audited engine counters.",
+  "earlier_attempt": {
+    "window": "cache-feedback-replay-01",
+    "excluded": true,
+    "phase": "request_validation",
+    "reason": "Client chose streamfalse but retained stream_options; recipe rejects that combination. No engine generation was started. Error response body was not saved in this older attempt; the corrected client records future HTTP bodies.",
+    "postflight": {
+      "time": 1792905845.6612682,
+      "health": {
+        "status": "ok",
+        "model": "deepseek-v4.1-flash",
+        "pending": 0
+      },
+      "server_pid": 1012305,
+      "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+      "model_identity": [
+        251592261632,
+        154277358,
+        1792707596293851835
+      ],
+      "rapl_long_uw": "4095875000",
+      "restored": true
+    }
+  }
+}

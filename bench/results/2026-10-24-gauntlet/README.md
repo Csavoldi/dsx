@@ -317,3 +317,26 @@ A future fused prefill kernel should target the measured dequantization cost
 without repeating the previous direct/int8 path that was not faster and changed
 quality. Weight-copy scheduling also needs an actual wall-time test; fewer API
 calls alone are insufficient. Neither direction has a measured gain here.
+
+The [one-token API replay](feedback-cache-api-replay.json) now measures the cost
+of dropping feedback in a saved failed coding history. Two ABBA target samples
+per case give:
+
+| History | Mean response latency | New prompt tokens | Replayed matching-prefix tokens |
+|---|---:|---:|---:|
+| Feedback dropped |20.489s|16,749|16,009|
+| Feedback retained |3.539s|737|0|
+
+Retaining the note reduces latency 82.729% for this request. Every target has its
+own preceding setup request, excluded from these timings. Fresh seeds and actual
+engine audits bind all eight requests; the original server, model identity and
+power limit are restored. The one-token setup leaves 16,044 prompt tokens in KV,
+whereas the earlier untimed analysis retained 101 continuation tokens too; that is
+why this measured incremental prefill is 737 rather than 636 tokens.
+
+The retained case is a constructed history preserving the old user note. The
+implemented fix stores notes in tool results, with live persistence verified
+separately. This replay measures real prefix-cache latency on coding history; it
+does not establish an 82.7% task-completion improvement. HTTP usage still reports
+zero cache hits even when the raw engine audit proves reuse; that reporting
+limitation is documented in the current-state guide.
