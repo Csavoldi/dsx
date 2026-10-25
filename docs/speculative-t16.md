@@ -23,3 +23,7 @@ Token files contain decimal IDs separated by whitespace or commas. Without `--co
 The current desktop verifier consumes at most eight tokens. Single-token expert deferral changes the scalar target's behavior, while multi-token verification uses immediate expert results. Even with deferral disabled, the verifier's arithmetic path must be checked against scalar decode. Correct speculative sampling preserves its verifier distribution only when the logits and accepted state represent that target consistently.
 
 A drafter must fit alongside GPU1's expert store. Include displaced experts, extra CPU work, synchronization, rejection and commit costs in a final speed comparison. The 8K prefill rate does not measure small-block verification cost.
+
+## Desktop measurement receipt
+
+The [October 25 screen](../bench/results/2026-10-25-speculation/README.md) measured 40.70 TPS scalar deferral-3 decode versus 51.53 TPS with perfect eight-token verification before drafting. Actual context-copy speculation on a second, boundary-crossing fixture regressed from 35.93 TPS scalar to 26.92 TPS at width 8. Rollback suffix comparisons passed; scalar-target equivalence did not. DCOCO is not enabled, and no production throughput gain is claimed.
