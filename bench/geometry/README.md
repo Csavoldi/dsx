@@ -143,3 +143,31 @@ are preserved. Removing tools or choosing
 Thinking settings stay unchanged for the same reason. The option changes only
 the accepted artifact's final-summary request. It needs live cache and normal-exit
 verification; test the execution guard with `node bench/geometry/test-completion-prefix.mjs`.
+
+For a controlled reproduction of the 2,048-token pilot, build this branch's
+`dsx-server`, then run it in an owned server window with these environment values:
+
+```
+DSX_T16_PAIR_GU=1 DSX_GPU_SAMPLE=1 DSX_ADAPT_STABLE=1 DSX_ADAPT=8 \
+DSX_CPU_THREADS=14 DSX_ENGRAM_FP8=0 DSX_REASONING_SCORE=10 \
+DSX_THINKING_BUDGET=2048 DSX_RUNTIME_STATS=1 \
+./target/release/dsx-server --model /path/model.gguf --rank /path/rank.json \
+  --vision /path/vision.safetensors --host 0.0.0.0 --port 8090 \
+  --ctx 131072 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 \
+  --arena-gb 110 --defer-rank 3
+```
+
+The measured host used a 125W CPU long-term cap, 230W GPU caps, no swap and a 118GB
+process guard. Preserve and restore the host's original settings around the
+window. Once serving is ready, run one task at a time:
+
+```
+python3 bench/geometry/run.py cube /absolute/new/run-directory \
+  --arm budget2048 --reasoning low --timeout 300 --acceptance-stop \
+  --judge-version 8 --normalize-capture-blanks --server-log /path/serve.out
+```
+
+Use the shared prompt without compact guidance for this pilot. Two reviewed
+successes and one failure support further testing; they do not justify changing
+production defaults. The archived receipt records the exact binary, command,
+model identity and per-run source hashes used for the measurements.

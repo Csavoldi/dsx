@@ -340,3 +340,17 @@ separately. This replay measures real prefix-cache latency on coding history; it
 does not establish an 82.7% task-completion improvement. HTTP usage still reports
 zero cache hits even when the raw engine audit proves reuse; that reporting
 limitation is documented in the current-state guide.
+
+The [final octahedron](budget2048-octahedron.json) times out after 300.205 seconds
+without writing a renderer. It repeatedly checks the environment, pane size and
+scratch geometry tools while consuming its planning allowance. Seven requests
+emit 11,542 engine-counted tokens at 39.775 decode tokens/s; the last cancellation
+has no client usage, and raw processed counts differ by one recorded emitted
+stopping token. This is a direction/completion failure in the tested configuration,
+with no isolated inference-level cause established.
+
+Together, the 2,048-token pilots complete two of three shapes. The optional
+completion-prefix mode was enabled on the final shape but is only applied after
+acceptance; it was never reached. Its live latency benefit remains unverified,
+and it stays disabled by default. The final window restores the original server,
+model identity, power settings and idle health before releasing its lock.
