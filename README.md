@@ -1,7 +1,7 @@
 <h1 align="center">dsx</h1>
 
 <p align="center"><b>DeepSeek-V4.1-Flash-1017 (552 B + 196 B Engram) on your old gaming PC</b><br>
-two RTX 3090s and 128 GB of RAM · ~35 tokens/s · full routing, no expert pruning · OpenAI- and
+two RTX 3090s and 128 GB of RAM · 40+ tokens/s measured · full routing, no expert pruning · OpenAI- and
 Anthropic-compatible API · chat in the browser, pictures, thinking levels</p>
 
 <p align="center">
@@ -18,7 +18,7 @@ drive. It's an engine written in Rust and CUDA for this one model. The experts e
 the next ones in RAM where the CPU computes them. The GPUs and CPU compute their assigned experts in parallel,
 and the main GPU waits for the partial results before combining them. Optional expert deferral reduces that wait.
 
-- **Fast:** ~35 tokens/s writing the answer and ~530 tokens/s reading a 3,000-token prompt on two RTX 3090s.
+- **Fast:** 40+ tokens/s measured in free generation (41.0 with expert deferral and optional FP8 Engram projections); ~530 tokens/s reading a 3,000-token prompt on two RTX 3090s. See the run conditions below.
 - **Close to the original:** the same next token as the FP8 model 81% of the time on the Lucebox eval, with dsx's own T16 experts.
 - **One download:** one 252 GB GGUF file, with the Engram table and tokenizer inside.
 - **Plugs into your tools:** OpenAI- and Anthropic-compatible API with streaming, ready for coding agents.
@@ -45,6 +45,10 @@ model with a Q6_K Engram table: a 302 GB download in 4 shards, KL 0.194 and 81.4
 experts (KL 0.272), which dsx also runs. The model sizes excluding Engram are ~141 GB and ~142 GB respectively.
 
 ## How fast is it?
+
+The **40+ tokens/s** milestone is a measured 41.0 tokens/s free-generation run with T16 weights,
+`--defer-rank 3` and optional FP8 Engram projections (`DSX_ENGRAM_FP8=1`), generating 120 tokens after 300 tokens.
+FP8 projections are off by default, and throughput varies with context, routing and cache warm-up.
 
 The published T16 v1 runs on two RTX 3090s (24 GB each), an i7-12700K and 128 GB of DDR4 measured 34.9 tokens/s
 without deferral and 36.8 with `--defer-rank 3` after a 3K prompt. A later prefill improvement reached ~530 tokens/s
