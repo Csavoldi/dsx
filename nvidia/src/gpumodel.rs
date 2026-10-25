@@ -920,6 +920,7 @@ impl<'m> GpuModel<'m> {
     /// picks replacements and starts them (their copies wait for the token on the side stream); the victims' on_cpu flags
     /// go to `adapt_flags` for after the sync. Finished replacements are committed after the sync (`adapt_commit`).
     fn adapt_step(&mut self) -> Result<()> {
+        let stable = std::env::var("DSX_ADAPT_STABLE").is_ok_and(|v| v == "1");
         let ne = self.m.cfg.n_experts;
         let (Some(w), Some(arena)) = (self.worker.as_ref(), self.arena) else { return Ok(()) };
         let flags = &mut self.adapt_flags;
@@ -939,7 +940,7 @@ impl<'m> GpuModel<'m> {
                 (v >= 1.0 && w.on_cpu[i].load(std::sync::atomic::Ordering::Relaxed) && !pending.contains(&(l, e)) && arena.get(l, e).is_some()).then_some((v, l, e))
             })
             .collect();
-        cand.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        crate::cache_order::candidates(&mut cand, stable);
         cand.truncate(room * 4);
         // per store: residents by quant types, coldest last (popped first)
         type Victims = std::collections::HashMap<(crate::gguf::GType, crate::gguf::GType), Vec<(f32, usize, usize)>>;
@@ -951,7 +952,7 @@ impl<'m> GpuModel<'m> {
                     v.entry(s.types(vl, ve).unwrap()).or_default().push((sc(vl, ve), vl, ve));
                 }
                 for x in v.values_mut() {
-                    x.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+                    crate::cache_order::victims(x, stable);
                 }
                 v
             })

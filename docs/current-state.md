@@ -48,6 +48,7 @@ uses those values, `--main-gb=-1.5`, `--aux-gb=-1.0`, and no experimental enviro
 | `DSX_PREFILL_CPU` | enabled; `0` disables | CPU assistance for short chunks |
 | `DSX_PREFILL_CPU_MAX_N` | 512 | maximum chunk size eligible for CPU assistance |
 | `DSX_ADAPT` | 8 | maximum adaptive expert replacements per token; `0` fixes residency |
+| `DSX_ADAPT_STABLE` | off; `1` enables | explicit layer/expert ordering for equal-score adaptive cache choices; experimental reproducibility control |
 | `DSX_T16_PAIR_GU` | off; `1` enables | experimental paired gate/up T16 launches; see [screening receipts](../bench/results/2026-10-24-gauntlet/README.md#paired-gateup-screening) |
 | `DSX_GPU_SAMPLE` | off; `1` enables | experimental GPU categorical sampling at temperature 1 and top-p at least 1, with zero hesitation penalty; other settings and non-finite logits use CPU sampling |
 | `DSX_RUNTIME_STATS`, `DSX_LOOKUP_AUDIT` | off; `1` enables | per-request timing and causal copy-opportunity diagnostics; neither executes speculative decoding |

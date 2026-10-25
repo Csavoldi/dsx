@@ -1,0 +1,249 @@
+{
+  "root": "/home/lxe/dsx-gauntlet-20261024/quality-008-a8-d3",
+  "postflight": {
+    "pid": 2367805,
+    "server_md5": "363ced3dada78d1271549592de700e3d",
+    "model_identity": [
+      251592261632,
+      154277358,
+      1792707596293851835
+    ],
+    "power_uw": "4095875000",
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "restored": true
+  },
+  "partial": false,
+  "raw_sha256": {
+    "sampler-distribution.log": "4fd2b312149f62c1e325b46f1df5f287a2d0a88a9427cc2c9da3a19a25158d68",
+    "baseline.f32": "3b60e1e74dfaadd90ff292ecd69d27d24bdc3a7d2c175f475fca5afea9005d7b",
+    "baseline.log": "b651a82732a96b4d393fc6501788ea5f51960e03ee78fcd1ef749a6981af7980",
+    "baseline.routes.jsonl": "8723853dc0b12f05c6f073d9c2342264a2c55178ab06125cc92faa9d28dfebeb",
+    "baseline-repeat.log": "34d4caeed2f343c8ec58b60302a24b8a5131ec06a45a25d40c6c64875181478c",
+    "baseline-repeat.routes.jsonl": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+    "continuation.ids": "06c751ffa9832250cd73deb1f3f93550a7bc569debbfc29aa5a4ee00bd8fc170",
+    "generator.log": "85d0824dcc773761b782c3ef3efc152cfa5eb19751d20ecbc5dc2d66e021bc0b",
+    "generator.routes.jsonl": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+    "gpu-sample.log": "1ff9b7ce5f3731a2355bd88a4f334815766c72b867996531d4f73ec2d4cc15cd",
+    "gpu-sample.routes.jsonl": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+    "new-plain.log": "05809657abc9c1261ee128eb5e4b65a489b33d1076412fac2ccad95f5897a168",
+    "new-plain.routes.jsonl": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+    "paired.log": "965b2f7c7d9db8e1d371937f29e62f2ef852e840502d587180c32663dcc3959b",
+    "paired.routes.jsonl": "86cc9f0d4c2e9be7f94d5062af4d24ff37ee0e464cbdbef7e6ea54888d14d89a",
+    "server-before.log": "8b32ec48b518cf389cd7e8e13abe6785782f42b826448345c9bd372ab0700d66",
+    "baseline-repeat.f32": "5d168933494d1c8b3f6ff4230a8a65918cfa931efcb428b09c9c3ba031b83160",
+    "generated.f32": "bb750b84a6959f1a69770debd612b665d292fa787e7cd76e0e5f758be62fce4c",
+    "gpu-sample.f32": "5d168933494d1c8b3f6ff4230a8a65918cfa931efcb428b09c9c3ba031b83160",
+    "new-plain.f32": "5d168933494d1c8b3f6ff4230a8a65918cfa931efcb428b09c9c3ba031b83160",
+    "paired.f32": "5d168933494d1c8b3f6ff4230a8a65918cfa931efcb428b09c9c3ba031b83160",
+    "preflight.json": "ff6263f18da0a5e03fbf6429578c5135da46a9590570ef37298f09cae5a3de36",
+    "events.jsonl": "73cbd03b734a597a1625de87a78dd5ffaf0cc6ea3f46a485b63e60c34a46ed19",
+    "hardware.jsonl": "5ea669ecd4fe6017267822aaf474e0e8dddf51213041a8603b5fbfb44e29ffaa",
+    "postflight.json": "879c2f3abd2f283bb99922570beec5bdc2ed7e9c4634c72f14c319621314279f"
+  },
+  "comparisons": [
+    {
+      "reference": "baseline",
+      "candidate": "new-plain",
+      "rows": 129,
+      "values": 16677120,
+      "changed_values": 15384316,
+      "mean_kl": 0.00010040682862075219,
+      "max_kl": 0.007070804754822701,
+      "top1_changes": 0,
+      "same_initial_residency": true,
+      "changed_sampled_draws": 0
+    },
+    {
+      "reference": "new-plain",
+      "candidate": "paired",
+      "rows": 129,
+      "values": 16677120,
+      "changed_values": 0,
+      "mean_kl": 0.0,
+      "max_kl": 0,
+      "top1_changes": 0,
+      "same_initial_residency": true,
+      "changed_sampled_draws": 0
+    },
+    {
+      "reference": "paired",
+      "candidate": "gpu-sample",
+      "rows": 129,
+      "values": 16677120,
+      "changed_values": 0,
+      "mean_kl": 0.0,
+      "max_kl": 0,
+      "top1_changes": 0,
+      "same_initial_residency": true,
+      "changed_sampled_draws": 0
+    },
+    {
+      "reference": "baseline",
+      "candidate": "gpu-sample",
+      "rows": 129,
+      "values": 16677120,
+      "changed_values": 15384316,
+      "mean_kl": 0.00010040682862075219,
+      "max_kl": 0.007070804754822701,
+      "top1_changes": 0,
+      "same_initial_residency": true,
+      "changed_sampled_draws": 0
+    },
+    {
+      "reference": "baseline",
+      "candidate": "baseline-repeat",
+      "rows": 129,
+      "values": 16677120,
+      "changed_values": 15384316,
+      "mean_kl": 0.00010040682862075219,
+      "max_kl": 0.007070804754822701,
+      "top1_changes": 0,
+      "same_initial_residency": true,
+      "changed_sampled_draws": 0
+    }
+  ],
+  "arms": {
+    "baseline": {
+      "initial_residency_sha256": "fae8dd06a795868e932d9d2051756de6ee26cddbf44cb1eb247275ec722426e4",
+      "route_rows": 5120,
+      "cpu_immediate": 3418,
+      "cpu_deferred": 5259,
+      "deferred_mass_fraction": {
+        "mean": 0.1274121015652316,
+        "p50": 0.1238757807078073,
+        "p95": 0.32366617520650226,
+        "max": 0.49992922445349225
+      },
+      "cpu_partition_mismatches": [],
+      "gpu_fallbacks": 0,
+      "seed": 3654556690197674,
+      "placement_change_steps": 128
+    },
+    "new-plain": {
+      "initial_residency_sha256": "fae8dd06a795868e932d9d2051756de6ee26cddbf44cb1eb247275ec722426e4",
+      "route_rows": 5120,
+      "cpu_immediate": 3445,
+      "cpu_deferred": 5251,
+      "deferred_mass_fraction": {
+        "mean": 0.12747984732124237,
+        "p50": 0.1241165870894941,
+        "p95": 0.3202890817381756,
+        "max": 0.4907644188707836
+      },
+      "cpu_partition_mismatches": [],
+      "gpu_fallbacks": 0,
+      "seed": 3654556690197674,
+      "placement_change_steps": 128
+    },
+    "paired": {
+      "initial_residency_sha256": "fae8dd06a795868e932d9d2051756de6ee26cddbf44cb1eb247275ec722426e4",
+      "route_rows": 5120,
+      "cpu_immediate": 3445,
+      "cpu_deferred": 5251,
+      "deferred_mass_fraction": {
+        "mean": 0.12747984732124237,
+        "p50": 0.1241165870894941,
+        "p95": 0.3202890817381756,
+        "max": 0.4907644188707836
+      },
+      "cpu_partition_mismatches": [],
+      "gpu_fallbacks": 0,
+      "seed": 3654556690197674,
+      "placement_change_steps": 128
+    },
+    "gpu-sample": {
+      "initial_residency_sha256": "fae8dd06a795868e932d9d2051756de6ee26cddbf44cb1eb247275ec722426e4",
+      "route_rows": 5120,
+      "cpu_immediate": 3445,
+      "cpu_deferred": 5251,
+      "deferred_mass_fraction": {
+        "mean": 0.12747984732124237,
+        "p50": 0.1241165870894941,
+        "p95": 0.3202890817381756,
+        "max": 0.4907644188707836
+      },
+      "cpu_partition_mismatches": [],
+      "gpu_fallbacks": 0,
+      "seed": 3654556690197674,
+      "placement_change_steps": 128
+    },
+    "baseline-repeat": {
+      "initial_residency_sha256": "fae8dd06a795868e932d9d2051756de6ee26cddbf44cb1eb247275ec722426e4",
+      "route_rows": 5120,
+      "cpu_immediate": 3445,
+      "cpu_deferred": 5251,
+      "deferred_mass_fraction": {
+        "mean": 0.12747984732124237,
+        "p50": 0.1241165870894941,
+        "p95": 0.3202890817381756,
+        "max": 0.4907644188707836
+      },
+      "cpu_partition_mismatches": [],
+      "gpu_fallbacks": 0,
+      "seed": 3654556690197674,
+      "placement_change_steps": 128
+    }
+  },
+  "source_revision": "0981aaa",
+  "causal_observations": {
+    "initial_membership_identical": true,
+    "first_different_eviction_logit_row": 2,
+    "first_victim_pair": {
+      "baseline": [
+        6,
+        358
+      ],
+      "repeat": [
+        17,
+        335
+      ],
+      "calibration_count_both": 4375,
+      "neither_selected_before_eviction": true
+    },
+    "eviction_that_precedes_first_route_difference": {
+      "logit_row": 8,
+      "baseline": [
+        2,
+        364
+      ],
+      "repeat": [
+        0,
+        185
+      ],
+      "calibration_count_both": 4401,
+      "neither_selected_before_eviction": true
+    },
+    "first_route_difference": {
+      "forced_token_index": 9,
+      "layer": 0,
+      "selected": [
+        324,
+        138,
+        229,
+        185,
+        165,
+        278
+      ],
+      "baseline_cpu_deferred": [
+        165
+      ],
+      "repeat_cpu_deferred": [
+        185,
+        165
+      ]
+    },
+    "first_logit_difference_row": 10,
+    "source_mechanism": "GpuExperts.residents iterates HashMap keys; adaptive victims sort only by score, leaving equal-score eviction dependent on that order. Different residency changes which CPU expert outputs are deferred under rank3."
+  },
+  "limits": [
+    "This reproduces numerical drift within identical baseline execution; it does not prove the cause of the original coding failure.",
+    "All tested sampled choices and top1 decisions matched despite numerical drift.",
+    "Current defaults, paired-only, GPU-sampling and baseline-repeat arms matched one another exactly; each differed from the first baseline by the same amount.",
+    "Cold prefix replay does not reconstruct the original live agent expert-cache history.",
+    "The stable-tie opt-in fix is under test; no production default was changed."
+  ]
+}

@@ -3,6 +3,7 @@
 //! reference, server) are in `dsx-core` and re-exported here under their old paths.
 
 pub use dsx_core::{dspark, formats, gguf, iqgrid, model, numerics, safetensors, t16};
+pub mod cache_order;
 
 #[cfg(feature = "cuda")]
 pub mod attn;
