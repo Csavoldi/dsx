@@ -39,7 +39,7 @@ struct Args {
     rollback_steps: usize,
     #[arg(long, default_value_t = 16)]
     warmup: usize,
-    /// Optional Nsight capture range: "step" or "verifyN". Requires --rounds 1.
+    /// Optional Nsight range: "step"/"verifyN" with --rounds 1, or "warm-prefill" with --prefill-probe --rounds >= 2.
     #[arg(long)]
     trace_path: Option<String>,
     /// Save the serial reference logits for a cross-placement comparison.
@@ -162,8 +162,8 @@ fn main() -> Result<()> {
         "steps > 0 and widths 1..=8 required"
     );
     ensure!(
-        a.trace_path.is_none() || a.rounds == 1,
-        "trace capture requires one round"
+        match a.trace_path.as_deref() {None => true, Some("warm-prefill") => a.prefill_probe && a.rounds >= 2, Some(_) => !a.prefill_probe && a.rounds == 1},
+        "decode trace capture requires one round; warm-prefill requires --prefill-probe and at least two rounds"
     );
     let ids = read_ids(&a.ids)?;
     let forced = a.continuation.as_deref().map(read_ids).transpose()?;
@@ -201,11 +201,14 @@ fn main() -> Result<()> {
                 let prefix = ids.len() - fresh;
                 if prefix > 0 { let _ = gm.prefill(&pb, &ids[..prefix])?; }
                 gm.g.sync()?;
+                let tracing = round == 1 && fresh == ids.len() && a.trace_path.as_deref() == Some("warm-prefill");
+                if tracing {unsafe {dsx::gpu::check(cudarc::driver::sys::cuProfilerStart(), "cuProfilerStart")?;}}
                 let start = Instant::now();
                 let logits = gm.prefill(&pb, &ids[prefix..])?;
                 gm.g.sync()?;
                 let elapsed = start.elapsed().as_secs_f64();
-                emit(json!({"event":"prefill_probe","round":round,"prefix_tokens":prefix,"new_tokens":fresh,"elapsed_s":elapsed,"new_tok_s":fresh as f64/elapsed,"top1":top(&logits),"nonfinite_logits":logits.iter().filter(|v| !v.is_finite()).count(),"logit_fingerprint":hash_logits(&[logits])}));
+                if tracing {unsafe {dsx::gpu::check(cudarc::driver::sys::cuProfilerStop(), "cuProfilerStop")?;}}
+                emit(json!({"event":"prefill_probe","profiled":tracing,"round":round,"prefix_tokens":prefix,"new_tokens":fresh,"elapsed_s":elapsed,"new_tok_s":fresh as f64/elapsed,"top1":top(&logits),"nonfinite_logits":logits.iter().filter(|v| !v.is_finite()).count(),"logit_fingerprint":hash_logits(&[logits])}));
                 let picks = gm.cpu_picks();
                 let start = Instant::now();
                 let mut result = Vec::with_capacity(a.steps);

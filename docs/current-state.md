@@ -181,3 +181,12 @@ published; a local documentation commit does not update either service.
 `sampler-audit --logits FILE.f32 --seed N` measures actual GPU categorical weights against CPU FP64 weights on saved vocabulary rows. It reports KL, total variation, sampled choices and a continuous-uniform CDF interval disagreement estimate. Run it only inside an owned GPU window with serving stopped. The [failure-conditioned receipt](../bench/results/2026-10-24-gauntlet/fixed-failure-replay.json) separates this sampling diagnostic from model-logit comparisons and live task quality.
 
 `DSX_TOKEN_AUDIT=PATH` optionally appends each request's raw prompt/sample token IDs, processed-token count, prefix-cache boundary and initial/final expert-store membership. The stopping or cancelled token can be sampled without entering KV state, so replays must honor `processed_output_tokens`. These receipts support text-only generation-history reconstruction; they do not include image contents. The runtime profile also records `prefix_replayed_tokens`, the matching prefix that had to be prefetched again after restoring an older snapshot.
+
+For diagnostic prefill attribution, `oracle-bench --prefill-probe --rounds 2
+--trace-path warm-prefill` brackets only the second round's full-prompt prefill
+with CUDA profiler start/stop calls. Prefix preparation and forced decode remain
+outside that range. Run under Nsight with the CUDA-profiler capture range; these
+instrumented times are attribution evidence, not an untraced speed measurement.
+`bench/analyze_nsys.py --tokens N --token-kind input` labels amortized prefill
+activity per input token. The default normalization remains output tokens for
+existing decode traces.

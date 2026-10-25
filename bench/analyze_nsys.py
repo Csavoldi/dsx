@@ -19,7 +19,7 @@ def union_ns(intervals):
     return total
 
 
-def summarize(path, tokens):
+def summarize(path, tokens, token_kind="output"):
     con = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -48,20 +48,22 @@ def summarize(path, tokens):
             entry["sum_ns"] += r["end"] - r["start"]
             entry["max_copy_bytes"] = max(entry["max_copy_bytes"], r["bytes"])
         for entry in by_copy.values():
-            entry["bytes_per_output_token"] = entry["bytes"] / tokens
-            entry["sum_ms_per_output_token"] = entry["sum_ns"] / tokens / 1e6
+            entry[f"bytes_per_{token_kind}_token"] = entry["bytes"] / tokens
+            entry[f"sum_ms_per_{token_kind}_token"] = entry["sum_ns"] / tokens / 1e6
         busy = union_ns([(r["start"], r["end"]) for r in ks])
         devices[str(dev)] = {
             "kernel_calls": len(ks),
-            "kernel_calls_per_output_token": len(ks) / tokens,
-            "kernel_busy_union_ms_per_output_token": busy / tokens / 1e6,
+            f"copy_busy_union_ms_per_{token_kind}_token": union_ns([(r["start"],r["end"]) for r in ms])/tokens/1e6,
+            "kernel_and_copy_busy_fraction_of_capture_span": union_ns([(r["start"],r["end"]) for r in ks+ms])/1e9/span,
+            f"kernel_calls_per_{token_kind}_token": len(ks) / tokens,
+            f"kernel_busy_union_ms_per_{token_kind}_token": busy / tokens / 1e6,
             "kernel_busy_fraction_of_capture_span": busy / 1e9 / span,
-            "kernel_duration_sum_ms_per_output_token": sum(r["end"] - r["start"] for r in ks) / tokens / 1e6,
-            "top_kernels": [{"name": name, **entry, "sum_ms_per_output_token": entry["sum_ns"] / tokens / 1e6} for name, entry in sorted(by_kernel.items(), key=lambda item: item[1]["sum_ns"], reverse=True)[:20]],
+            f"kernel_duration_sum_ms_per_{token_kind}_token": sum(r["end"] - r["start"] for r in ks) / tokens / 1e6,
+            "top_kernels": [{"name": name, **entry, f"sum_ms_per_{token_kind}_token": entry["sum_ns"] / tokens / 1e6} for name, entry in sorted(by_kernel.items(), key=lambda item: item[1]["sum_ns"], reverse=True)[:20]],
             "memcpy": dict(by_copy),
         }
     return {
-        "sqlite": str(path), "output_tokens": tokens, "cuda_activity_span_s": span,
+        "sqlite": str(path), f"{token_kind}_tokens": tokens, "cuda_activity_span_s": span,
         "devices": devices,
         "limits": "Kernel busy is an interval union, not SM occupancy or bandwidth. Summed kernel times can overlap. Copy bytes exclude mapped-memory accesses made inside kernels. Profiling overhead is not a performance gain or an untraced timing measurement.",
     }
@@ -72,10 +74,11 @@ if __name__ == "__main__":
     parser.add_argument("sqlite", type=pathlib.Path)
     parser.add_argument("--tokens", type=int, required=True)
     parser.add_argument("--out", type=pathlib.Path)
+    parser.add_argument("--token-kind", choices=["input","output"], default="output")
     args = parser.parse_args()
     if args.tokens <= 0:
         parser.error("--tokens must be positive")
-    result = summarize(args.sqlite, args.tokens)
+    result = summarize(args.sqlite, args.tokens, args.token_kind)
     text = json.dumps(result, indent=2) + "\n"
     if args.out:
         args.out.write_text(text)
