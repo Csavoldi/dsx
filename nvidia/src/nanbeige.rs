@@ -470,7 +470,7 @@ impl Nanbeige {
         let part_size = if kv_bits == 3 { std::env::var("DSX_NB_PART_SIZE").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(32768) } else { 128 };
         ensure!([8192,16384,32768].contains(&part_size) || kv_bits==16,"invalid attention partition size");
         let prefill_batch = if kv_bits == 3 { std::env::var("DSX_NB_BATCH").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(512) } else { 32 };
-        ensure!((32..=2048).contains(&prefill_batch) && prefill_batch % 32 == 0, "prefill batch must be a multiple of 32 up to 2048");
+        ensure!((32..=4096).contains(&prefill_batch) && prefill_batch % 32 == 0, "prefill batch must be a multiple of 32 up to 4096");
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("config.json"))?)?;
         for (key, value) in [
