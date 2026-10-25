@@ -1,5 +1,5 @@
 /** Finish a benchmark task after a certified artifact and the agent's own display check. */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -9,6 +9,7 @@ export default function (pi: ExtensionAPI) {
   const message = "The functional acceptance checks passed for the current renderer, and you have checked its display. The task is complete. Give a brief final summary now; do not refine the appearance or call further tools.";
   const read = (name: string) => JSON.parse(readFileSync(join(root, name), "utf8"));
   const hash = () => createHash("sha256").update(readFileSync(join(root,"workspace/render.py"))).digest("hex");
+  const judgeVersion = Number(process.env.GAUNTLET_JUDGE_VERSION ?? "5");
   let accepted = false;
   let feedbackHash = "";
   function ready() {
@@ -17,7 +18,7 @@ export default function (pi: ExtensionAPI) {
       const check = read("acceptance.json");
       const self = read("self-check.json");
       const current = hash();
-      if (!check.pass || check.judge_version !== 5 || check.source_sha256 !== current || self.source_sha256 !== current) return false;
+      if (!check.pass || check.judge_version !== judgeVersion || check.source_sha256 !== current || self.source_sha256 !== current) return false;
       accepted = true;
       pi.setActiveTools([]);
       writeFileSync(join(root,"accepted-stop.json"),JSON.stringify({time:Date.now()/1000,source_sha256:current,judge_version:check.judge_version,self_check_time:self.time},null,2)+"\n");
@@ -25,16 +26,25 @@ export default function (pi: ExtensionAPI) {
     } catch { return false; }
   }
   pi.on("tool_result", (event) => {
+    let content = event.content;
+    let normalized = false;
     try {
       const pane=read("started.json").pane;
       const command=String(event.input.command ?? "");
       const output=event.content.filter((x:any)=>x.type==="text").map((x:any)=>x.text).join("\n");
+      if (process.env.GAUNTLET_NORMALIZE_CAPTURE_BLANKS === "1" && !event.isError && event.toolName === "bash" && command.includes("tmux") && command.includes("capture-pane") && command.includes(pane) && output.includes("\u2800")) {
+        content = event.content.map((item:any) => item.type === "text" ? {...item,text:item.text.replaceAll("\u2800"," ")} : item);
+        const changed = content.filter((x:any)=>x.type === "text").map((x:any)=>x.text).join("\n");
+        appendFileSync(join(root,"capture-normalization.jsonl"),JSON.stringify({time:Date.now()/1000,tool_call_id:event.toolCallId,command,raw_content:event.content,normalized_content:content,blank_cells:Array.from(output).filter(c=>c==="\u2800").length,raw_sha256:createHash("sha256").update(output).digest("hex"),normalized_sha256:createHash("sha256").update(changed).digest("hex")})+"\n");
+        normalized = true;
+      }
       const visibleDots=Array.from(output).filter(c=>c.charCodeAt(0)>0x2800 && c.charCodeAt(0)<=0x28ff).length;
       if (visibleDots>=20 && !output.includes("Traceback (most recent call last)") && !event.isError && event.toolName === "bash" && command.includes("tmux") && command.includes("capture-pane") && command.includes(pane)) {
         writeFileSync(join(root,"self-check.json"),JSON.stringify({time:Date.now()/1000,source_sha256:hash(),tool_call_id:event.toolCallId})+"\n");
       }
     } catch { /* A missing artifact is not accepted. */ }
-    if (ready()) return {content:[...event.content,{type:"text",text:message}]};
+    if (ready()) return {content:[...content,{type:"text",text:message}]};
+    if (normalized) return {content};
   });
   pi.on("tool_call", () => {
     if (ready()) return {block:true,reason:message};

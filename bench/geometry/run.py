@@ -73,8 +73,11 @@ def summarize(root):
     (root/'summary.json').write_text(json.dumps(result,indent=2)+'\n');return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('shape',choices=EXPECTED);p.add_argument('root',type=pathlib.Path);p.add_argument('--arm',default='stock');p.add_argument('--timeout',type=int,default=360);p.add_argument('--reasoning',choices=['off','low'],default='off');p.add_argument('--port',type=int,default=8987);p.add_argument('--guidance',type=pathlib.Path);p.add_argument('--server-log',default='/home/lxe/ai/ds41/serve.out');p.add_argument('--acceptance-stop',action='store_true');a=p.parse_args()
-    if a.acceptance_stop:
+    p=argparse.ArgumentParser();p.add_argument('shape',choices=EXPECTED);p.add_argument('root',type=pathlib.Path);p.add_argument('--arm',default='stock');p.add_argument('--timeout',type=int,default=360);p.add_argument('--reasoning',choices=['off','low'],default='off');p.add_argument('--port',type=int,default=8987);p.add_argument('--guidance',type=pathlib.Path);p.add_argument('--server-log',default='/home/lxe/ai/ds41/serve.out');p.add_argument('--acceptance-stop',action='store_true');p.add_argument('--judge-version',type=int,choices=[5,7],default=5);p.add_argument('--normalize-capture-blanks',action='store_true');a=p.parse_args()
+    if a.normalize_capture_blanks and not a.acceptance_stop:p.error('--normalize-capture-blanks requires --acceptance-stop')
+    if a.acceptance_stop and a.judge_version==7:
+        from judge_v7 import judge as selected_judge
+    elif a.acceptance_stop:
         from judge_v5 import judge as selected_judge
     else:
         selected_judge=judge
@@ -89,9 +92,9 @@ def main():
     (root/'TASK.md').write_text(task)
     health=json.load(urllib.request.urlopen('http://192.168.0.102:8090/health',timeout=10));assert health['status']=='ok' and health['pending']==0,health
     (root/'host-state.json').write_text(command(['ssh','-o','BatchMode=yes','192.168.0.102','python3 -'],input=(HERE/'host-state.py').read_text()))
-    started={'wall':time.time(),'shape':a.shape,'arm':a.arm,'pane':pane,'contract_version':4,'reasoning':a.reasoning,'seed_base':secrets.randbits(53),'temperature':1.0,'top_p':1.0,'task_sha256':hashlib.sha256(task.encode()).hexdigest(),'health':health,'timeout_s':a.timeout,'server_log':a.server_log,'acceptance_stop':a.acceptance_stop}
+    started={'wall':time.time(),'shape':a.shape,'arm':a.arm,'pane':pane,'contract_version':4,'reasoning':a.reasoning,'seed_base':secrets.randbits(53),'temperature':1.0,'top_p':1.0,'task_sha256':hashlib.sha256(task.encode()).hexdigest(),'health':health,'timeout_s':a.timeout,'server_log':a.server_log,'acceptance_stop':a.acceptance_stop,'judge_version':a.judge_version if a.acceptance_stop else 4,'normalize_capture_blanks':a.normalize_capture_blanks}
     (root/'started.json').write_text(json.dumps(started,indent=2)+'\n')
-    env=dict(os.environ,GAUNTLET_RUN=str(root),GAUNTLET_PORT=str(a.port),PI_CODING_AGENT_DIR=str(root/'config'),PI_TELEMETRY='0',GAUNTLET_SEED_BASE=str(started['seed_base']));env.pop('NODE_OPTIONS',None)
+    env=dict(os.environ,GAUNTLET_RUN=str(root),GAUNTLET_PORT=str(a.port),PI_CODING_AGENT_DIR=str(root/'config'),PI_TELEMETRY='0',GAUNTLET_SEED_BASE=str(started['seed_base']),GAUNTLET_JUDGE_VERSION=str(a.judge_version),GAUNTLET_NORMALIZE_CAPTURE_BLANKS='1' if a.normalize_capture_blanks else '0');env.pop('NODE_OPTIONS',None)
     proxy_log=(root/'proxy.log').open('w');agent_log=(root/'agent.jsonl').open('w')
     proxy=subprocess.Popen([sys.executable,str(HERE/'proxy.py')],env=env,stdout=proxy_log,stderr=subprocess.STDOUT,start_new_session=True)
     agent=None

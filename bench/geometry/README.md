@@ -52,3 +52,17 @@ shading, ghosting, size, resize and cleanup checks apply. Versions 5 and 6 and
 original receipts remain available. Apply one judge version to all artifacts
 in a comparison and report retrospective adjudication separately from the
 judge used by the agent's acceptance extension.
+
+For new comparisons, `--acceptance-stop --judge-version 7` selects the corrected
+frame parser for both ongoing acceptance and final certification. The default
+remains version 5 for reproducibility of existing comparisons. The completion
+guard requires the selected version and an unchanged artifact/self-check hash.
+
+`--normalize-capture-blanks` is an opt-in workflow test. It replaces U+2800
+(empty braille) with an ASCII space only in a successful `bash` result that
+captures this run's named tmux pane. Rows, columns, nonblank dots, and colors are
+preserved; code/read results are untouched. `capture-normalization.jsonl` saves
+both versions, hashes, and the replaced-cell count. This can reduce the tokens
+needed to describe an empty background. It changes model-facing tool text and
+must be labeled separately from kernel speed measurements. Check the guard with
+`node bench/geometry/test-capture.mjs` before using this option.
