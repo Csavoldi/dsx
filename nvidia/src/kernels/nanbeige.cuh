@@ -86,11 +86,11 @@ extern "C" __global__ void nb_head_q8(const int8_t* w,const __nv_bfloat16* scale
 #include <mma.h>
 // Dense prefill attention: BF16 Tensor Core QK, two-component BF16 softmax-P times V.
 // Each CTA computes 32 queries for one head over a 2048-key partition.
-extern "C" __global__ void nb_attn_q3_tc(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset,int part_size){
+extern "C" __global__ void nb_attn_q3_tc(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset,int part_size,int full_rows){
  using namespace nvcuda;extern __shared__ __align__(32) unsigned char memory[];
  auto Q=(__nv_bfloat16*)memory;auto K=Q+32*144;auto V=K;auto S=(float*)(K+64*144);auto PH=(__nv_bfloat16*)(S+32*80);auto PL=PH+32*80;auto O=(float*)K;auto mx=(float*)(PL+32*80);auto den=mx+32;auto old=den+32;
  int tile=blockIdx.z; q+=(size_t)tile*32*7168; rows=min(32,rows-tile*32); query_offset+=tile*32;
- int h=blockIdx.x,part=blockIdx.y,tid=threadIdx.x,warp=tid/32,lane=tid%32,p0=*pos+query_offset,cutoff=max(0,(p0/32)*32-2048);
+ int h=blockIdx.x,part=blockIdx.y,tid=threadIdx.x,warp=tid/32,lane=tid%32,p0=*pos+query_offset,cutoff=max(max(0,(p0/32)*32-2048),*pos+full_rows-2592);
  for(int i=tid;i<32*128;i+=256){Q[(i/128)*144+i%128]=__float2bfloat16(i/128<rows?q[(size_t)(i/128)*7168+h*128+i%128]:0);}if(tid<32){mx[tid]=-INFINITY;den[tid]=0;}__syncthreads();
  wmma::fragment<wmma::accumulator,16,16,16,float> value[2]; for(int row=0;row<2;row++)wmma::fill_fragment(value[row],0.f);
  for(int begin=part*part_size;begin<min(p0+rows,(part+1)*part_size);begin+=64){
@@ -176,11 +176,11 @@ extern "C" __global__ void nb_attn_q3_gqa(const float* q,const uint8_t* kc,const
 }
 // Experimental INT8 QK / BF16 PV prefill. Its error is measured against the
 // independent attention reference; the accurate BF16 path remains available.
-extern "C" __global__ void nb_attn_q3_i8(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset,int part_size){
+extern "C" __global__ void nb_attn_q3_i8(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset,int part_size,int full_rows){
  using namespace nvcuda;extern __shared__ __align__(32) unsigned char memory[];
  auto Q=(signed char*)memory;auto KV=(__nv_bfloat16*)(Q+32*144);auto K=(signed char*)KV;auto V=KV;auto S=(int*)(KV+64*144);auto P=(__nv_bfloat16*)S;auto mx=(float*)(S+32*64);auto den=mx+32;auto old=den+32;auto qs=old+32;auto ks=qs+32;auto O=(float*)KV;
  int tile=blockIdx.z; q+=(size_t)tile*32*7168;rows=min(32,rows-tile*32);query_offset+=tile*32;
- int h=blockIdx.x,part=blockIdx.y,tid=threadIdx.x,warp=tid/32,lane=tid%32,p0=*pos+query_offset,cutoff=max(0,(p0/32)*32-2048);
+ int h=blockIdx.x,part=blockIdx.y,tid=threadIdx.x,warp=tid/32,lane=tid%32,p0=*pos+query_offset,cutoff=max(max(0,(p0/32)*32-2048),*pos+full_rows-2592);
  for(int r=warp;r<32;r+=8){float v[4],a=0;for(int j=0;j<4;j++){v[j]=r<rows?q[(size_t)r*7168+h*128+lane+j*32]:0;a=fmaxf(a,fabsf(v[j]));}a=warp_max(a);float scale=a>0?a/127.f:1.f;if(lane==0){qs[r]=scale;mx[r]=-INFINITY;den[r]=0;}for(int j=0;j<4;j++)Q[r*144+lane+j*32]=max(-127,min(127,__float2int_rn(v[j]/scale)));}
  wmma::fragment<wmma::accumulator,16,16,16,float> value[2];for(int r=0;r<2;r++)wmma::fill_fragment(value[r],0.f);__syncthreads();
  for(int begin=part*part_size;begin<min(p0+rows,(part+1)*part_size);begin+=64){
@@ -201,11 +201,11 @@ extern "C" __global__ void nb_attn_q3_i8(const float* q,const uint8_t* kc,const 
 }
 
 // Experimental fully INT8 matrix attention, with per-row probability scales.
-extern "C" __global__ void nb_attn_q3_i8pv(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset,int part_size){
+extern "C" __global__ void nb_attn_q3_i8pv(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset,int part_size,int full_rows){
  using namespace nvcuda;extern __shared__ __align__(32) unsigned char memory[];
  auto Q=(signed char*)memory;auto KV=(signed char*)(Q+32*144);auto K=KV;auto V=KV;auto S=(int*)(KV+64*144);auto P=(signed char*)S;auto mx=(float*)(S+32*64);auto den=mx+32;auto old=den+32;auto qs=old+32;auto ks=qs+32;auto vs=ks+64;auto ps=vs+64;auto O=(float*)KV;
  int tile=blockIdx.z; q+=(size_t)tile*32*7168;rows=min(32,rows-tile*32);query_offset+=tile*32;
- int h=blockIdx.x,part=blockIdx.y,tid=threadIdx.x,warp=tid/32,lane=tid%32,p0=*pos+query_offset,cutoff=max(0,(p0/32)*32-2048);
+ int h=blockIdx.x,part=blockIdx.y,tid=threadIdx.x,warp=tid/32,lane=tid%32,p0=*pos+query_offset,cutoff=max(max(0,(p0/32)*32-2048),*pos+full_rows-2592);
  for(int r=warp;r<32;r+=8){float v[4],a=0;for(int j=0;j<4;j++){v[j]=r<rows?q[(size_t)r*7168+h*128+lane+j*32]:0;a=fmaxf(a,fabsf(v[j]));}a=warp_max(a);float scale=a>0?a/127.f:1.f;if(lane==0){qs[r]=scale;mx[r]=-INFINITY;den[r]=0;}for(int j=0;j<4;j++)Q[r*144+lane+j*32]=max(-127,min(127,__float2int_rn(v[j]/scale)));}
  wmma::fragment<wmma::accumulator,16,16,16,float> value[2];for(int r=0;r<2;r++)wmma::fill_fragment(value[r],0.f);__syncthreads();
  for(int begin=part*part_size;begin<min(p0+rows,(part+1)*part_size);begin+=64){

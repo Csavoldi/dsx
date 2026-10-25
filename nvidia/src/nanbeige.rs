@@ -470,7 +470,7 @@ impl Nanbeige {
         let part_size = if kv_bits == 3 { std::env::var("DSX_NB_PART_SIZE").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(32768) } else { 128 };
         ensure!([8192,16384,32768].contains(&part_size) || kv_bits==16,"invalid attention partition size");
         let prefill_batch = if kv_bits == 3 { std::env::var("DSX_NB_BATCH").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(512) } else { 32 };
-        ensure!((32..=512).contains(&prefill_batch) && prefill_batch % 32 == 0, "prefill batch must be a multiple of 32 up to 512");
+        ensure!((32..=1024).contains(&prefill_batch) && prefill_batch % 32 == 0, "prefill batch must be a multiple of 32 up to 1024");
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("config.json"))?)?;
         for (key, value) in [
@@ -1062,6 +1062,7 @@ impl Nanbeige {
                                 Arg::I(splits as i32),
                                 Arg::I(offset as i32),
                                 Arg::I(self.part_size as i32),
+                                Arg::I(t as i32),
                             ],
                         )?;
                         launch(
@@ -1681,7 +1682,7 @@ pub fn validate_attention() -> Result<serde_json::Value> {
     let mut results=vec![];
     for kind in ["parallel","gqa","prefill_tc","prefill_i8","prefill_i8pv"] {
         let splits=if kind=="parallel" {(pos+count).div_ceil(128)} else if kind=="gqa" {(pos+count).div_ceil(512)} else {1};
-        let common=[Arg::P(qd.ptr),Arg::P(kd.ptr),Arg::P(vd.ptr),Arg::P(kr.ptr),Arg::P(vr.ptr),Arg::P(tmp.ptr),Arg::P(pd.ptr),Arg::I(ctx as i32),Arg::I(count as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(32768)];
+        let common=[Arg::P(qd.ptr),Arg::P(kd.ptr),Arg::P(vd.ptr),Arg::P(kr.ptr),Arg::P(vr.ptr),Arg::P(tmp.ptr),Arg::P(pd.ptr),Arg::I(ctx as i32),Arg::I(count as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(32768),Arg::I(count as i32)];
         if kind=="parallel" {launch(&g,"nb_attn_q3_parallel",(56,count as u32,splits as u32),256,&common)?;} else {let name=if kind=="gqa" {"nb_attn_q3_gqa"}else if kind=="prefill_i8pv" {"nb_attn_q3_i8pv"}else if kind=="prefill_i8" {"nb_attn_q3_i8"}else{"nb_attn_q3_tc"};let kernel=g.kernel(name)?;let smem=if kind=="prefill_i8pv"{24*1024}else if kind=="prefill_i8"{32*1024}else{48*1024};g.set_smem(kernel,smem)?;g.launch(kernel,if kind=="gqa"{(8,splits as u32,count.div_ceil(4) as u32)}else{(56,1,count.div_ceil(32) as u32)},256,smem as u32,&common)?;}
         launch(&g,"nb_attn_merge",(56,count as u32,1),128,&[Arg::P(tmp.ptr),Arg::P(out.ptr),Arg::I(count as i32),Arg::I(splits as i32)])?;
         let got:Vec<u16>=g.download(out.ptr,count*7168)?;let mut max=0f64;let mut squared=0.;let mut norm=0.;
