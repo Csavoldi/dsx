@@ -57,6 +57,9 @@ struct Args {
     /// Compare CPU sampling and device sampling on identical forced IDs and frozen placement.
     #[arg(long)]
     sampler_probe: bool,
+    /// Time full and incremental prefill at fixed residency, then a forced decode continuation.
+    #[arg(long)]
+    prefill_probe: bool,
 }
 
 fn top(x: &[f32]) -> u32 {
@@ -159,6 +162,35 @@ fn main() -> Result<()> {
         },
     )?;
     let pb = gm.pb.take().expect("prefill buffers");
+    if a.prefill_probe {
+        ensure!(std::env::var("DSX_ADAPT").is_ok_and(|v| v == "0"), "--prefill-probe requires DSX_ADAPT=0 for fixed residency");
+        let continuation = forced.as_ref().ok_or_else(|| anyhow::anyhow!("--prefill-probe requires --continuation"))?;
+        let mut sizes = vec![ids.len(), 256.min(ids.len()), 64.min(ids.len())];
+        sizes.dedup();
+        for round in 0..a.rounds {
+            for &fresh in &sizes {
+                gm.reset();
+                let prefix = ids.len() - fresh;
+                if prefix > 0 { let _ = gm.prefill(&pb, &ids[..prefix])?; }
+                gm.g.sync()?;
+                let start = Instant::now();
+                let logits = gm.prefill(&pb, &ids[prefix..])?;
+                gm.g.sync()?;
+                let elapsed = start.elapsed().as_secs_f64();
+                emit(json!({"event":"prefill_probe","round":round,"prefix_tokens":prefix,"new_tokens":fresh,"elapsed_s":elapsed,"new_tok_s":fresh as f64/elapsed,"top1":top(&logits),"nonfinite_logits":logits.iter().filter(|v| !v.is_finite()).count(),"logit_fingerprint":hash_logits(&[logits])}));
+                let picks = gm.cpu_picks();
+                let start = Instant::now();
+                let mut result = Vec::with_capacity(a.steps);
+                for &token in &continuation[..a.steps] { result.push(gm.step(token)?); }
+                gm.g.sync()?;
+                let elapsed = start.elapsed().as_secs_f64();
+                let after = gm.cpu_picks();
+                emit(json!({"event":"prefill_decode_probe","round":round,"prefix_tokens":prefix,"new_tokens":fresh,"tokens":a.steps,"elapsed_s":elapsed,"tok_s":a.steps as f64/elapsed,"cpu_picks":after.1-picks.1,"routed_picks":after.0-picks.0,"logit_fingerprint":hash_logits(&result)}));
+            }
+        }
+        emit(json!({"event":"done"}));
+        return Ok(());
+    }
     let start = Instant::now();
     let mut lg = gm.prefill(&pb, &ids)?;
     emit(json!({"event":"prefill","tokens":ids.len(),"elapsed_s":start.elapsed().as_secs_f64()}));
