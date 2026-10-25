@@ -1,0 +1,39 @@
+{
+  "description": "Exact saved requests for future controlled distribution replay; no model inference performed to prepare these fixtures.",
+  "cases": [
+    {
+      "request": "001.request.json",
+      "source": "/home/lxe/dsx-gauntlet-20261024/sampler-1-off-tetrahedron-01/requests/001.request.json",
+      "sha256": "515032a839d66405d3a9ecec691813d37bf513231b81cbc686b80f310b851f62",
+      "reason": "Initial task before any generated code.",
+      "token_count": 2106,
+      "ids_sha256": "d3fe9df9f03b5754fa05ba9dcd0eca6e77620868e68fa147c75f2fdbd6a4a70d",
+      "recorded_prompt_tokens": 2106,
+      "token_count_matches_serving": true
+    },
+    {
+      "request": "008.request.json",
+      "source": "/home/lxe/dsx-gauntlet-20261024/sampler-1-off-tetrahedron-01/requests/008.request.json",
+      "sha256": "ca2c39b666ca367e5824d74c5f759aa19c58e7a03397e33978e5d7db34211541",
+      "reason": "The agent has just received a concrete TypeError traceback.",
+      "token_count": 10433,
+      "ids_sha256": "ed51dce050542fa8cf7321442aa71b59198edcfbaf07c0c1bfd8841176895c7a",
+      "recorded_prompt_tokens": 10433,
+      "token_count_matches_serving": true
+    },
+    {
+      "request": "017.request.json",
+      "source": "/home/lxe/dsx-gauntlet-20261024/sampler-1-off-tetrahedron-01/requests/017.request.json",
+      "sha256": "e1023b478edd3ea0daab96f33d009ab0b361f17311fff8bb0c39303866214fa1",
+      "reason": "The agent has just measured an entirely blank frame.",
+      "token_count": 17859,
+      "ids_sha256": "3e85153d2891313225b424c5ffb8a8788980c324c221d08e66048e93fe39ca1b",
+      "recorded_prompt_tokens": 17859,
+      "token_count_matches_serving": true
+    }
+  ],
+  "limits": [
+    "Later continuations must be generated once by the accepted baseline and forced identically in all compared arms.",
+    "These replays condition on actual failed-task histories, but do not reconstruct original raw generated token IDs or prove end-task quality."
+  ]
+}
