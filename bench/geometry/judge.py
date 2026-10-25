@@ -14,6 +14,10 @@ def mesh_check(path, shape):
     cross = lambda a,b: [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
     scale = max(math.sqrt(dot(v,v)) for v in vertices)
     assert scale > 1e-8, 'collapsed mesh'
+    center=[sum(v[i] for v in vertices)/nv for i in range(3)]
+    assert max(map(abs,center)) < scale*1e-5, 'mesh is not centered'
+    radii=[math.sqrt(dot(v,v)) for v in vertices]
+    assert max(radii)-min(radii) < scale*1e-5, 'vertices are not on a common circumsphere'
     for f in faces:
         assert len(f) == degree and len(set(f)) == degree and all(type(i) is int and 0 <= i < nv for i in f), 'invalid face indices'
         normal = cross(sub(vertices[f[1]],vertices[f[0]]), sub(vertices[f[2]],vertices[f[0]]))
@@ -67,7 +71,7 @@ def render_check(workspace, seconds=1.6):
         os.close(master);os.close(slave)
 
 def judge(workspace, shape, out):
-    started=time.time(); result={'shape':shape,'timestamp':started,'pass':False}
+    started=time.time(); result={'judge_version':3,'shape':shape,'timestamp':started,'pass':False}
     try:
         source=(workspace/'render.py').read_text(); tree=ast.parse(source)
         imports={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}

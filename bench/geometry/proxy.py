@@ -14,8 +14,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
   c=http.client.HTTPConnection('192.168.0.102',8090,timeout=10);c.request('GET',self.path);r=c.getresponse();b=r.read();self.send_response(r.status);self.send_header('Content-Type',r.getheader('Content-Type','application/json'));self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b);c.close()
  def do_POST(self):
   num=next(IDS);t0=time.time();mono=time.perf_counter();body=self.rfile.read(int(self.headers.get('Content-Length','0')));prefix=ROOT/'requests'/f'{num:03}'
-  prefix.with_suffix('.request.json').write_bytes(body)
-  data=json.loads(body);meta={'number':num,'start':t0,'path':self.path,'request_bytes':len(body),'message_count':len(data.get('messages',[])),'max_tokens':data.get('max_tokens'),'temperature':data.get('temperature'),'top_p':data.get('top_p'),'reasoning_effort':data.get('reasoning_effort'),'stream':data.get('stream'),'content_deltas':0,'tool_deltas':0,'reasoning_deltas':0,'usage':None};prev=None;gaps=[];conn=None
+  data=json.loads(body);data['seed']=(int(os.environ['GAUNTLET_SEED_BASE'])+num)%(2**53);data['temperature']=1.0;data['top_p']=1.0;body=json.dumps(data,ensure_ascii=False).encode();prefix.with_suffix('.request.json').write_bytes(body)
+  meta={'number':num,'seed':data['seed'],'start':t0,'path':self.path,'request_bytes':len(body),'message_count':len(data.get('messages',[])),'max_tokens':data.get('max_tokens'),'temperature':data.get('temperature'),'top_p':data.get('top_p'),'reasoning_effort':data.get('reasoning_effort'),'stream':data.get('stream'),'content_deltas':0,'tool_deltas':0,'reasoning_deltas':0,'usage':None};prev=None;gaps=[];conn=None
   record(dict(meta,event='start'))
   try:
    conn=http.client.HTTPConnection('192.168.0.102',8090,timeout=600);conn.request('POST',self.path,body,{'Content-Type':'application/json'});response=conn.getresponse();meta['status']=response.status;meta['headers_s']=time.perf_counter()-mono

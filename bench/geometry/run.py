@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run one isolated Pi geometry task against the existing DSX server."""
-import argparse, hashlib, json, os, pathlib, re, shlex, signal, statistics, subprocess, sys, time, urllib.request
+import argparse, hashlib, json, os, pathlib, re, secrets, shlex, signal, statistics, subprocess, sys, time, urllib.request
 from judge import judge, EXPECTED
 HERE=pathlib.Path(__file__).resolve().parent
 
@@ -18,9 +18,12 @@ def summarize(root):
     final=json.loads((root/'final-judge.json').read_text())
     totals={k:sum((x.get('usage') or {}).get(k,0) for x in ends) for k in ['prompt_tokens','completion_tokens','total_tokens']}
     first=[x['first_delta_s'] for x in ends if 'first_delta_s' in x]
-    result={'shape':started['shape'],'arm':started['arm'],'wall_s':started.get('agent_wall_s',time.time()-started['wall']),'requests':len(ends),'tool_calls':len(tools),'tool_errors':len(errors),'usage':totals,'ttft_median_s':statistics.median(first) if first else None,'functional_pass':final['pass'],'final_judge':final}
-    probes=sorted(root.glob('judge-*.json')); good=[json.loads(p.read_text()) for p in probes if json.loads(p.read_text()).get('pass')]
+    result={'shape':started['shape'],'arm':started['arm'],'contract_version':started.get('contract_version',1),'reasoning':started.get('reasoning','off'),'seed_base':started.get('seed_base'),'wall_s':started.get('agent_wall_s',time.time()-started['wall']),'requests':len(ends),'tool_calls':len(tools),'tool_errors':len(errors),'usage':totals,'ttft_median_s':statistics.median(first) if first else None,'automated_pass':final['pass'],'functional_pass':None,'final_judge':final}
+    probes=sorted(root.glob('judge-*.json')); good=[json.loads(p.read_text()) for p in probes if json.loads(p.read_text()).get('pass') and json.loads(p.read_text()).get('judge_version',1)==final.get('judge_version',1)]
     result['first_observed_pass_s']=min((x['timestamp']-started['wall'] for x in good),default=None)
+    review_path=root/'review.json'
+    if review_path.exists():
+        review=json.loads(review_path.read_text());result['review']=review;result['functional_pass']=final['pass'] and review['pass']
     result['source_revisions']=len(list((root/'revisions').glob('*.py')))
     log=(root/'server.log').read_text() if (root/'server.log').exists() else ''
     ids={x.get('response_id') for x in ends}; server=[]
@@ -35,31 +38,36 @@ def summarize(root):
     fresh=result['prompt_tokens']-result['cached_prompt_tokens']
     result['new_prompt_tokens']=fresh
     result['new_prefill_tok_s']=fresh*1000/result['prefill_ms'] if result['prefill_ms'] else None
+    result['agent_exit']=started.get('agent_exit')
+    result['timed_out']=started.get('timed_out',False)
+    result['successful_agent_exit']=started.get('agent_exit')==0 and not result['timed_out']
+    if result['functional_pass'] is True: result['functional_pass']=result['successful_agent_exit']
     result['server_request_ids']=[x['id'] for x in server]
     (root/'summary.json').write_text(json.dumps(result,indent=2)+'\n');return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('shape',choices=EXPECTED);p.add_argument('root',type=pathlib.Path);p.add_argument('--arm',default='stock');p.add_argument('--timeout',type=int,default=1000);p.add_argument('--port',type=int,default=8987);p.add_argument('--guidance',type=pathlib.Path);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('shape',choices=EXPECTED);p.add_argument('root',type=pathlib.Path);p.add_argument('--arm',default='stock');p.add_argument('--timeout',type=int,default=360);p.add_argument('--reasoning',choices=['off','low'],default='off');p.add_argument('--port',type=int,default=8987);p.add_argument('--guidance',type=pathlib.Path);a=p.parse_args()
     root=a.root.resolve();root.mkdir(parents=True,exist_ok=False)
     for name in ['workspace','requests','sessions','config','revisions']: (root/name).mkdir()
     config=json.loads((HERE/'models.json').read_text());config['providers']['dsx-cube']['baseUrl']=f'http://127.0.0.1:{a.port}/v1'
     (root/'config/models.json').write_text(json.dumps(config,indent=2)+'\n')
     session='dsx-geometry-'+root.name
     pane=command(['tmux','new-session','-d','-s',session,'-x','110','-y','32','-P','-F','#{pane_id}']).strip()
-    task=f'''Write render.py, a Python 3 program using only the standard library, that animates a solid regular 3D {a.shape} rotating about two axes. Shade its faces according to how much they face the viewer. Draw with Unicode braille characters (U+2800-U+28FF; each cell is a 2x4 dot grid), filling the terminal. Read its size every frame with shutil.get_terminal_size, adapt to resizing, aim for about 30 fps, and hide the cursor and restore it on Ctrl-C.
+    task=f'''Create a small working terminal demo of a rotating solid 3D {a.shape} in render.py, using Python's standard library and Unicode braille. Make the solid recognizable with visible faces and simple shading. Keep the animation within the terminal, adapt to its size, and exit cleanly on Ctrl-C with the cursor restored. Aim for a smooth animation around 30 fps; exact appearance is up to you.
 
-Save the actual mesh used by render.py in mesh.json, with fields "vertices" (lists of x,y,z coordinates) and "faces" (lists of zero-based vertex indices in perimeter order). Load this file from the script directory. Use a centered regular {a.shape}, with each face a convex polygon and every edge the same length.
+Save the actual mesh used by render.py in mesh.json: "vertices" contains x,y,z coordinates and "faces" contains zero-based vertex indices around each polygon. Use a centered regular {a.shape} and load this file from the script directory.
 
-Your display is tmux pane {pane}. Never run the animation in your own shell because it does not exit. Run it using: tmux send-keys -t {pane} 'cd {root}/workspace && python3 render.py' Enter. Inspect using: tmux capture-pane -p -t {pane}. Before restarting after an edit, send: tmux send-keys -t {pane} C-c. When it looks right, leave it running there.
+Your display is tmux pane {pane}. Run the demo there: tmux send-keys -t {pane} 'cd {root}/workspace && python3 render.py' Enter. One quick check with tmux capture-pane -p -t {pane} is enough. If it crashes, repair the functional problem and recheck. Stop once it works; do not polish the aesthetics or repeatedly inspect similar frames. Leave the demo running and give a brief completion summary.
 
-Work only in this task directory and use only the named display pane. Do not access services, other agents, other tmux panes, credentials, or other project directories. Do not install packages. After checking the animation, stop making tool calls and give a brief completion summary.
+Work only in this task directory and the named display pane. Do not access other services, agents, panes, credentials, or project directories. Do not install packages. Never run the endless animation in your own tool shell. To restart the display after a necessary repair: tmux send-keys -t {pane} C-c.
 '''
     if a.guidance: task+='\n'+a.guidance.read_text()
     (root/'TASK.md').write_text(task)
     health=json.load(urllib.request.urlopen('http://192.168.0.102:8090/health',timeout=10));assert health['status']=='ok' and health['pending']==0,health
-    started={'wall':time.time(),'shape':a.shape,'arm':a.arm,'pane':pane,'task_sha256':hashlib.sha256(task.encode()).hexdigest(),'health':health,'timeout_s':a.timeout}
+    (root/'host-state.json').write_text(command(['ssh','-o','BatchMode=yes','192.168.0.102','python3 -'],input=(HERE/'host-state.py').read_text()))
+    started={'wall':time.time(),'shape':a.shape,'arm':a.arm,'pane':pane,'contract_version':3,'reasoning':a.reasoning,'seed_base':secrets.randbits(53),'temperature':1.0,'top_p':1.0,'task_sha256':hashlib.sha256(task.encode()).hexdigest(),'health':health,'timeout_s':a.timeout}
     (root/'started.json').write_text(json.dumps(started,indent=2)+'\n')
-    env=dict(os.environ,GAUNTLET_RUN=str(root),GAUNTLET_PORT=str(a.port),PI_CODING_AGENT_DIR=str(root/'config'),PI_TELEMETRY='0');env.pop('NODE_OPTIONS',None)
+    env=dict(os.environ,GAUNTLET_RUN=str(root),GAUNTLET_PORT=str(a.port),PI_CODING_AGENT_DIR=str(root/'config'),PI_TELEMETRY='0',GAUNTLET_SEED_BASE=str(started['seed_base']));env.pop('NODE_OPTIONS',None)
     proxy_log=(root/'proxy.log').open('w');agent_log=(root/'agent.jsonl').open('w')
     proxy=subprocess.Popen([sys.executable,str(HERE/'proxy.py')],env=env,stdout=proxy_log,stderr=subprocess.STDOUT,start_new_session=True)
     agent=None
@@ -68,7 +76,7 @@ Work only in this task directory and use only the named display pane. Do not acc
             try: urllib.request.urlopen(f'http://127.0.0.1:{a.port}/health',timeout=1);break
             except OSError: time.sleep(.1)
         else: raise RuntimeError('proxy did not start')
-        args=['pi','--offline','--provider','dsx-cube','--model','deepseek-v4.1-flash:off','--tools','read,bash,edit,write','--no-extensions','--no-mcp','--no-skills','--no-prompt-templates','--no-context-files','--session-dir',str(root/'sessions'),'--name',f'DSX {a.shape} {a.arm}','--mode','json','--print',task]
+        args=['pi','--offline','--provider','dsx-cube','--model','deepseek-v4.1-flash:'+a.reasoning,'--tools','read,bash,edit,write','--no-extensions','--no-mcp','--no-skills','--no-prompt-templates','--no-context-files','--session-dir',str(root/'sessions'),'--name',f'DSX {a.shape} {a.arm}','--mode','json','--print',task]
         agent=subprocess.Popen(args,cwd=root/'workspace',env=env,stdout=agent_log,stderr=subprocess.STDOUT,start_new_session=True)
         (root/'runtime.json').write_text(json.dumps({'runner_pid':os.getpid(),'agent_pid':agent.pid,'proxy_pid':proxy.pid,'argv':args},indent=2)+'\n')
         last=None;attempt=0;first_pass=False
