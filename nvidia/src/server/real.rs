@@ -57,6 +57,7 @@ pub fn real_engine(args: &RealEngineArgs) -> Result<Box<dyn Engine>> {
 impl Engine for Real {
     fn generate(&mut self, prompt: &[u32], p: &GenParams, emit: &mut dyn FnMut(u32) -> bool) -> Result<Finish> {
         let t0 = Instant::now();
+        let profile = std::env::var("DSX_RUNTIME_STATS").is_ok_and(|v| v == "1");
         anyhow::ensure!(!prompt.is_empty(), "empty prompt");
         // the prefix-cache key: every image position carries the same token id, so key those by image content
         let mut key = prompt.to_vec();
@@ -86,11 +87,15 @@ impl Engine for Real {
             self.gm.images.push((im.start, rows));
         }
         let pb = self.gm.pb.take().expect("prefill buffers");
+        let prefill_clock = profile.then(Instant::now);
         let r = self.gm.prefill(&pb, &prompt[start..]);
+        let model_prefill_s = prefill_clock.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         self.gm.pb = Some(pb);
         self.gm.images.clear();
         let mut logits = r?;
+        let snapshot_clock = profile.then(Instant::now);
         self.snap = Some(self.gm.snapshot()?);
+        let snapshot_s = snapshot_clock.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         self.cached = key;
         let prefill = t0.elapsed();
         let td = Instant::now();
@@ -98,6 +103,9 @@ impl Engine for Real {
         let mut fin = Finish::Length;
         let mut hes = p.hesitation.clone();
         let mut lookup_audit = crate::spec::LookupAudit::from_env();
+        let (mut sample_s, mut emit_s, mut step_s, mut steps) = (0.0, 0.0, 0.0, 0usize);
+        let adapt_before = self.gm.adapt_s;
+        let picks_before = self.gm.cpu_picks();
         for _ in 0..p.max_new {
             if let Some(h) = &hes {
                 for &i in h.ids.iter() {
@@ -106,22 +114,33 @@ impl Engine for Real {
                     }
                 }
             }
+            let clock = profile.then(Instant::now);
             let tok = sampler.sample(&logits);
+            if let Some(t) = clock { sample_s += t.elapsed().as_secs_f64(); }
             if hes.as_ref().is_some_and(|h| tok == h.close) {
                 hes = None;
             }
-            if !emit(tok) {
+            let clock = profile.then(Instant::now);
+            let keep = emit(tok);
+            if let Some(t) = clock { emit_s += t.elapsed().as_secs_f64(); }
+            if !keep {
                 fin = Finish::Cancelled;
                 break;
             }
             if self.gm.pos + 1 >= self.gm.max_ctx() {
                 break;
             }
+            let clock = profile.then(Instant::now);
             logits = self.gm.step(tok)?;
+            if let Some(t) = clock { step_s += t.elapsed().as_secs_f64(); steps += 1; }
             self.cached.push(tok);
             if let Some(audit) = &mut lookup_audit {
                 audit.observe(&self.cached);
             }
+        }
+        if profile {
+            let picks = self.gm.cpu_picks();
+            tracing::info!(stats = %serde_json::json!({"steps":steps,"sample_s":sample_s,"emit_s":emit_s,"step_s":step_s,"adapt_host_s":self.gm.adapt_s-adapt_before,"model_prefill_s":model_prefill_s,"snapshot_s":snapshot_s,"routed_picks":picks.0-picks_before.0,"cpu_picks":picks.1-picks_before.1}), "runtime stats");
         }
         if let Some(audit) = lookup_audit {
             tracing::info!(stats = %audit.report(), "lookup audit");

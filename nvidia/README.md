@@ -53,3 +53,5 @@ Sensitivity: `DSX_NOISE=A-B:REL` (Gaussian noise on layers A..B's routed expert 
 | `experts.rs` | VRAM expert stores (residency table) and the hugepage RAM arena |
 | `handoff.rs` | mapped-memory exchange + CPU expert worker thread |
 | `topk.rs` | GPU radix top-k / candidate blocks for the sparse indexer |
+
+Experimental serving measurements: `DSX_T16_PAIR_GU=1` pairs T16 gate/up launches (default off; [screening receipts](../bench/results/2026-10-24-gauntlet/paired-screen.json)). `DSX_RUNTIME_STATS=1` logs per-request CPU sampling, emission, model-step, cache-adaptation, prefill and snapshot times. `DSX_LOOKUP_AUDIT=1` observes causal prompt-copy proposals in the actual serial output without changing sampling; it does not enable speculation. The [geometry gauntlet](../bench/geometry/README.md) records these diagnostics beside reviewed task outcomes.
