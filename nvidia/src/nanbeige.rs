@@ -53,11 +53,15 @@ fn exl3_geometry(g:&Gpu,bits2:usize,m:usize,k:usize,n:usize) -> Result<(Kernel,u
     let maxrows=(80*1024/(32+64*m)/8*8).min(512);
     let rows_for=|grid:usize| {let r=(k/16*(n/256)).div_ceil(grid); (if full_wave {r}else{r.max((2*r).min(32))}).div_ceil(8).saturating_mul(8).max(16).min(maxrows).min((k/16).div_ceil(8)*8)};
     let mem_for=|r:usize| r*32+r*64*m+stage+2*m*128*4;
-    g.set_smem(kernel,mem_for(maxrows))?;g.prefer_shared(kernel)?;
+    let cache_mode=std::env::var("DSX_NB_EXL3_CARVEOUT").ok().and_then(|v|v.parse::<i32>().ok()).filter(|v| m==1 && (0..=100).contains(v));
+    g.set_smem(kernel,if cache_mode.is_some(){48*1024}else{mem_for(maxrows)})?;
+    g.shared_carveout(kernel,cache_mode.unwrap_or(100))?;
     let blocks=std::env::var("DSX_NB_EXL3_BLOCKS").ok().and_then(|v|v.parse::<usize>().ok()).filter(|&v|v>0 && v<=6);
     let grid=blocks.map(|b|b*g.sms).unwrap_or((g.active_blocks(kernel,256,mem_for(rows_for(6*g.sms)))? as usize*g.sms).min(1024));
     ensure!((k/16).div_ceil(rows_for(grid))<=64,"EXL3 workspace split cap");
-    Ok((kernel,grid as u32,mem_for(rows_for(grid))))
+    let mem=mem_for(rows_for(grid));
+    if cache_mode.is_some() && mem>48*1024 {g.set_smem(kernel,mem)?;}
+    Ok((kernel,grid as u32,mem))
 }
 struct Plan {
     desc: lt::cublasLtMatmulDesc_t,
@@ -1720,5 +1724,5 @@ pub fn benchmark_exl3() -> Result<serde_json::Value> {
         }
     }}
     let mut ceilings=vec![];for bits in [2.,2.5,3.] {for m in [1,4] {let sum:f64=rows.iter().filter(|r|r["bits"].as_f64()==Some(bits)&&r["rows"].as_u64()==Some(m)).map(|r|r["median_ms"].as_f64().unwrap()*if r["projection"]=="down" {1.}else{2.}).sum();let ms=52.*sum;ceilings.push(serde_json::json!({"bits":bits,"rows":m,"decoder_projection_ms":ms,"optimistic_tokens_per_second":m as f64*1000./ms}));}}
-    Ok(serde_json::json!({"conditions":"random EXL3 trellises; 256MiB GPU L2 flush before each timed call; no concurrent model inference","limits":"projection-only ceiling excludes attention, output head, sampling and CUDA launch gaps; no task quality measured here","results":rows,"projection_only_ceilings":ceilings}))
+    Ok(serde_json::json!({"kernel_experiment":std::env::var("DSX_NB_EXL3_EXPERIMENT").unwrap_or_else(|_|"baseline".into()),"m1_shared_carveout":std::env::var("DSX_NB_EXL3_CARVEOUT").ok(),"conditions":"random EXL3 trellises; 256MiB GPU L2 flush before each timed call; no concurrent model inference","limits":"projection-only ceiling excludes attention, output head, sampling and CUDA launch gaps; no task quality measured here","results":rows,"projection_only_ceilings":ceilings}))
 }

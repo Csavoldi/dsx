@@ -321,7 +321,10 @@ impl Gpu {
         let mut n=0; unsafe{check(cu::cuOccupancyMaxActiveBlocksPerMultiprocessor(&mut n,k.0,threads as i32,smem),"kernel occupancy")?;} Ok(n.max(1) as u32)
     }
     pub fn prefer_shared(&self, k: Kernel) -> Result<()> {
-        unsafe {check(cu::cuFuncSetAttribute(k.0,cu::CUfunction_attribute::CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT,100),"prefer shared memory")}
+        self.shared_carveout(k,100)
+    }
+    pub fn shared_carveout(&self, k: Kernel, percent:i32) -> Result<()> {
+        unsafe {check(cu::cuFuncSetAttribute(k.0,cu::CUfunction_attribute::CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT,percent),"shared memory carveout")}
     }
     pub fn set_smem(&self, k: Kernel, bytes: usize) -> Result<()> {
         unsafe {

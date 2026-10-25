@@ -88,3 +88,11 @@ The deployed EXL3 configuration uses `DSX_NB_BATCH=4096`, `DSX_NB_ATTN8=2`, `DSX
 ## Pi file paths
 
 The live Pi smoke completed bash, write, and read calls in the existing tmux session. Its first relative-path read failed, then an absolute-path read verified the written file. The launcher now appends an instruction to use absolute file paths for read, write, and edit tools. This avoids the observed relative-path ambiguity; it is not a change to the Pi tool implementation.
+
+## Decode prefetch experiment
+
+`DSX_NB_EXL3_EXPERIMENT=pf4` prefetches four packed trellis rows ahead in the 2.5 bpw single-token kernel. On the same 30-token coding prompt with 256 output tokens and 262144-token allocated capacity, serial decode increased from 62.05 to 65.91 TPS. Prompt lookup with maximum width 3 increased from 64.51 to 68.61 TPS, accepting 16 of 36 proposed tokens in 12 attempts. This is one coding prompt; it does not establish general 100 TPS throughput.
+
+The same 3968-token WikiText prefill followed by 128 scored targets measured perplexity 12.70363 before prefetching and 12.70233 afterward. Mean KL from baseline to the prefetch configuration was 0.0018954, with 96.875% top-1 agreement. Kernel occupancy changes the activation quantization slices, so unchanged weight files do not imply identical logits. The small perplexity difference does not demonstrate a quality improvement.
+
+The optional `DSX_NB_EXL3_CARVEOUT=0..100` experiment changes the single-token shared-memory/L1 preference. A value of 50 produced 68.55 TPS with lookup, effectively the same as the default preference, so it is not enabled in the service. A warp-register load experiment passed independent decoder checks but was slower in the projection benchmark and was removed. Receipts for both experiments remain in `validation/nanbeige/continue-*`.
