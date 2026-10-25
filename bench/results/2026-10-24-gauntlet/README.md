@@ -159,3 +159,30 @@ unchanged. The embedded GGUF tokenizer and serving template encoded **7,365 →
 binds both requests and token-ID files. This is a prompt-size measurement;
 prefill latency and completion-quality gains remain to be tested in the labeled
 live workflow. The raw capture is preserved.
+
+## Corrected-judge workflow control
+
+The next three-shape batch used judge 7 during the task, the same version-4
+prompt, a 180-second time limit, stable adaptive ordering, paired launches,
+GPU sampling and rank-3 deferral. Capture normalization remained off. It completed
+**zero of three tasks**: cube 181.33 seconds / 40.93 decode tokens/s, tetrahedron
+180.63 seconds / 39.90, and octahedron 181.51 seconds / 40.00. These shorter-budget
+outcomes should be compared with the following matching workflow groups, rather
+than combined with the earlier 300-second/judge-5 success rates.
+
+The failures are concrete. The cube initializes depth to positive infinity and
+only accepts greater inverse depths, leaving every frame blank. A diagnostic
+substitution restores dots, but its bit packer still ignores shading. The
+submitted octahedron similarly computes shading without applying it to visible
+density or color, leaving a uniformly filled silhouette.
+
+The tetrahedron shows shaded geometry, then loses output during the resize
+sequence and exits without restoring the cursor. It makes stdin nonblocking
+while stdin and stdout share the PTY's open-file description. A diagnostic copy
+using select-based input readiness passes all three sizes and exits cleanly;
+the unmodified repeat fails again. Both diagnostic and original source/output
+hashes are preserved in the [batch receipt](workflow-control.json). Diagnostic
+repairs do not change the submitted artifacts or their failed completion status.
+These tests explain code-level failures without attributing them to a particular
+inference approximation. A matching no-deferral batch follows to gather more
+actual completion evidence before deciding whether deferral's speed is useful.
