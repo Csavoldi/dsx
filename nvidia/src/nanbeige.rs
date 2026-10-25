@@ -1049,7 +1049,7 @@ impl Nanbeige {
                     ],
                 )?;
                 if t <= 9 && self.pos >= 2048 {
-                    g.launch(g.kernel("nb_attn_q3_gqa")?,(8,splits as u32,t.div_ceil(4) as u32),256,48*1024,&[Arg::P(self.q.ptr),Arg::P(l.kc.ptr),Arg::P(l.vc.ptr),Arg::P(l.kr),Arg::P(l.vr),Arg::P(self.tmp.ptr),Arg::P(self.position.ptr),Arg::I(self.ctx as i32),Arg::I(t as i32),Arg::I(splits as i32),Arg::I(0)])?;
+                    g.launch(g.kernel("nb_attn_q3_gqa")?,(8,splits as u32,t.div_ceil(4) as u32),256,48*1024,&[Arg::P(self.q.ptr),Arg::P(l.kc.ptr),Arg::P(l.vc.ptr),Arg::P(l.kr),Arg::P(l.vr),Arg::P(self.tmp.ptr),Arg::P(self.position.ptr),Arg::I(self.ctx as i32),Arg::I(t as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(512)])?;
                     launch(g,"nb_attn_merge",(56,t as u32,1),128,&[Arg::P(self.tmp.ptr),Arg::P(self.att.ptr),Arg::I(t as i32),Arg::I(splits as i32)])?;
                 } else if t > 9 {
                     for offset in (0..t).step_by(512) {
@@ -1693,7 +1693,7 @@ pub fn validate_attention() -> Result<serde_json::Value> {
     let mut results=vec![];
     for kind in ["parallel","gqa","prefill_tc","prefill_i8","prefill_i8pv"] {
         let splits=if kind=="parallel" {(pos+count).div_ceil(128)} else if kind=="gqa" {(pos+count).div_ceil(512)} else {1};
-        let common=[Arg::P(qd.ptr),Arg::P(kd.ptr),Arg::P(vd.ptr),Arg::P(kr.ptr),Arg::P(vr.ptr),Arg::P(tmp.ptr),Arg::P(pd.ptr),Arg::I(ctx as i32),Arg::I(count as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(32768),Arg::I(count as i32)];
+        let common=[Arg::P(qd.ptr),Arg::P(kd.ptr),Arg::P(vd.ptr),Arg::P(kr.ptr),Arg::P(vr.ptr),Arg::P(tmp.ptr),Arg::P(pd.ptr),Arg::I(ctx as i32),Arg::I(count as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(if kind=="gqa" {512} else {32768}),Arg::I(count as i32)];
         if kind=="parallel" {launch(&g,"nb_attn_q3_parallel",(56,count as u32,splits as u32),256,&common)?;} else {let name=if kind=="gqa" {"nb_attn_q3_gqa"}else if kind=="prefill_i8pv" {"nb_attn_q3_i8pv"}else if kind=="prefill_i8" {"nb_attn_q3_i8"}else{"nb_attn_q3_tc"};let kernel=g.kernel(name)?;let smem=if kind=="prefill_i8pv"{24*1024}else if kind=="prefill_i8"{32*1024}else{48*1024};g.set_smem(kernel,smem)?;g.launch(kernel,if kind=="gqa"{(8,splits as u32,count.div_ceil(4) as u32)}else{(56,1,count.div_ceil(32) as u32)},256,smem as u32,&common)?;}
         launch(&g,"nb_attn_merge",(56,count as u32,1),128,&[Arg::P(tmp.ptr),Arg::P(out.ptr),Arg::I(count as i32),Arg::I(splits as i32)])?;
         let got:Vec<u16>=g.download(out.ptr,count*7168)?;let mut max=0f64;let mut squared=0.;let mut norm=0.;
@@ -1728,4 +1728,60 @@ pub fn benchmark_exl3() -> Result<serde_json::Value> {
     }}
     let mut ceilings=vec![];for bits in [2.,2.5,3.] {for m in [1,4] {let sum:f64=rows.iter().filter(|r|r["bits"].as_f64()==Some(bits)&&r["rows"].as_u64()==Some(m)).map(|r|r["median_ms"].as_f64().unwrap()*if r["projection"]=="down" {1.}else{2.}).sum();let ms=52.*sum;ceilings.push(serde_json::json!({"bits":bits,"rows":m,"decoder_projection_ms":ms,"optimistic_tokens_per_second":m as f64*1000./ms}));}}
     Ok(serde_json::json!({"kernel_experiment":std::env::var("DSX_NB_EXL3_EXPERIMENT").unwrap_or_else(|_|"baseline".into()),"m1_shared_carveout":std::env::var("DSX_NB_EXL3_CARVEOUT").ok(),"conditions":"random EXL3 trellises; 256MiB GPU L2 flush before each timed call; no concurrent model inference","limits":"projection-only ceiling excludes attention, output head, sampling and CUDA launch gaps; no task quality measured here","results":rows,"projection_only_ceilings":ceilings}))
+}
+
+/// Isolated attention timing, including split merge. Synthetic KV is separate
+/// from model throughput; this benchmark never loads or changes model weights.
+pub fn benchmark_attention() -> Result<serde_json::Value> {
+    let g=Gpu::new(0)?;
+    let ctx=262144usize;
+    let q=g.upload(&vec![0.125f32;8*7168])?;
+    let mut seed=379u32;
+    let mut packed=|| {
+        let mut data=vec![0u8;8*ctx*50];
+        for row in data.chunks_exact_mut(50) {
+            row[..2].copy_from_slice(&half::bf16::from_f32(0.5).to_bits().to_le_bytes());
+            for x in &mut row[2..] {seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);*x=(seed>>24) as u8;}
+        }
+        data
+    };
+    let k=g.upload(&packed())?;
+    let v=g.upload(&packed())?;
+    let recent=g.upload(&vec![half::bf16::from_f32(0.25).to_bits();8*2592*128])?;
+    let tmp=g.alloc(8*56*ctx.div_ceil(128)*130*4)?;
+    let out=g.alloc(8*7168*2)?;
+    let kernel=g.kernel("nb_attn_q3_gqa")?;
+    g.set_smem(kernel,48*1024)?;
+    let mut results=vec![];
+    for pos in [4096usize,32768,65536,131072,262135] {
+        let pd=g.upload(&[pos as i32])?;
+        for rows in [1usize,4,8] {
+            let mut baseline:Option<Vec<u16>>=None;
+            for part in [512usize,128,256,1024,2048] {
+                let splits=(pos+rows).div_ceil(part);
+                let args=[Arg::P(q.ptr),Arg::P(k.ptr),Arg::P(v.ptr),Arg::P(recent.ptr),Arg::P(recent.ptr),Arg::P(tmp.ptr),Arg::P(pd.ptr),Arg::I(ctx as i32),Arg::I(rows as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(part as i32)];
+                let run=|| -> Result<()> {
+                    g.launch(kernel,(8,splits as u32,rows.div_ceil(4) as u32),256,48*1024,&args)?;
+                    launch(&g,"nb_attn_merge",(56,rows as u32,1),128,&[Arg::P(tmp.ptr),Arg::P(out.ptr),Arg::I(rows as i32),Arg::I(splits as i32)])?;
+                    Ok(())
+                };
+                run()?;g.sync()?;
+                let got:Vec<u16>=g.download(out.ptr,rows*7168)?;
+                ensure!(got.iter().all(|x|half::bf16::from_bits(*x).is_finite()),"nonfinite attention benchmark");
+                let base=baseline.get_or_insert_with(||got.clone());
+                let max=got.iter().zip(base.iter()).map(|(a,b)|(half::bf16::from_bits(*a).to_f32()-half::bf16::from_bits(*b).to_f32()).abs()).fold(0f32,f32::max);
+                ensure!(max<0.01,"partition attention drift {max}");
+                let mut times=vec![];
+                for _ in 0..7 {
+                    let begin=g.timed_event()?;let end=g.timed_event()?;
+                    g.record(begin,false)?;for _ in 0..4 {run()?;}g.record(end,false)?;g.event_sync(end)?;
+                    times.push(g.elapsed_ms(begin,end)? as f64/4.);
+                    g.destroy_event(begin)?;g.destroy_event(end)?;
+                }
+                times.sort_by(f64::total_cmp);
+                results.push(serde_json::json!({"position":pos,"rows":rows,"partition_tokens":part,"splits":splits,"median_ms":times[3],"max_abs_difference_vs_512":max}));
+            }
+        }
+    }
+    Ok(serde_json::json!({"scope":"synthetic isolated GQA attention plus merge; not full model throughput","context_capacity":ctx,"results":results}))
 }

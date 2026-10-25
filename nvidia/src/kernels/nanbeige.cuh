@@ -147,14 +147,14 @@ extern "C" __global__ void nb_q2_gemv(const uint8_t* w,const uint8_t* scales,con
 extern "C" __global__ void nb_quant_head4(const __nv_bfloat16* w,uint8_t* q,__nv_bfloat16* scales,int groups){int group=blockIdx.x*4+threadIdx.x/32,lane=threadIdx.x%32;if(group>=groups)return;float a=__bfloat162float(w[(size_t)group*64+lane*2]),b=__bfloat162float(w[(size_t)group*64+lane*2+1]);float mx=warp_max(fmaxf(fabsf(a),fabsf(b)));float d=__bfloat162float(__float2bfloat16(mx>0?mx/7.f:1.f));if(lane==0)scales[group]=__float2bfloat16(d);unsigned qa=max(-7,min(7,__float2int_rn(a/d)))+8,qb=max(-7,min(7,__float2int_rn(b/d)))+8;q[(size_t)group*32+lane]=qa|(qb<<4);}
 
 // GQA-aware attention shares each KV tile across the seven query heads.
-extern "C" __global__ void nb_attn_q3_gqa(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset){
+extern "C" __global__ void nb_attn_q3_gqa(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset,int part_size){
  using namespace nvcuda;extern __shared__ __align__(32) unsigned char memory[];
  auto Q=(__nv_bfloat16*)memory;auto K=Q+32*144;auto V=K;auto S=(float*)(K+64*144);auto PH=(__nv_bfloat16*)(S+32*80);auto PL=PH+32*80;auto O=(float*)K;auto mx=(float*)(PL+32*80);auto den=mx+32;auto old=den+32;
  int tile=blockIdx.z; query_offset=tile*4; rows=min(4,rows-query_offset)*7;
  int h=blockIdx.x,part=blockIdx.y,tid=threadIdx.x,warp=tid/32,lane=tid%32,p0=*pos+query_offset,cutoff=max(0,(p0/32)*32-2048);
  for(int i=tid;i<32*128;i+=256){Q[(i/128)*144+i%128]=__float2bfloat16(i/128<rows?q[(size_t)(query_offset+i/128/7)*7168+(h*7+i/128%7)*128+i%128]:0);}if(tid<32){mx[tid]=-INFINITY;den[tid]=0;}__syncthreads();
  wmma::fragment<wmma::accumulator,16,16,16,float> value[2]; for(int row=0;row<2;row++)wmma::fill_fragment(value[row],0.f);
- for(int begin=part*512;begin<min(p0+(rows+6)/7,(part+1)*512);begin+=64){
+ for(int begin=part*part_size;begin<min(p0+(rows+6)/7,(part+1)*part_size);begin+=64){
   for(int i=tid;i<64*128;i+=256){int p=begin+i/128,j=i%128;size_t off=((size_t)h*ctx+p)*50,ring=((size_t)h*2592+p%2592)*128+j;float kval=0;if(p<p0+(rows+6)/7){bool recent=p>=cutoff;kval=recent?__bfloat162float(kr[ring]):nb_load_q3(kc+off,j);}K[(i/128)*144+i%128]=__float2bfloat16(kval);}__syncthreads();
   wmma::fragment<wmma::accumulator,16,16,16,float> scores;wmma::fill_fragment(scores,0.f);int qr=warp/4,kcol=warp%4;
   #pragma unroll

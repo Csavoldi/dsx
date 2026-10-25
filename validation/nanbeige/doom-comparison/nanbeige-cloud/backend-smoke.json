@@ -1,0 +1,50 @@
+{
+  "id": "cmpl-7ab821259d0045f994d336f1759705d5",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "eos_reason": "stop_token",
+      "stop_str": "<|im_end|>",
+      "message": {
+        "role": "assistant",
+        "content": "CLOUD_READY",
+        "reasoning_content": null,
+        "tool_calls": null,
+        "tool_call_id": null
+      },
+      "logprobs": null
+    }
+  ],
+  "created": 1792961076,
+  "model": "Nanbeige4.3-33B",
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 42,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "prompt_time": 0.1,
+    "prompt_tokens_per_sec": 420.0,
+    "completion_tokens": 5,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    },
+    "completion_time": 1.56,
+    "completion_tokens_per_sec": 3.2,
+    "total_tokens": 47,
+    "total_time": 1.66
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 42,
+    "prompt_ms": 100.0,
+    "prompt_per_token_ms": 2.380952380952381,
+    "prompt_per_second": 420.0,
+    "predicted_n": 5,
+    "predicted_ms": 1560.0,
+    "predicted_per_token_ms": 312.0,
+    "predicted_per_second": 3.2051282051282053
+  }
+}

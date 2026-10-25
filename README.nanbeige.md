@@ -123,3 +123,11 @@ The final prefetch configuration measured 2045.60 TPS for a cold 3968-token pref
 The published pack follows the upstream EXL3 tensor layout and two-shard convention. Root `config.json` and the detailed `quantization_config.json` both retain the canonical fractional `bits: 2.5`. A previous display workaround had renamed the root field to `bits_per_weight`; that deviation was removed. The Hub's integer-only warning and packed-element parameter count require EXL3 support in its metadata parser. Weight shards and checksums are unchanged.
 
 The [parameter audit](validation/nanbeige/exl3-logical-parameter-audit.json) reconstructs logical matrix sizes from EXL3 tile shapes and agrees exactly with both source checkpoints: 33,118,977,024 parameters for Nanbeige, and 32,762,123,264 for Turboderp's Qwen3-32B EXL3 example. Its stored tensor elements total about 5.95B despite the 32.76B logical parameter count. This is why multiplying or renaming stored tensor dimensions to change the Hub badge would misrepresent the file format.
+
+## Long-context decode investigation
+
+A passive ten-second sample of the active Doom run measured approximately 23.52 output TPS while it streamed reasoning. The request began with 2,566 prompt tokens; its final generated count and populated context were not yet available. This live sample is separate from the controlled 69.88 TPS short-context suite.
+
+The [attention partition sweep](validation/nanbeige/attention-partitions.md) measures the CUDA GQA kernel and merge on the rented RTX PRO 6000 Blackwell without interrupting the local RTX 5090 run. Larger partitions did not consistently improve long-context attention. The production partition remains 512 tokens; no end-to-end throughput gain is claimed. The new `--attention-bench` option supports further isolated measurements.
+
+The [Doom comparison setup](validation/nanbeige/doom-comparison/README.md) records matched task prompts for local EXL3 Nanbeige, original 16-bit Nanbeige on a rented reference backend, and the existing DeepSeek DSX runner on two RTX 3090 GPUs. Its manifests identify the hardware, precision, and reasoning-control differences that limit attribution to weight quantization.

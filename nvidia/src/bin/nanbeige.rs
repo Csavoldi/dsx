@@ -32,6 +32,8 @@ struct Args {
     #[arg(long)]
     attention_check: bool,
     #[arg(long)]
+    attention_bench: bool,
+    #[arg(long)]
     exl3_bench: bool,
     #[arg(long)]
     reference: bool,
@@ -61,6 +63,7 @@ struct Args {
 fn main() -> Result<()> {
     let a = Args::parse();
     if a.exl3_bench { let r=dsx::nanbeige::benchmark_exl3()?; println!("{r}");if let Some(p)=a.receipt {std::fs::write(p,serde_json::to_vec_pretty(&r)?)?;}return Ok(()); }
+    if a.attention_bench { let r=dsx::nanbeige::benchmark_attention()?; println!("{r}");if let Some(p)=a.receipt {std::fs::write(p,serde_json::to_vec_pretty(&r)?)?;}return Ok(()); }
     if a.attention_check { let r=dsx::nanbeige::validate_attention()?; println!("{r}");if let Some(p)=a.receipt {std::fs::write(p,serde_json::to_vec_pretty(&r)?)?;}return Ok(()); }
     if a.exl3_check { let r=dsx::nanbeige::validate_exl3()?; println!("{r}");if let Some(p)=a.receipt {std::fs::write(p,serde_json::to_vec_pretty(&r)?)?;}return Ok(()); }
     if a.bandwidth {

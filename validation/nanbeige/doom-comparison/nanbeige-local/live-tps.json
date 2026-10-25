@@ -1,0 +1,10 @@
+{
+  "sample_seconds": 9.991327228024602,
+  "retokenized_output_tokens": 235,
+  "approx_output_tps": 23.520398705474303,
+  "sse_text_chunks": 232,
+  "bytes": 45990,
+  "request_prompt_tokens": 2566,
+  "measurement": "passive live SSE reasoning text, retokenized; approximate due sample boundaries",
+  "timestamp": "2026-10-25T20:40:01Z"
+}

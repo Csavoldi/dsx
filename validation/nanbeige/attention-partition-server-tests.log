@@ -1,0 +1,41 @@
+warning: variable does not need to be mutable
+   --> core/src/server/engine.rs:262:9
+    |
+262 |     let mut done = |engine: &mut dyn BatchEngine, running: &mut std::collections::HashMap<u64, Running>, id: u64, f: Option<Finish>...
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dsx-core` (lib) generated 1 warning (run `cargo fix --lib -p dsx-core` to apply 1 suggestion)
+   Compiling dsx v0.1.0 (/home/lxe/dsx-nanbeige/nvidia)
+warning: fields `nvis`, `win_idx`, and `topk_rows` are never read
+   --> nvidia/src/gpumodel.rs:136:5
+    |
+102 | pub struct GpuModel<'m> {
+    |            -------- fields in this struct
+...
+136 |     nvis: Buf,
+    |     ^^^^
+137 |     win_idx: Buf,
+    |     ^^^^^^^
+...
+147 |     topk_rows: Vec<i32>,
+    |     ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dsx` (lib) generated 1 warning
+    Finished `release` profile [optimized + debuginfo] target(s) in 15.92s
+     Running unittests src/bin/nanbeige-server.rs (target/release/deps/dsx_nanbeige_server-3e7be68bd6ef1a24)
+
+running 5 tests
+test tests::stream_boundaries ... ok
+test tests::streamed_multiple_calls_and_truncated_call ... ok
+test tests::template_history ... ok
+test tests::xml_tool_values ... ok
+test tests::tool_arguments_stream_before_call_finishes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
