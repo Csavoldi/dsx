@@ -139,6 +139,8 @@ kill serving through memory pressure. Do not assume old protection settings stil
 | Document | Scope |
 |---|---|
 | [README](../README.md) | download, quick start, supported hardware and API |
+| [Server configuration](server.md) | server flags, sampling and thinking controls |
+| [Coding agents](agents.md) | Pi provider setup and response limits |
 | [DESIGN](../DESIGN.md) | current NVIDIA execution and storage architecture |
 | [placement](placement.md) | current residency accounting and tuning flags; dated older sweeps |
 | [T16 format](t16-format.md) | shipped v1 bytes; clearly separated v2 proposal |

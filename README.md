@@ -17,7 +17,7 @@ a browser chat UI, image input, and OpenAI- and Anthropic-compatible APIs for co
 
 The [current model](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16) is a single 252 GB GGUF with
 the experts, Engram memory and tokenizer included. The download also supplies the expert ranking and a separate
-vision tower. [T16](docs/t16.md) uses a trellis format designed for both desktop CPU and GPU execution.
+vision tower. [T16](docs/t16-format.md) uses a trellis format designed for both desktop CPU and GPU execution.
 
 ## Quick start
 
@@ -106,7 +106,7 @@ needs prefill. [DESIGN.md](DESIGN.md) describes the execution and memory layout.
 | [Server configuration](docs/server.md) | Model files, authentication, sampling, thinking and runtime flags |
 | [Coding agents](docs/agents.md) | Pi provider configuration |
 | [Expert placement](docs/placement.md) | GPU, RAM and disk placement; tuning for your machine |
-| [T16 format](docs/t16.md) | Quantization and CPU/GPU decoding |
+| [T16 format](docs/t16-format.md) | Quantization and CPU/GPU decoding |
 | [NVIDIA runner](nvidia/README.md) | CLI tools, build details and debugging |
 | [AMD runner](amd/README.md) | The separate MI325X implementation and model |
 | [Measurements](docs/current-state.md) | Current runtime status, quality evidence and benchmark history |
