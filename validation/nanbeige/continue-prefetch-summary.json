@@ -1,0 +1,80 @@
+{
+  "context_capacity": 262144,
+  "weights": "standard EXL3 mul1 2.5bpw; unchanged",
+  "kernel": "pf4",
+  "prefill_batch": 4096,
+  "attention": "INT8 QK/PV",
+  "kv_bits": 3,
+  "head_bits": 4,
+  "host_embedding": true,
+  "live_verification_graphs": false,
+  "rows": [
+    {
+      "workload": "rust",
+      "prompt_tokens": 49,
+      "output_tokens": 512,
+      "final_populated_context": 561,
+      "prefetch_lookup3_tps": 72.65348468205863,
+      "verification_graph_tps": 72.62827020226958,
+      "graph_output_ids_identical": true,
+      "lookup": {
+        "attempts": 49,
+        "drafted_tokens": 141,
+        "accepted_tokens": 79,
+        "generated_tokens": 512,
+        "max_draft": 3
+      }
+    },
+    {
+      "workload": "sql",
+      "prompt_tokens": 56,
+      "output_tokens": 512,
+      "final_populated_context": 568,
+      "prefetch_lookup3_tps": 66.97773035427139,
+      "verification_graph_tps": 68.5260129104842,
+      "graph_output_ids_identical": true,
+      "lookup": {
+        "attempts": 28,
+        "drafted_tokens": 81,
+        "accepted_tokens": 34,
+        "generated_tokens": 512,
+        "max_draft": 3
+      }
+    },
+    {
+      "workload": "reason",
+      "prompt_tokens": 64,
+      "output_tokens": 512,
+      "final_populated_context": 576,
+      "prefetch_lookup3_tps": 70.2520225447522,
+      "verification_graph_tps": 69.88774324920436,
+      "graph_output_ids_identical": true,
+      "lookup": {
+        "attempts": 40,
+        "drafted_tokens": 116,
+        "accepted_tokens": 49,
+        "generated_tokens": 512,
+        "max_draft": 3
+      }
+    }
+  ],
+  "aggregate_prefetch_lookup3_tps": 69.8832106042675,
+  "cold_prefill_tokens": 3968,
+  "cold_prefill_seconds": 1.939772345,
+  "cold_prefill_tps": 2045.6008717868385,
+  "quality": {
+    "comparison": "PF4 prefetch and its occupancy geometry versus baseline; same EXL3 weights, 4096-token WikiText prefix, 128 scored targets",
+    "mean_kl": 0.0018953776722648538,
+    "top1_agreement": 0.96875,
+    "baseline_ppl": 12.7036347021727,
+    "prefetch_ppl": 12.702328353978807,
+    "weight_files_changed": false
+  },
+  "limits": [
+    "Short prompts, at most 576 populated tokens in this decode suite",
+    "512 output cap; responses may be truncated; task success not evaluated",
+    "100 TPS general decode target not reached",
+    "Full 262144 populated-context EXL3 retrieval remains unmeasured",
+    "A compiler was active during early continue-suite runs; use continue-graphs off/on runs, which started after compilation completed"
+  ]
+}

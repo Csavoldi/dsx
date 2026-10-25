@@ -899,12 +899,15 @@ impl Nanbeige {
             .div_ceil(part_size)
             .next_power_of_two()
             .min(self.ctx.div_ceil(part_size));
-        let graph_key = splits + if gqa { 1_000_000 } else { 0 };
-        if t == 1
+        let graph_key = splits + if gqa { 1_000_000 } else { 0 }
+            + t * 10_000_000 + if self.collect_all_logits { 100_000_000 } else { 0 };
+        // Verification batches use fixed buffers and read position from device memory.
+        // Keep their graphs distinct by row count, attention geometry and head layout.
+        if (t == 1 || (t <= 9 && std::env::var_os("DSX_NB_SPEC_GRAPHS").is_some()))
             && !self.reference
             && self.graphs_enabled
             && self.pos > 0
-            && !self.collect_all_logits
+            && (!self.collect_all_logits || std::env::var_os("DSX_NB_SPEC_GRAPHS").is_some())
         {
             use cudarc::driver::sys as cu;
             if !self.graphs.contains_key(&graph_key) {
