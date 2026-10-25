@@ -122,3 +122,13 @@ after the agent stopped are preserved on disk but listed in
 `outside_run_request_numbers` and excluded from its metrics. This guards against
 recording faults without silently deleting their evidence. The proxy-ownership
 tests also exercise this lifetime filter.
+
+`cache-replay.py` measures request latency for saved feedback histories in an
+owned, otherwise idle serving window. Supply the preceding request and the two
+versions of the following request with `--previous`, `--dropped`, and
+`--retained`, plus explicit `--server` and a new `--output` directory. Each target
+has its own preceding setup request; the target order is dropped/retained/
+retained/dropped. Requests use fresh seeds, temperature/top-p 1 and one output
+token. Saved requests, responses and timings allow reconciliation with engine
+cache counters. This measures cache preservation, not coding quality or task
+completion, and setup latency is excluded from target comparisons.
