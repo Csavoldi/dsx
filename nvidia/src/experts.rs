@@ -351,7 +351,10 @@ impl GpuExperts {
             }
         }
         let t16b = if t16.iter().any(|v| v.is_some()) {
-            for n in ["t16d_prep_gu", "t16d_gemv_gu_3", "t16d_gemv_gu_4", "t16d_gemv_gu_5", "t16d_prep", "t16d_gemv_3", "t16d_gemv_4", "t16d_gemv_5", "t16d_gemv0_3", "t16d_gemv0_4", "t16d_gemv0_5", "t16d_post_gu", "t16d_post_down"] {
+            if std::env::var("DSX_T16_PAIR_GU").is_ok_and(|v| v == "1") {
+                for n in ["t16d_prep_gu", "t16d_gemv_gu_3", "t16d_gemv_gu_4", "t16d_gemv_gu_5"] { k.insert(n, g.kernel(n)?); }
+            }
+            for n in ["t16d_prep", "t16d_gemv_3", "t16d_gemv_4", "t16d_gemv_5", "t16d_gemv0_3", "t16d_gemv0_4", "t16d_gemv0_5", "t16d_post_gu", "t16d_post_down"] {
                 k.insert(n, g.kernel(n)?);
             }
             let (p, d, i) = (MAXT * MAXK, c.dim, c.inter);

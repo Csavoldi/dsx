@@ -7,9 +7,21 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DSX_KDEFS");
     println!("cargo:rerun-if-env-changed=DSX_KS");
     println!("cargo:rerun-if-env-changed=DSX_ROWT");
+    println!("cargo:rerun-if-env-changed=DSX_KERNEL_IMAGE");
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("dsx.fatbin");
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
         std::fs::write(&out, []).unwrap();
+        return;
+    }
+    // Diagnostic builds can retain an archived deployed image while testing the
+    // same host wrapper. Kernel-dependent experimental flags must remain off.
+    if let Some(image) = env::var_os("DSX_KERNEL_IMAGE") {
+        let image = PathBuf::from(image);
+        println!("cargo:rerun-if-changed={}", image.display());
+        let bytes = std::fs::read(&image).expect("read explicit DSX_KERNEL_IMAGE");
+        assert!(!bytes.is_empty(), "DSX_KERNEL_IMAGE must not be empty");
+        std::fs::write(&out, bytes).expect("copy explicit kernel image");
+        println!("cargo:warning=using explicit diagnostic kernel image {}", image.display());
         return;
     }
     let nvcc = env::var("NVCC").unwrap_or_else(|_| {

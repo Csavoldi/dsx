@@ -170,3 +170,9 @@ kill serving through memory pressure. Do not assume old protection settings stil
 Historical raw logs, third-party vendored docs and gauntlet task definitions are retained as records. They are not
 rewritten to look like current measurements. Public model cards and GitHub files change only when these edits are
 published; a local documentation commit does not update either service.
+
+## Failure replay diagnostics
+
+`oracle-bench --serial-probe --replay-sampling cpu|gpu --replay-seed N` records the initial prefill distribution and the distributions after a fixed continuation. It supports `--dump-reference` and `--compare-reference`, records sorted initial store membership and subsequent changes, and reports sampled choices. GPU replay explicitly downloads logits after sampling. Those readbacks and logs perturb execution timing; this mode is a correctness diagnostic, not production throughput evidence.
+
+`DSX_ROUTE_AUDIT=PATH` writes buffered per-layer JSON records containing selected experts, routing weights and the CPU experts actually computed immediately or deferred. It is off by default. For compiler/kernel isolation, `DSX_KERNEL_IMAGE=/absolute/image.fatbin` selects an archived image at build time; kernel-dependent experimental flags must match the image. This retains the current host wrapper and therefore does not reproduce an entire archived serving binary. Ordinary builds compile the current CUDA sources as before.

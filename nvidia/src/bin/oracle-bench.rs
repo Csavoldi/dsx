@@ -51,6 +51,12 @@ struct Args {
     /// Run one fixed-token stream without restoring state, suitable for profiling the adaptive cache policy.
     #[arg(long)]
     serial_probe: bool,
+    /// Diagnostic sampling during serial replay, with full logits and residency readback.
+    #[arg(long, value_parser=["cpu","gpu"], requires="serial_probe")]
+    replay_sampling: Option<String>,
+    /// Reuse within a diagnostic comparison; independent gauntlets still use fresh seeds.
+    #[arg(long, requires="replay_sampling")]
+    replay_seed: Option<u64>,
     /// Warm with the exact continuation, then freeze placement for matched optimistic upper bounds.
     #[arg(long)]
     warm_cache_oracle: bool,
@@ -87,7 +93,8 @@ fn difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Value {
     let (mut changed, mut values, mut nonfinite, mut max_abs, mut top_changes) =
         (0usize, 0usize, 0usize, 0f64, 0usize);
     let (mut kl_sum, mut kl_max) = (0f64, 0f64);
-    for (x, y) in a.iter().zip(b) {
+    let mut changed_rows = Vec::new();
+    for (row, (x, y)) in a.iter().zip(b).enumerate() {
         top_changes += usize::from(top(x) != top(y));
         let prior_changed = changed;
         for (&u, &v) in x.iter().zip(y) {
@@ -99,6 +106,7 @@ fn difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Value {
                 max_abs = max_abs.max((u as f64 - v as f64).abs());
             }
         }
+        let mut row_kl = None;
         if changed != prior_changed && x.iter().chain(y).all(|v| v.is_finite()) {
             let mx = x.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
             let my = y.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
@@ -114,12 +122,31 @@ fn difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Value {
                 .max(0.);
             kl_sum += kl;
             kl_max = kl_max.max(kl);
+            row_kl = Some(kl);
         }
+        if changed != prior_changed {changed_rows.push(json!({"row":row,"changed_values":changed-prior_changed,"top1_changed":top(x)!=top(y),"kl_reference_to_candidate":row_kl}));}
     }
-    json!({"rows":a.len().min(b.len()),"values":values,"changed_bits_values":changed,"nonfinite_values":nonfinite,"max_abs_logit_difference":max_abs,"top1_changed_rows":top_changes,"mean_full_vocab_kl_reference_to_candidate":kl_sum/a.len().min(b.len()).max(1) as f64,"max_row_full_vocab_kl":kl_max})
+    json!({"rows":a.len().min(b.len()),"values":values,"changed_bits_values":changed,"nonfinite_values":nonfinite,"max_abs_logit_difference":max_abs,"top1_changed_rows":top_changes,"mean_full_vocab_kl_reference_to_candidate":kl_sum/a.len().min(b.len()).max(1) as f64,"max_row_full_vocab_kl":kl_max,"changed_rows":changed_rows})
 }
 fn emit(x: Value) {
     println!("{}", x);
+}
+fn reference_io(a: &Args, rows: &[Vec<f32>]) -> Result<()> {
+    if let Some(path) = &a.dump_reference {
+        use std::io::Write;
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        for row in rows { for value in row { out.write_all(&value.to_le_bytes())?; } }
+        out.flush()?;
+    }
+    if let Some(path) = &a.compare_reference {
+        let bytes = std::fs::read(path)?;
+        let cols = rows.first().ok_or_else(|| anyhow::anyhow!("empty comparison"))?.len();
+        ensure!(bytes.len() >= rows.len()*cols*4, "comparison reference too short");
+        let values: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let prior: Vec<Vec<f32>> = values.chunks_exact(cols).take(rows.len()).map(|r|r.to_vec()).collect();
+        emit(json!({"event":"placement_reference_comparison","reference":path,"difference":difference(&prior,rows)}));
+    }
+    Ok(())
 }
 fn read_ids(path: &std::path::Path) -> Result<Vec<u32>> {
     Ok(std::fs::read_to_string(path)?
@@ -212,8 +239,36 @@ fn main() -> Result<()> {
         let picks = gm.cpu_picks();
         let start = Instant::now();
         let mut result = Vec::with_capacity(a.steps);
+        let seed = a.replay_seed.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64);
+        let mut sampler = dsx_core::server::sample::Sampler::new(1.0,1.0,Some(seed));
+        let mut sampled = Vec::new();
+        if a.replay_sampling.is_some() {result.push(lg.clone());sampled.push(sampler.sample(&lg));}
+        let mut fallbacks = 0usize;
+        let mut residency = if a.replay_sampling.is_some() {gm.validation_residency()} else {vec![]};
+        if a.replay_sampling.is_some() {emit(json!({"event":"replay_initial_residency","stores":residency,"limit":"Diagnostic readback and route logging alter timing; not production throughput."}));}
         for &tk in &tokens[..a.steps] {
-            result.push(gm.step(tk)?);
+            let logits = if a.replay_sampling.as_deref()==Some("gpu") {
+                let saved = sampler.clone();
+                match gm.step_sampled(tk,sampler.uniform_bits())? {
+                    dsx::sampling::StepOutput::Token(next) => {sampled.push(next);gm.validation_logits()?},
+                    dsx::sampling::StepOutput::Logits(logits) => {sampler=saved;fallbacks+=1;sampled.push(sampler.sample(&logits));logits},
+                }
+            } else {
+                let logits=gm.step(tk)?;
+                if a.replay_sampling.is_some() {sampled.push(sampler.sample(&logits));}
+                logits
+            };
+            result.push(logits);
+            if a.replay_sampling.is_some() {
+                let after=gm.validation_residency();
+                let changes:Vec<_>=residency.iter().zip(&after).enumerate().filter_map(|(store,(before,after))| {
+                    let added:Vec<_>=after.iter().filter(|x|before.binary_search(x).is_err()).copied().collect();
+                    let removed:Vec<_>=before.iter().filter(|x|after.binary_search(x).is_err()).copied().collect();
+                    (!added.is_empty() || !removed.is_empty()).then(||json!({"store":store,"added":added,"removed":removed}))
+                }).collect();
+                emit(json!({"event":"replay_step","logit_row":result.len()-1,"forced_token":tk,"sampled_token":sampled.last(),"placement_changes":changes}));
+                residency=after;
+            }
         }
         gm.g.sync()?;
         let elapsed = start.elapsed().as_secs_f64();
@@ -221,6 +276,8 @@ fn main() -> Result<()> {
         emit(
             json!({"event":"serial_probe","tokens":a.steps,"elapsed_s":elapsed,"effective_tok_s":a.steps as f64/elapsed,"cpu_forward_s":gm.cpu_busy_s()-cpu,"routed_picks":after.0-picks.0,"cpu_picks":after.1-picks.1,"adapt_swaps":gm.adapt_swaps,"stage_profile":gm.prof,"event_profile":gm.evprof,"adapt":std::env::var("DSX_ADAPT").ok(),"defer":std::env::var("DSX_DEFER").ok(),"logit_fingerprint":hash_logits(&result)}),
         );
+        if a.replay_sampling.is_some() {emit(json!({"event":"replay_sampling","mode":a.replay_sampling,"seed":seed,"sampled_tokens":sampled,"gpu_fallbacks":fallbacks}));}
+        reference_io(&a,&result)?;
         return Ok(());
     }
     gm.g.sync()?;

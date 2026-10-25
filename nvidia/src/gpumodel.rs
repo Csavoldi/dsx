@@ -1132,6 +1132,20 @@ impl<'m> GpuModel<'m> {
             .collect()
     }
 
+    /// Diagnostic readback after step_sampled; adds a full synchronization/copy.
+    pub fn validation_logits(&self) -> Result<Vec<f32>> {
+        self.g.bind();
+        self.g.download(self.logits.ptr, self.m.cfg.vocab)
+    }
+
+    /// Exact store membership for replay diagnostics, sorted by (layer, expert).
+    pub fn validation_residency(&self) -> Vec<Vec<(usize, usize)>> {
+        let mut stores: Vec<Vec<_>> = vec![self.exp0.as_ref().map_or_else(Vec::new, |s| s.residents().collect())];
+        stores.extend(self.aux.iter().map(|a| a.exp.residents().collect()));
+        for store in &mut stores { store.sort_unstable(); }
+        stores
+    }
+
     /// routed picks so far and how many the CPU computed
     pub fn cpu_picks(&self) -> (u64, u64) {
         self.worker.as_ref().map_or((0, 0), |w| (w.picks[0].load(std::sync::atomic::Ordering::Relaxed), w.picks[1].load(std::sync::atomic::Ordering::Relaxed)))
