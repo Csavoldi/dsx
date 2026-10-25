@@ -69,3 +69,12 @@ both versions, hashes, and the replaced-cell count. This can reduce the tokens
 needed to describe an empty background. It changes model-facing tool text and
 must be labeled separately from kernel speed measurements. Check the guard with
 `node bench/geometry/test-capture.mjs` before using this option.
+
+`analyze-lookup.py RAW_GENERATIONS.jsonl --run RUN_DIRECTORY --output OUTPUT.json`
+replays causal copy proposals from recorded prompt/output IDs without inference.
+It evaluates longer suffixes and two verification widths. The original width-4,
+suffix-8 counters must match the live lookup audit exactly. Optional
+`--oracle-costs bench/results/2026-10-24-102/receipts.json` adds a labeled
+conditional decode-only cost model; it does not measure speculative acceptance
+or a task speedup. `python3 bench/geometry/test-lookup.py` checks complete,
+rejected and unfinished proposals and excludes unavailable future continuations.

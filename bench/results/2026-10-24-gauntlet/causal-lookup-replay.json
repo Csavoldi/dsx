@@ -1,0 +1,1118 @@
+{
+  "stable-dnone-off-cube-01": {
+    "records": 10,
+    "raw_sha256": "c28ee486a6110a0feed1bc32e22ac387e5ba13454c7356cba1e835cfda6bf680",
+    "cost_receipt_sha256": "7cfe88e1070c49f4435d3f4428c82266b80a086e0f8c4a1dbbf2ec0cba378bcf",
+    "rows": [
+      {
+        "tokens": 4724,
+        "attempts": 196,
+        "completed_blocks": 193,
+        "incomplete_blocks": 3,
+        "matched_future_tokens": 441,
+        "accepted_prefix_histogram": [
+          28,
+          15,
+          24,
+          126
+        ],
+        "mean_matched_future_tokens": 2.284974093264249,
+        "width": 4,
+        "suffix": 8,
+        "window": 8192,
+        "matches_live_audit": true,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 634,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 106.75801710085156,
+          "modeled_decode_gain_percent": -0.15211457784011229
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 124,
+        "completed_blocks": 116,
+        "incomplete_blocks": 8,
+        "matched_future_tokens": 277,
+        "accepted_prefix_histogram": [
+          10,
+          16,
+          9,
+          81
+        ],
+        "mean_matched_future_tokens": 2.3879310344827585,
+        "width": 4,
+        "suffix": 12,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 393,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 106.42373730457422,
+          "modeled_decode_gain_percent": 0.16151029235327297
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 76,
+        "completed_blocks": 76,
+        "incomplete_blocks": 0,
+        "matched_future_tokens": 193,
+        "accepted_prefix_histogram": [
+          4,
+          7,
+          9,
+          56
+        ],
+        "mean_matched_future_tokens": 2.539473684210526,
+        "width": 4,
+        "suffix": 16,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 269,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 106.22312504668359,
+          "modeled_decode_gain_percent": 0.35067462662281557
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 42,
+        "completed_blocks": 42,
+        "incomplete_blocks": 0,
+        "matched_future_tokens": 104,
+        "accepted_prefix_histogram": [
+          4,
+          2,
+          6,
+          30
+        ],
+        "mean_matched_future_tokens": 2.4761904761904763,
+        "width": 4,
+        "suffix": 24,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 146,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 106.44974327219532,
+          "modeled_decode_gain_percent": 0.1370405574955491
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 23,
+        "completed_blocks": 23,
+        "incomplete_blocks": 0,
+        "matched_future_tokens": 63,
+        "accepted_prefix_histogram": [
+          1,
+          1,
+          1,
+          20
+        ],
+        "mean_matched_future_tokens": 2.739130434782609,
+        "width": 4,
+        "suffix": 32,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 86,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 106.37927361499219,
+          "modeled_decode_gain_percent": 0.20337512325845353
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 139,
+        "completed_blocks": 131,
+        "incomplete_blocks": 8,
+        "matched_future_tokens": 532,
+        "accepted_prefix_histogram": [
+          20,
+          10,
+          17,
+          12,
+          11,
+          7,
+          5,
+          49
+        ],
+        "mean_matched_future_tokens": 4.061068702290076,
+        "width": 8,
+        "suffix": 8,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 663,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 109.06579227083203,
+          "modeled_decode_gain_percent": -2.264843655900828
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 89,
+        "completed_blocks": 81,
+        "incomplete_blocks": 8,
+        "matched_future_tokens": 352,
+        "accepted_prefix_histogram": [
+          7,
+          7,
+          11,
+          10,
+          6,
+          4,
+          3,
+          33
+        ],
+        "mean_matched_future_tokens": 4.345679012345679,
+        "width": 8,
+        "suffix": 12,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 433,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 107.60278566829297,
+          "modeled_decode_gain_percent": -0.9360009299105188
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 52,
+        "completed_blocks": 52,
+        "incomplete_blocks": 0,
+        "matched_future_tokens": 245,
+        "accepted_prefix_histogram": [
+          2,
+          6,
+          2,
+          9,
+          6,
+          1,
+          3,
+          23
+        ],
+        "mean_matched_future_tokens": 4.711538461538462,
+        "width": 8,
+        "suffix": 16,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 297,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 106.81291004769922,
+          "modeled_decode_gain_percent": -0.2034280816560985
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 26,
+        "completed_blocks": 26,
+        "incomplete_blocks": 0,
+        "matched_future_tokens": 136,
+        "accepted_prefix_histogram": [
+          3,
+          1,
+          1,
+          2,
+          1,
+          1,
+          1,
+          16
+        ],
+        "mean_matched_future_tokens": 5.230769230769231,
+        "width": 8,
+        "suffix": 24,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 162,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 106.39964292850782,
+          "modeled_decode_gain_percent": 0.18419203291122344
+        }
+      },
+      {
+        "tokens": 4724,
+        "attempts": 15,
+        "completed_blocks": 15,
+        "incomplete_blocks": 0,
+        "matched_future_tokens": 81,
+        "accepted_prefix_histogram": [
+          2,
+          1,
+          0,
+          0,
+          1,
+          0,
+          1,
+          10
+        ],
+        "mean_matched_future_tokens": 5.4,
+        "width": 8,
+        "suffix": 32,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 96,
+          "serial_decode_s": 106.59562259382812,
+          "modeled_decode_s": 106.42527779007813,
+          "modeled_decode_gain_percent": 0.16006047368370968
+        }
+      }
+    ],
+    "limit": "Causal copy opportunity on an unchanged sampled trajectory. No verifier or speculative sampler ran; sampled-path matching is not measured speculative acceptance or delivered throughput. Optional cost model borrows historical future-informed warm placement, assumes zero drafting, communication, rollback and residency cost, and ignores unfinished proposals. It applies only to decode, excludes prefill/tools, and is not a bound for other drafters, verifier implementations or trajectories."
+  },
+  "stable-dnone-off-tetrahedron-01": {
+    "records": 14,
+    "raw_sha256": "c28ee486a6110a0feed1bc32e22ac387e5ba13454c7356cba1e835cfda6bf680",
+    "cost_receipt_sha256": "7cfe88e1070c49f4435d3f4428c82266b80a086e0f8c4a1dbbf2ec0cba378bcf",
+    "rows": [
+      {
+        "tokens": 8929,
+        "attempts": 839,
+        "completed_blocks": 833,
+        "incomplete_blocks": 6,
+        "matched_future_tokens": 2195,
+        "accepted_prefix_histogram": [
+          67,
+          35,
+          33,
+          698
+        ],
+        "mean_matched_future_tokens": 2.6350540216086435,
+        "width": 4,
+        "suffix": 8,
+        "window": 8192,
+        "matches_live_audit": true,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 3028,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 195.60083349458202,
+          "modeled_decode_gain_percent": 3.0057819836327493
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 709,
+        "completed_blocks": 697,
+        "incomplete_blocks": 12,
+        "matched_future_tokens": 1907,
+        "accepted_prefix_histogram": [
+          35,
+          26,
+          27,
+          609
+        ],
+        "mean_matched_future_tokens": 2.7360114777618363,
+        "width": 4,
+        "suffix": 12,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 2604,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 194.97290708748827,
+          "modeled_decode_gain_percent": 3.337520641875358
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 628,
+        "completed_blocks": 624,
+        "incomplete_blocks": 4,
+        "matched_future_tokens": 1707,
+        "accepted_prefix_histogram": [
+          28,
+          32,
+          17,
+          547
+        ],
+        "mean_matched_future_tokens": 2.735576923076923,
+        "width": 4,
+        "suffix": 16,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 2331,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 195.66056100708593,
+          "modeled_decode_gain_percent": 2.9743383493114672
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 514,
+        "completed_blocks": 510,
+        "incomplete_blocks": 4,
+        "matched_future_tokens": 1432,
+        "accepted_prefix_histogram": [
+          15,
+          19,
+          15,
+          461
+        ],
+        "mean_matched_future_tokens": 2.8078431372549018,
+        "width": 4,
+        "suffix": 24,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 1942,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 195.8921192398242,
+          "modeled_decode_gain_percent": 2.852615454597318
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 432,
+        "completed_blocks": 429,
+        "incomplete_blocks": 3,
+        "matched_future_tokens": 1218,
+        "accepted_prefix_histogram": [
+          13,
+          9,
+          12,
+          395
+        ],
+        "mean_matched_future_tokens": 2.839160839160839,
+        "width": 4,
+        "suffix": 32,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 1647,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 196.47646955982032,
+          "modeled_decode_gain_percent": 2.546716438353891
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 532,
+        "completed_blocks": 519,
+        "incomplete_blocks": 13,
+        "matched_future_tokens": 2777,
+        "accepted_prefix_histogram": [
+          48,
+          31,
+          28,
+          20,
+          20,
+          20,
+          14,
+          338
+        ],
+        "mean_matched_future_tokens": 5.350674373795761,
+        "width": 8,
+        "suffix": 8,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 3296,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 196.16389410834765,
+          "modeled_decode_gain_percent": 2.7101185074933642
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 436,
+        "completed_blocks": 423,
+        "incomplete_blocks": 13,
+        "matched_future_tokens": 2462,
+        "accepted_prefix_histogram": [
+          23,
+          20,
+          16,
+          13,
+          14,
+          15,
+          14,
+          308
+        ],
+        "mean_matched_future_tokens": 5.82033096926714,
+        "width": 8,
+        "suffix": 12,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 2885,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 192.6644417423594,
+          "modeled_decode_gain_percent": 4.57568936203967
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 375,
+        "completed_blocks": 370,
+        "incomplete_blocks": 5,
+        "matched_future_tokens": 2208,
+        "accepted_prefix_histogram": [
+          15,
+          20,
+          15,
+          9,
+          6,
+          9,
+          10,
+          286
+        ],
+        "mean_matched_future_tokens": 5.967567567567568,
+        "width": 8,
+        "suffix": 16,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 2578,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 192.53974351333983,
+          "modeled_decode_gain_percent": 4.643417733460509
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 302,
+        "completed_blocks": 297,
+        "incomplete_blocks": 5,
+        "matched_future_tokens": 1849,
+        "accepted_prefix_histogram": [
+          9,
+          6,
+          14,
+          9,
+          4,
+          4,
+          5,
+          246
+        ],
+        "mean_matched_future_tokens": 6.225589225589226,
+        "width": 8,
+        "suffix": 24,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 2146,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 192.57447760215234,
+          "modeled_decode_gain_percent": 4.624543509781165
+        }
+      },
+      {
+        "tokens": 8929,
+        "attempts": 254,
+        "completed_blocks": 250,
+        "incomplete_blocks": 4,
+        "matched_future_tokens": 1564,
+        "accepted_prefix_histogram": [
+          7,
+          6,
+          7,
+          7,
+          9,
+          4,
+          3,
+          207
+        ],
+        "mean_matched_future_tokens": 6.256,
+        "width": 8,
+        "suffix": 32,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 1814,
+          "serial_decode_s": 201.48016810759765,
+          "modeled_decode_s": 193.8122431604492,
+          "modeled_decode_gain_percent": 3.9563676794145852
+        }
+      }
+    ],
+    "limit": "Causal copy opportunity on an unchanged sampled trajectory. No verifier or speculative sampler ran; sampled-path matching is not measured speculative acceptance or delivered throughput. Optional cost model borrows historical future-informed warm placement, assumes zero drafting, communication, rollback and residency cost, and ignores unfinished proposals. It applies only to decode, excludes prefill/tools, and is not a bound for other drafters, verifier implementations or trajectories."
+  },
+  "stable-d3-off-cube-01": {
+    "records": 14,
+    "raw_sha256": "f769454cbe5374b4315423e18db219dfc36d249ef8231ee93acc8087d93f4b90",
+    "cost_receipt_sha256": "7cfe88e1070c49f4435d3f4428c82266b80a086e0f8c4a1dbbf2ec0cba378bcf",
+    "rows": [
+      {
+        "tokens": 10167,
+        "attempts": 788,
+        "completed_blocks": 785,
+        "incomplete_blocks": 3,
+        "matched_future_tokens": 1983,
+        "accepted_prefix_histogram": [
+          75,
+          49,
+          49,
+          612
+        ],
+        "mean_matched_future_tokens": 2.5261146496815288,
+        "width": 4,
+        "suffix": 8,
+        "window": 8192,
+        "matches_live_audit": true,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 2768,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 225.80438625412108,
+          "modeled_decode_gain_percent": 1.599116482202123
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 599,
+        "completed_blocks": 588,
+        "incomplete_blocks": 11,
+        "matched_future_tokens": 1594,
+        "accepted_prefix_histogram": [
+          26,
+          32,
+          28,
+          502
+        ],
+        "mean_matched_future_tokens": 2.7108843537414966,
+        "width": 4,
+        "suffix": 12,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 2182,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 224.25902289966012,
+          "modeled_decode_gain_percent": 2.2992334693676897
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 504,
+        "completed_blocks": 500,
+        "incomplete_blocks": 4,
+        "matched_future_tokens": 1358,
+        "accepted_prefix_histogram": [
+          28,
+          19,
+          20,
+          433
+        ],
+        "mean_matched_future_tokens": 2.716,
+        "width": 4,
+        "suffix": 16,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 1858,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 224.97298835330076,
+          "modeled_decode_gain_percent": 1.974580633639933
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 381,
+        "completed_blocks": 380,
+        "incomplete_blocks": 1,
+        "matched_future_tokens": 1054,
+        "accepted_prefix_histogram": [
+          13,
+          13,
+          21,
+          333
+        ],
+        "mean_matched_future_tokens": 2.7736842105263158,
+        "width": 4,
+        "suffix": 24,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 1434,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 225.54451575720702,
+          "modeled_decode_gain_percent": 1.7161781309751767
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 297,
+        "completed_blocks": 296,
+        "incomplete_blocks": 1,
+        "matched_future_tokens": 851,
+        "accepted_prefix_histogram": [
+          6,
+          5,
+          9,
+          276
+        ],
+        "mean_matched_future_tokens": 2.875,
+        "width": 4,
+        "suffix": 32,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 1147,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 225.72345092185935,
+          "modeled_decode_gain_percent": 1.6355458306654969
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 520,
+        "completed_blocks": 509,
+        "incomplete_blocks": 11,
+        "matched_future_tokens": 2496,
+        "accepted_prefix_histogram": [
+          57,
+          42,
+          33,
+          40,
+          15,
+          17,
+          12,
+          293
+        ],
+        "mean_matched_future_tokens": 4.903732809430255,
+        "width": 8,
+        "suffix": 8,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 3005,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 229.33473654453906,
+          "modeled_decode_gain_percent": 0.035112372822498905
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 370,
+        "completed_blocks": 360,
+        "incomplete_blocks": 10,
+        "matched_future_tokens": 2057,
+        "accepted_prefix_histogram": [
+          16,
+          18,
+          15,
+          18,
+          15,
+          20,
+          11,
+          247
+        ],
+        "mean_matched_future_tokens": 5.713888888888889,
+        "width": 8,
+        "suffix": 12,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 2417,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 222.77717550558592,
+          "modeled_decode_gain_percent": 2.9796974899224837
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 311,
+        "completed_blocks": 307,
+        "incomplete_blocks": 4,
+        "matched_future_tokens": 1741,
+        "accepted_prefix_histogram": [
+          17,
+          22,
+          14,
+          9,
+          10,
+          7,
+          7,
+          221
+        ],
+        "mean_matched_future_tokens": 5.671009771986971,
+        "width": 8,
+        "suffix": 16,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 2048,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 224.05148841137108,
+          "modeled_decode_gain_percent": 2.3939912378653005
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 230,
+        "completed_blocks": 228,
+        "incomplete_blocks": 2,
+        "matched_future_tokens": 1352,
+        "accepted_prefix_histogram": [
+          9,
+          12,
+          13,
+          6,
+          2,
+          6,
+          2,
+          178
+        ],
+        "mean_matched_future_tokens": 5.9298245614035086,
+        "width": 8,
+        "suffix": 24,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 1580,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 224.1002051519492,
+          "modeled_decode_gain_percent": 2.3717319922545554
+        }
+      },
+      {
+        "tokens": 10167,
+        "attempts": 177,
+        "completed_blocks": 175,
+        "incomplete_blocks": 2,
+        "matched_future_tokens": 1089,
+        "accepted_prefix_histogram": [
+          2,
+          4,
+          8,
+          7,
+          7,
+          2,
+          5,
+          140
+        ],
+        "mean_matched_future_tokens": 6.222857142857142,
+        "width": 8,
+        "suffix": 32,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 1264,
+          "serial_decode_s": 229.41526141224608,
+          "modeled_decode_s": 224.17858918443358,
+          "modeled_decode_gain_percent": 2.3359377212889276
+        }
+      }
+    ],
+    "limit": "Causal copy opportunity on an unchanged sampled trajectory. No verifier or speculative sampler ran; sampled-path matching is not measured speculative acceptance or delivered throughput. Optional cost model borrows historical future-informed warm placement, assumes zero drafting, communication, rollback and residency cost, and ignores unfinished proposals. It applies only to decode, excludes prefill/tools, and is not a bound for other drafters, verifier implementations or trajectories."
+  },
+  "stable-d3-off-tetrahedron-01": {
+    "records": 16,
+    "raw_sha256": "f769454cbe5374b4315423e18db219dfc36d249ef8231ee93acc8087d93f4b90",
+    "cost_receipt_sha256": "7cfe88e1070c49f4435d3f4428c82266b80a086e0f8c4a1dbbf2ec0cba378bcf",
+    "rows": [
+      {
+        "tokens": 10638,
+        "attempts": 834,
+        "completed_blocks": 825,
+        "incomplete_blocks": 9,
+        "matched_future_tokens": 1998,
+        "accepted_prefix_histogram": [
+          105,
+          60,
+          42,
+          618
+        ],
+        "mean_matched_future_tokens": 2.421818181818182,
+        "width": 4,
+        "suffix": 8,
+        "window": 8192,
+        "matches_live_audit": true,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 2823,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 238.1899342022461,
+          "modeled_decode_gain_percent": 0.7780760767990502
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 607,
+        "completed_blocks": 593,
+        "incomplete_blocks": 14,
+        "matched_future_tokens": 1576,
+        "accepted_prefix_histogram": [
+          38,
+          32,
+          25,
+          498
+        ],
+        "mean_matched_future_tokens": 2.657672849915683,
+        "width": 4,
+        "suffix": 12,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 2169,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 235.5551649453633,
+          "modeled_decode_gain_percent": 1.9053151109188704
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 482,
+        "completed_blocks": 482,
+        "incomplete_blocks": 0,
+        "matched_future_tokens": 1299,
+        "accepted_prefix_histogram": [
+          22,
+          31,
+          19,
+          410
+        ],
+        "mean_matched_future_tokens": 2.695020746887967,
+        "width": 4,
+        "suffix": 16,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 1781,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 235.9890560719414,
+          "modeled_decode_gain_percent": 1.7179512868765734
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 349,
+        "completed_blocks": 349,
+        "incomplete_blocks": 0,
+        "matched_future_tokens": 970,
+        "accepted_prefix_histogram": [
+          9,
+          20,
+          10,
+          310
+        ],
+        "mean_matched_future_tokens": 2.7793696275071635,
+        "width": 4,
+        "suffix": 24,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 1319,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 236.4434856918711,
+          "modeled_decode_gain_percent": 1.5224557340679734
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 265,
+        "completed_blocks": 264,
+        "incomplete_blocks": 1,
+        "matched_future_tokens": 737,
+        "accepted_prefix_histogram": [
+          11,
+          8,
+          6,
+          239
+        ],
+        "mean_matched_future_tokens": 2.7916666666666665,
+        "width": 4,
+        "suffix": 32,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.0749658631875,
+          "serial_steps_replaced": 1001,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 237.24696056073827,
+          "modeled_decode_gain_percent": 1.1786336610045023
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 546,
+        "completed_blocks": 532,
+        "incomplete_blocks": 14,
+        "matched_future_tokens": 2529,
+        "accepted_prefix_histogram": [
+          77,
+          47,
+          29,
+          24,
+          27,
+          18,
+          16,
+          294
+        ],
+        "mean_matched_future_tokens": 4.753759398496241,
+        "width": 8,
+        "suffix": 8,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 3061,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 241.75941311406643,
+          "modeled_decode_gain_percent": -0.7098710219152982
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 383,
+        "completed_blocks": 369,
+        "incomplete_blocks": 14,
+        "matched_future_tokens": 2033,
+        "accepted_prefix_histogram": [
+          27,
+          20,
+          13,
+          17,
+          20,
+          15,
+          18,
+          239
+        ],
+        "mean_matched_future_tokens": 5.509485094850948,
+        "width": 8,
+        "suffix": 12,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 2402,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 234.9411372181719,
+          "modeled_decode_gain_percent": 2.17164858392056
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 304,
+        "completed_blocks": 303,
+        "incomplete_blocks": 1,
+        "matched_future_tokens": 1663,
+        "accepted_prefix_histogram": [
+          20,
+          21,
+          16,
+          15,
+          8,
+          10,
+          8,
+          205
+        ],
+        "mean_matched_future_tokens": 5.488448844884489,
+        "width": 8,
+        "suffix": 16,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 1966,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 235.9975342165,
+          "modeled_decode_gain_percent": 1.7142970982932937
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 212,
+        "completed_blocks": 211,
+        "incomplete_blocks": 1,
+        "matched_future_tokens": 1248,
+        "accepted_prefix_histogram": [
+          7,
+          11,
+          8,
+          10,
+          5,
+          6,
+          7,
+          157
+        ],
+        "mean_matched_future_tokens": 5.914691943127962,
+        "width": 8,
+        "suffix": 24,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 1459,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 235.19652356938673,
+          "modeled_decode_gain_percent": 2.0607062785945596
+        }
+      },
+      {
+        "tokens": 10638,
+        "attempts": 156,
+        "completed_blocks": 155,
+        "incomplete_blocks": 1,
+        "matched_future_tokens": 956,
+        "accepted_prefix_histogram": [
+          2,
+          7,
+          4,
+          7,
+          4,
+          4,
+          5,
+          122
+        ],
+        "mean_matched_future_tokens": 6.167741935483871,
+        "width": 8,
+        "suffix": 32,
+        "window": 8192,
+        "conditional_cost_model": {
+          "serial_step_s": 0.02256469572265625,
+          "verify_cycle_s": 0.13305773237500002,
+          "serial_steps_replaced": 1111,
+          "serial_decode_s": 240.0432330976172,
+          "modeled_decode_s": 235.5978046678711,
+          "modeled_decode_gain_percent": 1.8868717541799418
+        }
+      }
+    ],
+    "limit": "Causal copy opportunity on an unchanged sampled trajectory. No verifier or speculative sampler ran; sampled-path matching is not measured speculative acceptance or delivered throughput. Optional cost model borrows historical future-informed warm placement, assumes zero drafting, communication, rollback and residency cost, and ignores unfinished proposals. It applies only to decode, excludes prefill/tools, and is not a bound for other drafters, verifier implementations or trajectories."
+  }
+}

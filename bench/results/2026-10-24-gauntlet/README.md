@@ -84,3 +84,36 @@ that explains its one-token difference from the engine-generated total. The
 shared prefix of the previous cube conversation matched; no follow-up within
 either task replayed an already cached prefix. The rank-3 task batch is the next
 control, keeping the same candidate binary and task settings with fresh seeds.
+
+The stable **rank-3** batch then timed out on both tasks: cube **301.52 seconds**
+at **39.98 decode / 415.00 prefill tokens/s**, and tetrahedron **300.81 seconds**
+at **39.91 decode / 369.12 prefill tokens/s**. Both fail the corrected judge and
+source/display review. The cube clips the terminal boundary and associates
+several faces with incorrect normals. The tetrahedron's culling uses inconsistent
+face winding; its unchanged renderer is blank at several sampled rotations.
+[Rank-3 receipts](stable-defer-3.json) preserve these failures, raw-token checks
+and verified stock restoration. These two groups use different fresh seeds and
+solutions: one completion in two no-deferral tasks versus zero in two rank-3
+tasks is insufficient to attribute a quality difference to deferral. Faster
+output is not a successful task completion, and no candidate serving defaults
+have been adopted.
+
+## Causal copy proposals on actual generated IDs
+
+[Offline replay receipts](causal-lookup-replay.json) evaluate widths 4/8 and suffix
+lengths 8/12/16/24/32 on all four stable-batch trajectories. Replaying width 4,
+suffix 8 reproduces every live attempt, completed block, matched-prefix histogram
+and token count exactly. Each proposal uses only tokens already present in the
+prompt and processed output; an unfinished proposal is not counted as accepted.
+
+A conditional cost model combines these observed matching lengths with the
+[historical warm, future-informed verifier costs](../2026-10-24-102/receipts.json).
+It assumes zero drafting, communication, rollback and displaced-expert costs,
+and excludes prefill and tools. On the successful no-deferral cube, the best
+screened configuration predicts just **0.35% decode-trace gain** (width 4,
+suffix 16); suffix 8 predicts a small loss. Failed, repetitive repair traces
+predict up to 2.17–4.64%, which does not improve their failed completion status.
+These are conditional estimates, not measured speculative acceptance, delivered
+speedups, or upper bounds for another drafter, cache policy or verifier. They do
+not justify implementing GPU speculation ahead of the prefill and workflow
+experiments. `bench/geometry/analyze-lookup.py` reproduces this CPU-only analysis.

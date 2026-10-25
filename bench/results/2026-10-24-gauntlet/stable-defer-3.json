@@ -1,0 +1,355 @@
+{
+  "deferral": "3",
+  "binary_source_commit": "cf16e1e",
+  "binary_sha256": "fe4c1f1b5e229c056384367dfe87c5b14f425fdb510b17e62994ae4d6f19e60f",
+  "runtime_env": {
+    "DSX_T16_PAIR_GU": "1",
+    "DSX_LOOKUP_AUDIT": "1",
+    "DSX_RUNTIME_STATS": "1",
+    "DSX_ENGRAM_FP8": "0",
+    "DSX_GPU_SAMPLE": "1",
+    "DSX_ADAPT_STABLE": "1",
+    "DSX_ADAPT": "8",
+    "DSX_CPU_THREADS": "14",
+    "DSX_TOKEN_AUDIT": "/home/lxe/ai/ds41/codex-gauntlet-20261024/windows/stable-defer-3-01/raw-generations.jsonl"
+  },
+  "model_identity": [
+    251592261632,
+    154277358,
+    1792707596293851835
+  ],
+  "trials": [
+    {
+      "run": "stable-d3-off-cube-01",
+      "shape": "cube",
+      "wall_s": 301.52024483680725,
+      "tool_calls": 13,
+      "tool_errors": 0,
+      "requests": 14,
+      "generated": 10168,
+      "decode_tok_s": 39.980340115993314,
+      "new_prefill_tok_s": 414.999455752694,
+      "prefill_ms": 45935,
+      "decode_ms": 254325,
+      "new_prompt_tokens": 19063,
+      "complete_server_counter_coverage": true,
+      "unfinished_requests": 0,
+      "agent_exit": 143,
+      "timed_out": true,
+      "successful_agent_exit": false,
+      "seed_base": 275526299245407,
+      "automated_pass": false,
+      "runtime_totals": {
+        "steps": 10167,
+        "gpu_samples": 10167,
+        "gpu_fallbacks": 0,
+        "sample_s": 0.01139488000000002,
+        "emit_s": 0.051689743000000024,
+        "step_s": 254.17823038100016,
+        "adapt_host_s": 2.7446094770000196,
+        "model_prefill_s": 45.935348483000006,
+        "snapshot_s": 0.004828981,
+        "prefix_replayed_tokens": 0,
+        "routed_picks": 2440080,
+        "cpu_picks": 503366
+      },
+      "original_judge_version": 5,
+      "corrected_judge_version": 7,
+      "corrected_automated_pass": false,
+      "reviewed_completion": false,
+      "review": {
+        "pass": false,
+        "geometry": "Cube vertex product ordering is inconsistent with several FACES normals used for culling and lighting. The rasterizer also updates depth only when the shade bit is on, allowing a rear surface through a nearer face pattern gap.",
+        "display": "Reviewed unmodified draw_frame output and three-size PTY checks. The object reaches terminal boundaries and is visibly clipped. Judge 7 rejects all sizes.",
+        "cleanup": "Task timed out; no successful completion.",
+        "limitation": "These defects explain the submitted renderer failure; their inference-level cause is not established.",
+        "judge_version": 7,
+        "source_sha256": "edf3b8fee93232979df73017623b1b0711d42d5816ba438543ae34f48d9d1054",
+        "automated_pass": false,
+        "reviewed_completion": false
+      },
+      "judge_phases": [
+        {
+          "columns": 80,
+          "rows": 24,
+          "fps": 30.28388820695256,
+          "frames": 49,
+          "distinct_masks": 49,
+          "max_dots": 2980,
+          "typical_width_fraction": 0.8,
+          "typical_height_fraction": 1.0,
+          "frames_with_margin": 0,
+          "measured_extents": 46,
+          "median_cells": 938,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.021739130434782608,
+            "frames": 46,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 110,
+          "rows": 32,
+          "fps": 32.15872855793076,
+          "frames": 52,
+          "distinct_masks": 52,
+          "max_dots": 6999,
+          "typical_width_fraction": 0.9,
+          "typical_height_fraction": 1.0,
+          "frames_with_margin": 0,
+          "measured_extents": 48,
+          "median_cells": 2227,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.2653061224489796,
+            "frames": 49,
+            "pass": true,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 45,
+          "rows": 15,
+          "fps": 32.452316370349756,
+          "frames": 52,
+          "distinct_masks": 52,
+          "max_dots": 4536,
+          "typical_width_fraction": 0.8666666666666667,
+          "typical_height_fraction": 1.0,
+          "frames_with_margin": 0,
+          "measured_extents": 48,
+          "median_cells": 527,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.04081632653061224,
+            "frames": 49,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        }
+      ],
+      "raw_hashes": {
+        "summary.json": "d942fe62904958c0eef2ca83bcf2e8b66300c2ad6a2692930dc1a4ef90a6652a",
+        "final-judge.json": "28b42c82e121b73742c95efd899417e7dbf6a6d478e1dca8964edd79a4fe0199",
+        "review-judge-v7.json": "2d672642dbb6539816e01f3cec4d56de8078f84dcb121226605a3b5a3b7f789f",
+        "review-v7.json": "e813efad1b050ac7d0eaa6d21fc230c5f16888ac088d9576900b3546c88a33ad",
+        "started.json": "5614b2a8e02aa6fad878fd805323d520edaacec743fcf85076b6ee411458bf32",
+        "TASK.md": "9631f13095f94765764429e3f0ec1b5724e01add6b2b012b03a3c705f2b4f6b1",
+        "server.log": "e1f0f8173beaae73cce6efea47212c3f133d8900eac873c61d233815b493903d",
+        "workspace/render.py": "edf3b8fee93232979df73017623b1b0711d42d5816ba438543ae34f48d9d1054",
+        "agent.jsonl": "aa36f4ecf7964b3d755d90e4cf885eb928635866b5b9ea6399a9559b15f5fbf2",
+        "request-metrics.jsonl": "6cf79da1c5362672152682e47432b2fba92c4c51cc62b110a1c7200f4ec1a43e"
+      }
+    },
+    {
+      "run": "stable-d3-off-tetrahedron-01",
+      "shape": "tetrahedron",
+      "wall_s": 300.8134415149689,
+      "tool_calls": 15,
+      "tool_errors": 0,
+      "requests": 16,
+      "generated": 10639,
+      "decode_tok_s": 39.91086735516883,
+      "new_prefill_tok_s": 369.12487112620533,
+      "prefill_ms": 32978,
+      "decode_ms": 266569,
+      "new_prompt_tokens": 12173,
+      "complete_server_counter_coverage": true,
+      "unfinished_requests": 0,
+      "agent_exit": 143,
+      "timed_out": true,
+      "successful_agent_exit": false,
+      "seed_base": 476413583247570,
+      "automated_pass": false,
+      "runtime_totals": {
+        "steps": 10638,
+        "gpu_samples": 10638,
+        "gpu_fallbacks": 0,
+        "sample_s": 0.012275934000000037,
+        "emit_s": 0.054820119999999986,
+        "step_s": 266.4160754830003,
+        "adapt_host_s": 2.893864678999768,
+        "model_prefill_s": 32.972034779,
+        "snapshot_s": 0.011345055,
+        "prefix_replayed_tokens": 830,
+        "routed_picks": 2553120,
+        "cpu_picks": 514518
+      },
+      "original_judge_version": 5,
+      "corrected_judge_version": 7,
+      "corrected_automated_pass": false,
+      "reviewed_completion": false,
+      "review": {
+        "pass": false,
+        "geometry": "The culling test uses raw cross-product normals from inconsistently wound FACES, while lighting uses separately corrected FACE_NORMALS. The rasterizer also records coverage only for enabled shade bits.",
+        "display": "Unmodified render_frame(80,24,t) dot counts at t=[0,0.7,1.3,2.7,4,6] are [1673,0,0,449,703,0]. The solid disappears for parts of its rotation. Corrected judge also rejects face shading at 80x24 and 110x32.",
+        "cleanup": "Task timed out; no successful completion.",
+        "limitation": "This identifies actual task defects without attributing the model choices to a particular serving approximation.",
+        "judge_version": 7,
+        "source_sha256": "a35840351ac1397d8895caaeb31371f401ba5396c09f3157d24d5ba9939d878e",
+        "automated_pass": false,
+        "reviewed_completion": false
+      },
+      "judge_phases": [
+        {
+          "columns": 80,
+          "rows": 24,
+          "fps": 30.32086538494638,
+          "frames": 49,
+          "distinct_masks": 23,
+          "max_dots": 1766,
+          "typical_width_fraction": 0.4125,
+          "typical_height_fraction": 0.625,
+          "frames_with_margin": 19,
+          "measured_extents": 19,
+          "median_cells": 1920,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.1956521739130435,
+            "frames": 46,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 110,
+          "rows": 32,
+          "fps": 32.31044383494787,
+          "frames": 52,
+          "distinct_masks": 38,
+          "max_dots": 1840,
+          "typical_width_fraction": 0.2909090909090909,
+          "typical_height_fraction": 0.75,
+          "frames_with_margin": 18,
+          "measured_extents": 35,
+          "median_cells": 3520,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.0,
+            "frames": 49,
+            "pass": false,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": false
+        },
+        {
+          "columns": 45,
+          "rows": 15,
+          "fps": 31.860375012629838,
+          "frames": 51,
+          "distinct_masks": 50,
+          "max_dots": 634,
+          "typical_width_fraction": 0.4,
+          "typical_height_fraction": 0.5333333333333333,
+          "frames_with_margin": 46,
+          "measured_extents": 48,
+          "median_cells": 675,
+          "frame_certification": {
+            "supported_full_frame": true,
+            "max_ghost_fraction": 0.0,
+            "shaded_frame_fraction": 0.4375,
+            "frames": 48,
+            "pass": true,
+            "limit": "ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review."
+          },
+          "pass": true
+        }
+      ],
+      "raw_hashes": {
+        "summary.json": "e5853cc931dd98e92ab2e36827ed0e31f477c71f0ec30065af2e09456524b79a",
+        "final-judge.json": "22197fe322e0d4b574971af7fdad913b95965ecdc7ee227eecdc492a5e41ea31",
+        "review-judge-v7.json": "5dc593cbd42d89cc41a13c6a2c859d1e1da74892f644e1fdc9f6643855be482e",
+        "review-v7.json": "93f6c37c2e40a42b9fdedc79672d1fd1d53d6e50949fc0c6fac34e02b415c2f6",
+        "started.json": "7b5f84d4c8a63ed26d541ffc0a502bf70bcba3b145c98705cd55605dd3993bd4",
+        "TASK.md": "eb5e0a11a85cc98ebb558ab2d761ddd7fb97c638659eed934affa6697d494395",
+        "server.log": "fbff120fe4fba2c186d6297f45eaf4e554d08552adc3798e29d07cbf6862042f",
+        "workspace/render.py": "a35840351ac1397d8895caaeb31371f401ba5396c09f3157d24d5ba9939d878e",
+        "agent.jsonl": "56c846573167495bf3e5b373a97fcdfc27e49660820e43a70a7fade8de3b2280",
+        "request-metrics.jsonl": "d6c76ece392c1a15229488b2460c6855d589c7f956fcb052db931e413bc95cf2"
+      }
+    }
+  ],
+  "token_audit": {
+    "raw_sha256": "f769454cbe5374b4315423e18db219dfc36d249ef8231ee93acc8087d93f4b90",
+    "records": 30,
+    "rows": [
+      {
+        "run": "stable-d3-off-cube-01",
+        "requests": 14,
+        "fresh_seeds": true,
+        "raw_processed_output_tokens": 10167,
+        "engine_generated": 10168,
+        "engine_minus_processed": 1,
+        "engine_count_within_sampled_bounds": true,
+        "extra_sampled_stopping_tokens": 14,
+        "prefix_replayed_tokens": 0,
+        "errors": []
+      },
+      {
+        "run": "stable-d3-off-tetrahedron-01",
+        "requests": 16,
+        "fresh_seeds": true,
+        "raw_processed_output_tokens": 10638,
+        "engine_generated": 10639,
+        "engine_minus_processed": 1,
+        "engine_count_within_sampled_bounds": true,
+        "extra_sampled_stopping_tokens": 16,
+        "prefix_replayed_tokens": 830,
+        "errors": []
+      }
+    ],
+    "postflight": {
+      "time": 1792898481.5066614,
+      "health": {
+        "status": "ok",
+        "model": "deepseek-v4.1-flash",
+        "pending": 0
+      },
+      "server_pid": 3028143,
+      "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+      "model_identity": [
+        251592261632,
+        154277358,
+        1792707596293851835
+      ],
+      "rapl_long_uw": "4095875000",
+      "restored": true
+    },
+    "limit": "Raw IDs include an unprocessed stopping token; processed counts match measured model steps. Engine-generated counters count emitted tokens and may include a final cancelled token not processed into KV. Request histories are text-only. Residency is recorded at request boundaries; within-request swaps need diagnostic tracing."
+  },
+  "peak_cpu_c": 86.0,
+  "postflight": {
+    "time": 1792898481.5066614,
+    "health": {
+      "status": "ok",
+      "model": "deepseek-v4.1-flash",
+      "pending": 0
+    },
+    "server_pid": 3028143,
+    "server_sha256": "73c1bf3eed61f8488770e96461c5474f8e6cf412ca0833bc9b3cda1726757e95",
+    "model_identity": [
+      251592261632,
+      154277358,
+      1792707596293851835
+    ],
+    "rapl_long_uw": "4095875000",
+    "restored": true
+  },
+  "raw_directory": "/home/lxe/dsx-gauntlet-20261024/stable-defer-3-01",
+  "limits": [
+    "Fresh seeds and generated trajectories differ. This small task sample cannot establish equal quality or causal throughput differences.",
+    "Original agent acceptance used judge 5. Retrospective judge 7 corrects duplicate-home and row-coordinate parser defects; original outcomes and feedback are preserved.",
+    "Engine-generated counters may include a final emitted token not processed into KV on client cancellation."
+  ]
+}
