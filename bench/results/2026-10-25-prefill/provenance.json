@@ -16,5 +16,15 @@
   },
   "rank_sha256": "4afadccff5134056539193ae92c5a8e79278867ef06bdc52b4db3df278491674",
   "server_sha256": "a90d8cf6598d1145685fbc2ff25cf165e05c22ee6d0b10c41682f10894a5982e",
-  "prefill_bench_sha256": "9fc9d6d6479ceeaafd38a2cde73667ae0c2dde13ebf1633bd1af51fd15cfc7e9"
+  "prefill_bench_sha256": "9fc9d6d6479ceeaafd38a2cde73667ae0c2dde13ebf1633bd1af51fd15cfc7e9",
+  "source_commit": "0bd1b1754371144e1827f82a00228e578ac086e1",
+  "benchmark_cpu_package_limit_w": 125,
+  "hardware_readback": {
+    "utc": "2026-10-25T14:07:31.680276+00:00",
+    "scope": "After checkpoint, while cube gauntlet is running; controllers did not change GPU caps.",
+    "gpu_csv": [
+      "0, NVIDIA GeForce RTX 3090, 230.00 W, 350.00 W, 24576 MiB",
+      "1, NVIDIA GeForce RTX 3090, 230.00 W, 420.00 W, 24576 MiB"
+    ]
+  }
 }

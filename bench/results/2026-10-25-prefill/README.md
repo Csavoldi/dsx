@@ -1,6 +1,6 @@
 # T16 prefill checkpoint
 
-The integrated runner processes an 8,000-token prompt at **1,007.84 tokens/s** across two warm passes on two RTX 3090s, an i7-12700K and 128 GB DDR4. T16 weights and F16 Engram projections remain unchanged. The context allocation is 262,144 tokens and the prefill chunk is 8,192 tokens.
+The integrated runner processes an 8,000-token prompt at **1,007.84 tokens/s** across two warm passes on two RTX 3090s, an i7-12700K and 128 GB DDR4. T16 weights and F16 Engram projections remain unchanged. The context allocation is 262,144 tokens and the prefill chunk is 8,192 tokens. Benchmark screens cap the CPU package at 125 W and use 14 CPU threads. GPU caps read back as 230 W per card after the checkpoint; the controllers do not change GPU caps.
 
 Each timed pass resets model state and processes every prompt token. The initial pass measured 928.49 tok/s; the warm passes measured 1,008.50 and 1,007.18 tok/s. Warm-up excludes first-use kernel loading, not prompt processing. No prompt KV is reused. These numbers describe this saved workload; they do not imply 1,000 tok/s for smaller prompts or cached tool updates.
 

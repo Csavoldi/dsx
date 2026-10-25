@@ -1,0 +1,12 @@
+{
+  "repo": "lxe/DeepSeek-V4.1-Flash-1017-dsx-t16",
+  "previous_revision": "8bf76fe667734aff5c4d7fcd88ed855a3191b244",
+  "revision": "f65c90d542057f12b94bae38ad8551610391d01a",
+  "commit_url": "https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/commit/f65c90d542057f12b94bae38ad8551610391d01a",
+  "readme_sha256": "c0be64b29794cc5ad87f2159fad94cc0a55e69cb9bf4e2ea7b8a0866f7d38291",
+  "readback_identical": true,
+  "files_changed": [
+    "README.md"
+  ],
+  "source_commit": "0bd1b1754371144e1827f82a00228e578ac086e1"
+}
