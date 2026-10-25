@@ -12,6 +12,8 @@ export default function (pi: ExtensionAPI) {
   const judgeVersion = Number(process.env.GAUNTLET_JUDGE_VERSION ?? "5");
   let accepted = false;
   let feedbackHash = "";
+  const preserveCompletionPrefix = process.env.GAUNTLET_PRESERVE_COMPLETION_PREFIX === "1";
+  let previousTools: unknown[] | undefined;
   function ready() {
     if (accepted) return true;
     try {
@@ -84,7 +86,11 @@ export default function (pi: ExtensionAPI) {
     const payload=event.payload as Record<string,unknown>;
     const messages=payload.messages as Array<unknown> | undefined;
     if (!Array.isArray(messages)) return;
-    if (ready()) return {...payload,tools:[],tool_choice:"none",messages:[...messages,{role:"user",content:message}]};
+    if (!accepted && Array.isArray(payload.tools) && payload.tools.length) previousTools=structuredClone(payload.tools);
+    if (ready()) {
+      const preserve=preserveCompletionPrefix && judgeVersion>=8 && previousTools!==undefined;
+      return {...payload,tools:preserve ? previousTools : [],tool_choice:preserve ? "auto" : "none",messages:[...messages,{role:"user",content:message}]};
+    }
     if (judgeVersion>=8) return; // Persist repair notes in tool results, not one-request payload edits.
     const feedback = functionalFeedback();
     if (feedback) return {...payload,messages:[...messages,{role:"user",content:feedback}]};

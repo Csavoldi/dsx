@@ -132,3 +132,13 @@ retained/dropped. Requests use fresh seeds, temperature/top-p 1 and one output
 token. Saved requests, responses and timings allow reconciliation with engine
 cache counters. This measures cache preservation, not coding quality or task
 completion, and setup latency is excluded from target comparisons.
+
+`--preserve-completion-prefix` is an opt-in judge8 completion experiment. After
+acceptance, it keeps the previous API tool definitions and `tool_choice=auto`
+while the agent's execution tools remain disabled and its tool-call guard blocks
+further execution. The final-summary instruction still asks for no tool calls.
+This preserves the native prompt's tool header; removing tools or choosing
+`none` removes that header in the current recipe and can force a full prefill.
+Thinking settings stay unchanged for the same reason. The option changes only
+the accepted artifact's final-summary request. It needs live cache and normal-exit
+verification; test the execution guard with `node bench/geometry/test-completion-prefix.mjs`.
