@@ -1,7 +1,7 @@
 <h1 align="center">dsx</h1>
 
 <p align="center"><b>DeepSeek-V4.1-Flash-1017 (552 B + 196 B Engram) on your old gaming PC</b><br>
-two RTX 3090s and 128 GB of RAM · 40+ tokens/s measured · full routing, no expert pruning · OpenAI- and
+two RTX 3090s and 128 GB of RAM · 40+ tokens/s decode · 1,000+ tokens/s prefill measured · full routing, no expert pruning · OpenAI- and
 Anthropic-compatible API · chat in the browser, pictures, thinking levels</p>
 
 <p align="center">
@@ -86,9 +86,12 @@ On the reference two-3090 machine, a T16 free-generation run measured **41.0 tok
 optional FP8 Engram projections (`DSX_ENGRAM_FP8=1`). FP8 projections are off by default. This was a 120-token run
 after 300 tokens; throughput depends on context length, expert routing and cache warm-up.
 
-A separate 3,000-token prompt benchmark measured about **530 tokens/s prefill**. The
-[measurement record](docs/current-state.md) gives the build identities, run conditions, quality measurements and
-known limitations for both results.
+The October 25 prefill checkpoint measured **1,008 tokens/s** on an 8,000-token prompt with an 8K chunk,
+256K context allocation and the same T16 weights. The [prefill profile and receipts](bench/results/2026-10-25-prefill/README.md)
+cover the opt-in kernels, buffer reuse, warm-up and expert placement. This is a separate measurement from the
+41 tokens/s generation result above; smaller prompt updates have different throughput.
+
+The [measurement record](docs/current-state.md) gives build identities, quality measurements and open checks.
 
 ## How it works
 

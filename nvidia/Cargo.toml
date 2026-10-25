@@ -35,6 +35,16 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 name = "dsx-server"
 path = "src/bin/server.rs"
 
+[[bin]]
+name = "t16-prefill-audit"
+path = "src/bin/t16-prefill-audit.rs"
+required-features = ["cuda"]
+
+[[bin]]
+name = "prefill-bench"
+path = "src/bin/prefill-bench.rs"
+required-features = ["cuda"]
+
 [features]
 default = []
 cuda = ["dep:cudarc"]

@@ -320,6 +320,7 @@ impl<'m> GpuModel<'m> {
         for &n in KERNELS {
             k.insert(n, g.kernel(n)?);
         }
+        prefill::load_optional_kernels(&g, &mut k)?;
         let c = &m.cfg;
         let dense_q6 = std::env::var_os("DSX_DENSE_Q6").is_some();
         let up = |w: &Mat| -> Result<DMat> {

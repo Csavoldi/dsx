@@ -55,3 +55,10 @@ Implementation filenames below are under `nvidia/src/`. The `../core/src/` entry
 | `experts.rs` | VRAM expert stores (residency table) and the hugepage RAM arena |
 | `handoff.rs` | mapped-memory exchange + CPU expert worker thread |
 | `topk.rs` | GPU radix top-k / candidate blocks for the sparse indexer |
+
+## Prefill checkpoint
+
+The [October 25 profile](../bench/results/2026-10-25-prefill/README.md) measures about 1,008 tok/s for fresh 8K prompts
+with an 8K chunk and 256K context allocation. Its four prefill options remain off by default. `prefill-bench` records
+cold and warm full-prompt passes with state reset between rounds; `t16-prefill-audit` compares the new kernels
+against their unchanged references. Both require the `cuda` feature.

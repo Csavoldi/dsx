@@ -42,7 +42,7 @@ for other packages.
 | Size | 252 GB in one GGUF file: the model (141 GB) and the Engram table at IQ4_NL (111 GB); tokenizer included. With a Q6_K Engram table (302 GB, slightly better): branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) |
 | Experts | T16 trellis: 1.5 / 1.5 / 2 bits (gate / up / down) in layers 0-19, 2 / 2 / 2.5 in layers 20-39; ~1.9 bpw |
 | Quality vs FP8 | KL 0.196 · top-1 80.9% · perplexity 9.54 (FP8: 8.56); with the Q6_K Engram table: 0.194 · 81.4% · 9.60 |
-| Speed, 2x RTX 3090 | 34.9 tok/s decode, 36.8 with `--defer-rank 3` · ~530 tok/s prefill (3K prompt) |
+| Speed, 2x RTX 3090 | Current opt-in profile: **~1,008 tok/s warm prefill (8K prompt)**. Recorded release: 34.9 tok/s decode, 36.8 with `--defer-rank 3`, ~530 tok/s prefill (3K). See [runtime checkpoint](#october-25-runtime-checkpoint). |
 | Hardware | 2x 24 GB NVIDIA GPU (RTX 3090 / 4090 / 5090), 128 GB RAM, AVX2 CPU (AVX-VNNI for the fast CPU kernel), ~255 GB NVMe ([details](#hardware)) |
 | Runtime | [dsx](https://github.com/lxe/dsx) from 2026-10-22 or later (T16 support) |
 
@@ -89,6 +89,25 @@ Calibration: 635K tokens (coding-agent sessions, agent and code prompts, the mod
 five languages, code, chat). The calib5 requant completed on 575×2048 = 1,177,600 fit tokens. It scored KL ~0.202
 and top-1 81.3% with v1's gains reused, versus v1's 0.196 / 80.9%, so it did not replace v1. Agentic-quality gains
 were not established. The gains were selected on this eval; independent gain tuning remains unmeasured.
+
+## October 25 runtime checkpoint
+
+The same T16 weights reached **1,007.84 newly processed prompt tokens/s** on two RTX 3090s, an i7-12700K and
+128 GB DDR4. The benchmark uses an 8,000-token prompt, an 8,192-token chunk, a 256K context allocation and fixed
+expert placement. It resets prompt state between rounds: the two warm passes measured 1,008.50 and 1,007.18 tok/s,
+with no reused prompt KV. The initial pass measured 928.49 tok/s. F16 Engram projections remain unchanged.
+
+The opt-in profile combines warp Hadamard transforms, fixed-bit weight expansion, fused gate/up post-processing
+and prefill buffer reuse. Buffer reuse recovers about 1.91 GB of GPU memory at this chunk size. The matched
+8K-prompt baseline with 4K chunks measured 868.07 tok/s; the final experimental screen measured 1,006.43 tok/s,
+about 16% faster. Its 64-token forced-decode continuations measured about 40.4 tok/s. That short decode check is
+separate from the 41 tok/s free-generation result with optional FP8 projections.
+
+See the [profile, code and receipts](https://github.com/lxe/dsx/blob/main/bench/results/2026-10-25-prefill/README.md)
+for the flags and complete conditions. The new options are off by default. Kernel audits cover 84 exact cases;
+the main integration also matches 129,280 final logits bit for bit. These are implementation checks, not a new
+FP8-reference quality score or a resolution of the earlier open decode check. Smaller prompts and cached tool
+updates have different throughput.
 
 ## Speed
 

@@ -2,8 +2,8 @@
 
 The default desktop model is T16 v1: DeepSeek-V4.1-Flash-1017 with T16 routed experts, Q8_0 dense weights and an
 IQ4_NL Engram lookup table in one GGUF. The October 23, 2026 NVIDIA kernel integration is af2c154; 76a5d0a records
-its serving configuration. This page separates that implementation from earlier model-release measurements and
-unfinished proposals. Documentation changes after those commits do not imply a new measured runtime.
+its serving configuration. The October 25 prefill checkpoint adds opt-in kernels and buffer reuse, with an 8K-chunk serving profile.
+This page separates those runtime measurements from model-release quality scores and unfinished proposals.
 
 ## Model package
 
@@ -47,6 +47,9 @@ used a 256K context; changing `--ctx` changes available expert-cache memory and 
 | `DSX_ADAPT_EARLY` | off; `1` enables | earlier cache update; measured worse residency |
 | `DSX_ENGRAM_FP8` | off; `1` enables | convert F16 Engram **projections** to exact FP8 weights at load |
 | `DSX_ENGRAM_PERSIST` | off; `1` enables | persistent lookup-row gather threads; marginal measured gain |
+| `DSX_T16_WARP_HAD`, `DSX_T16_SPECIALIZED_DQ` | off; `1` enables | exact prefill Hadamard and weight-expansion variants |
+| `DSX_T16_FUSED_POST_GU` | off; `1` enables | combine T16 gate/up post-processing with SwiGLU |
+| `DSX_PREFILL_REUSE_BUFFERS` | off; `1` enables | share prefill query/output/scratch storage; saves ~1.91 GB at 8K |
 | `DSX_PREFILL_CPU` | enabled; `0` disables | CPU assistance for short chunks |
 | `DSX_PREFILL_CPU_MAX_N` | 512 | maximum chunk size eligible for CPU assistance |
 | `DSX_ADAPT` | 8 | maximum adaptive expert replacements per token; `0` fixes residency |
@@ -68,10 +71,17 @@ The reference machine is two RTX 3090s, an i7-12700K and 128 GB DDR4. Sizes are 
 | KL 0.196, top-1 80.9%, perplexity 9.54 | T16 v1, IQ4_NL lookup table, prefill-path Lucebox 8×1024, deferral off | [model card](../cards/dsx-t16/README.md#quality) |
 | KL 0.194, top-1 81.4% | same expert build, Q6_K lookup table, prefill-path eval | model card |
 | 34.9 tok/s; 36.8 with defer=3 | earlier T16 release build, free generation after 3K prompt, 300 new tokens; GPU limits 250/280 W | [model card speed table](../cards/dsx-t16/README.md#speed) |
+| 1,007.84 tok/s prefill | October 25 checkpoint, 8K prompt/chunk, 256K allocation, fixed T16, F16 Engram projections, all four new prefill flags; two warm rounds, zero reused KV tokens | [prefill receipts](../bench/results/2026-10-25-prefill/README.md) |
 | ~529 tok/s prefill | 3K prompt after vectorized T16 dequant and hugepage arena fixes | [FINDINGS §8d](../FINDINGS.md#8d-where-the-time-goes-on-102-2026-10-22-t16-iq4_nl-build) |
 | 33.86 → 37.03 tok/s (+9.4%) | old base vs integrated kernels **with optional FP8 projections**, teacher-forced 1×1023 decode steps, defer=3, adapt=8; means of two interleaved rounds | [FINDINGS §9b](../FINDINGS.md#9b-decode-small-kernels-launch-structure-and-the-dev-4-merge-2026-10-23), windows 30–34 |
 | 36.7 → 41.0 tok/s | free generation, 120 after 300 tokens; candidate also includes optional FP8 projections; different generated text | FINDINGS §9b |
 | 31.63 tok/s | final default af2c154, F16 projections, 128K context, 38-token cold serving reply | recorded serving smoke check; not a sustained A/B |
+
+The prefill checkpoint's initial 8K pass measured 928.49 tok/s; subsequent fresh-prefix passes measured
+1,008.50 and 1,007.18 tok/s. The model state resets between rounds, so warm-up refers to loaded kernels and weights,
+not reused prompt KV. Its 84 kernel cases and 129,280 integration logits match bit for bit. Earlier fixed-placement
+checks cover 3K prompts and 8/1-token additions. These checks establish agreement for the tested changes and inputs;
+they do not resolve the older decode-quality check below.
 
 The integrated maximum above includes an option the default configuration leaves off. It is not a newly measured
 37–41 tok/s guarantee for that default. A 128K context also leaves fewer experts on the main GPU than the 32K gen
