@@ -649,7 +649,7 @@ __device__ __forceinline__ void gemv_int8_pair_tail
 template <int bits, bool HALF>
 __host__ __device__ constexpr int gemv_int8_twords() { return HALF ? 4 * (2 * bits + 1) : 8 * bits; }
 
-template <int bits, int M, bool residual, bool atomic = true, bool HALF = false>
+template <int bits, int M, bool residual, bool atomic = true, bool HALF = false, int PREFETCH = 0>
 __device__ __forceinline__ void gemv_int8_unit_narrow
 (
     const uint16_t* __restrict__ B,
@@ -673,8 +673,21 @@ __device__ __forceinline__ void gemv_int8_unit_narrow
     int ia0[M] = {}, ia1[M] = {}, ib0[M] = {}, ib1[M] = {};
     int ja0[M] = {}, ja1[M] = {}, jb0[M] = {}, jb1[M] = {};
 
+    // Issue future row loads without introducing register dependencies on them.
+    // One lane per 32-byte sector covers the adjacent packed tile pair.
+    auto prefetch_row = [&](int row) {
+        if (row < nrows && lane < (2 * TWORDS + 7) / 8) {
+            const uint32_t* address=bp+(size_t)row*row_stride+lane*8;
+            asm volatile("prefetch.global.L1 [%0];" :: "l"(address));
+        }
+    };
+    if constexpr (PREFETCH > 0) {
+        #pragma unroll
+        for (int row=0;row<PREFETCH;row++) prefetch_row(row);
+    }
     for (int kb = 0; kb < nrows; ++kb)
     {
+        if constexpr (PREFETCH > 0) prefetch_row(kb+PREFETCH);
         const uint32_t* blockA = bp + (size_t) kb * row_stride;
         gemv_int8_pair_row<bits, M, residual, HALF>(blockA, blockA + TWORDS,
             sh_as + (kb << 4), slice_stride, c2, lane << 3,
@@ -1002,7 +1015,7 @@ __host__ __device__ constexpr int gemv_int8_sq_rows_max(int M, bool residual)
     return cap < SQ_ROWS_MAX ? cap : SQ_ROWS_MAX;
 }
 
-template <int bits, int M, bool c_fp32, bool residual, bool HALF = false, bool FORCE_NARROW = false>
+template <int bits, int M, bool c_fp32, bool residual, bool HALF = false, bool FORCE_NARROW = false, int PREFETCH = 0, bool FULL_WAVE = false>
 __device__ __forceinline__
 void exl3_gemv_int8_sq_kernel
 (
@@ -1028,7 +1041,7 @@ void exl3_gemv_int8_sq_kernel
     int rows_total = size_k >> 4;
     int nb256_total = size_n / 256;
     int r = CEIL_DIVIDE(rows_total * nb256_total, (int) gridDim.x);
-    int rows_per = (MAX(r, MIN(2 * r, 32)) + 7) & ~7;
+    int rows_per = ((FULL_WAVE ? r : MAX(r, MIN(2 * r, 32))) + 7) & ~7;
     rows_per = MAX(rows_per, SQ_MINROWS);
     rows_per = MIN(rows_per, gemv_int8_sq_rows_max(M, residual));
     rows_per = MIN(rows_per, (rows_total + 7) & ~7);
@@ -1069,7 +1082,7 @@ void exl3_gemv_int8_sq_kernel
         else if constexpr (!FORCE_NARROW && gemv_int8_stage_smem(bits, HALF))
             gemv_int8_unit_smem<bits, M, residual, false, HALF>(B, pacc, pstride, sh_as, slice_stride, sh_b, nb256, kb0, nrows, size_n);
         else
-            gemv_int8_unit_narrow<bits, M, residual, false, HALF>(B, pacc, pstride, sh_as, slice_stride, nb256, kb0, nrows, size_n);
+            gemv_int8_unit_narrow<bits, M, residual, false, HALF, PREFETCH>(B, pacc, pstride, sh_as, slice_stride, nb256, kb0, nrows, size_n);
 
         // Completion counter: the ksplit-th contributor runs the epilogue for this 256-column group.
         // (sh_last reuse across iterations is ordered by the next iteration's __syncthreads.)

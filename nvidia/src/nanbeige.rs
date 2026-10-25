@@ -45,11 +45,13 @@ struct Trellis {
     kernels: [(Kernel,u32,usize);2],
 }
 fn exl3_geometry(g:&Gpu,bits2:usize,m:usize,k:usize,n:usize) -> Result<(Kernel,u32,usize)> {
-    let suffix=if bits2==5 && m==1 && std::env::var_os("DSX_NB_EXL3_NARROW").is_some(){"_narrow"}else{""};
+    let experiment=std::env::var("DSX_NB_EXL3_EXPERIMENT").unwrap_or_default();
+    let full_wave=bits2==5 && m==1 && ["wave","pf4wave"].contains(&experiment.as_str());
+    let suffix=if bits2==5 && m==1 && ["pf4","pf8","wave","pf4wave"].contains(&experiment.as_str()){format!("_{experiment}")}else if bits2==5 && m==1 && std::env::var_os("DSX_NB_EXL3_NARROW").is_some(){"_narrow".into()}else{"".into()};
     let kernel=g.kernel(&format!("nb_exl3_sq{bits2}_m{m}{suffix}"))?;
     let bits=bits2/2; let stage=if bits2%2>0 || bits%2>0 {8*4*(if bits2%2>0 {8*bits2} else {16*bits})*4} else {0};
     let maxrows=(80*1024/(32+64*m)/8*8).min(512);
-    let rows_for=|grid:usize| {let r=(k/16*(n/256)).div_ceil(grid); (r.max((2*r).min(32))).div_ceil(8).saturating_mul(8).max(16).min(maxrows).min((k/16).div_ceil(8)*8)};
+    let rows_for=|grid:usize| {let r=(k/16*(n/256)).div_ceil(grid); (if full_wave {r}else{r.max((2*r).min(32))}).div_ceil(8).saturating_mul(8).max(16).min(maxrows).min((k/16).div_ceil(8)*8)};
     let mem_for=|r:usize| r*32+r*64*m+stage+2*m*128*4;
     g.set_smem(kernel,mem_for(maxrows))?;g.prefer_shared(kernel)?;
     let blocks=std::env::var("DSX_NB_EXL3_BLOCKS").ok().and_then(|v|v.parse::<usize>().ok()).filter(|&v|v>0 && v<=6);
@@ -500,6 +502,7 @@ impl Nanbeige {
             let mut names:Vec<String>=["nb_exl3_bf2h","nb_exl3_dequant","nb_exl3_dequant5","nb_exl3_pre","nb_exl3_post"].into_iter().map(String::from).collect();
             for bits in [2,3,4,5,6,7,8,10,12,16] {for m in [1,4] {names.push(format!("nb_exl3_sq{bits}_m{m}"));}}
             names.extend(["nb_exl3_sq5_m1_narrow".to_owned(),"nb_exl3_sq5_m4_narrow".to_owned()]);
+    names.extend(["pf4","pf8","wave","pf4wave"].map(|suffix|format!("nb_exl3_sq5_m1_{suffix}")));
             g.add_kernels(include_bytes!(concat!(env!("OUT_DIR"),"/nanbeige-exl3.fatbin")),&names)?;
         }
         ensure!(
@@ -1612,6 +1615,7 @@ pub fn validate_exl3() -> Result<serde_json::Value> {
     let mut names:Vec<String>=["nb_exl3_bf2h","nb_exl3_dequant","nb_exl3_dequant5","nb_exl3_pre","nb_exl3_post"].into_iter().map(String::from).collect();
     for bits in [2,3,4,5,6,7,8,10,12,16] {for m in [1,4] {names.push(format!("nb_exl3_sq{bits}_m{m}"));}}
     names.extend(["nb_exl3_sq5_m1_narrow".to_owned(),"nb_exl3_sq5_m4_narrow".to_owned()]);
+    names.extend(["pf4","pf8","wave","pf4wave"].map(|suffix|format!("nb_exl3_sq5_m1_{suffix}")));
             g.add_kernels(include_bytes!(concat!(env!("OUT_DIR"),"/nanbeige-exl3.fatbin")),&names)?;
     let (k,n)=(512usize,512usize);
     let mut seed=0x12345678u32;
@@ -1699,6 +1703,7 @@ pub fn benchmark_exl3() -> Result<serde_json::Value> {
     let mut g=Gpu::new(0)?;let mut names=vec!["nb_exl3_bf2h".to_owned()];
     for b in [4,5,6] {for m in [1,4] {names.push(format!("nb_exl3_sq{b}_m{m}"));}}
     names.extend(["nb_exl3_sq5_m1_narrow".to_owned(),"nb_exl3_sq5_m4_narrow".to_owned()]);
+    names.extend(["pf4","pf8","wave","pf4wave"].map(|suffix|format!("nb_exl3_sq5_m1_{suffix}")));
             g.add_kernels(include_bytes!(concat!(env!("OUT_DIR"),"/nanbeige-exl3.fatbin")),&names)?;
     let flush=g.alloc(256*1024*1024)?;let ws=g.alloc_zeroed(16*1024*1024)?;let mut seed=77u32;let mut rows=vec![];
     for bits2 in [4usize,5,6] {for (name,n,k) in [("q_o",7168usize,7168usize),("k_v",1024,7168),("gate_up",22016,7168),("down",7168,22016)] {

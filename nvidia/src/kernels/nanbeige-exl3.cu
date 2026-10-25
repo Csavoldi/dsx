@@ -34,3 +34,11 @@ extern "C" __global__ void nb_exl3_post(float* x,const half* sv,int n){int j=thr
 // Test direct cached loads against upstream's asynchronous shared-memory staging.
 extern "C" __global__ __launch_bounds__(256) void nb_exl3_sq5_m1_narrow(const half* A,const uint16_t* B,void* C,int m,int k,int n,int* locks,const half* su,half* ah,const half* sv){exl3_gemv_int8_sq_kernel<2,1,true,false,true,true>(A,B,C,m,k,n,locks,su,ah,sv);}
 extern "C" __global__ __launch_bounds__(256) void nb_exl3_sq5_m4_narrow(const half* A,const uint16_t* B,void* C,int m,int k,int n,int* locks,const half* su,half* ah,const half* sv){exl3_gemv_int8_sq_kernel<2,4,true,false,true,true>(A,B,C,m,k,n,locks,su,ah,sv);}
+
+extern "C" __global__ __launch_bounds__(256) void nb_exl3_sq5_m1_pf4(const half* A,const uint16_t* B,void* C,int m,int k,int n,int* locks,const half* su,half* ah,const half* sv){exl3_gemv_int8_sq_kernel<2,1,true,false,true,true,4,false>(A,B,C,m,k,n,locks,su,ah,sv);}
+
+extern "C" __global__ __launch_bounds__(256) void nb_exl3_sq5_m1_pf8(const half* A,const uint16_t* B,void* C,int m,int k,int n,int* locks,const half* su,half* ah,const half* sv){exl3_gemv_int8_sq_kernel<2,1,true,false,true,true,8,false>(A,B,C,m,k,n,locks,su,ah,sv);}
+
+extern "C" __global__ __launch_bounds__(256) void nb_exl3_sq5_m1_wave(const half* A,const uint16_t* B,void* C,int m,int k,int n,int* locks,const half* su,half* ah,const half* sv){exl3_gemv_int8_sq_kernel<2,1,true,false,true,true,0,true>(A,B,C,m,k,n,locks,su,ah,sv);}
+
+extern "C" __global__ __launch_bounds__(256) void nb_exl3_sq5_m1_pf4wave(const half* A,const uint16_t* B,void* C,int m,int k,int n,int* locks,const half* su,half* ah,const half* sv){exl3_gemv_int8_sq_kernel<2,1,true,false,true,true,4,true>(A,B,C,m,k,n,locks,su,ah,sv);}

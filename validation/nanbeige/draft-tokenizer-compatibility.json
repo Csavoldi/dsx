@@ -1,0 +1,11 @@
+{
+  "draft_model": "Nanbeige/Nanbeige4.2-3B",
+  "draft_revision": "b82e54bd609793562a75cbf9337970a93369eab5",
+  "model_vocab_equal": true,
+  "added_tokens_equal": true,
+  "normalizer_equal": true,
+  "pre_tokenizer_equal": true,
+  "decoder_equal": true,
+  "draft_vocab_entries": 166100,
+  "target_vocab_entries": 166100
+}
