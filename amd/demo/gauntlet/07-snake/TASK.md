@@ -1,1 +1,0 @@
-Write a Snake game that runs in the browser as a single index.html file with inline JavaScript and canvas: arrow-key controls, growing snake, food, score and high score in localStorage, pause on space, and increasing speed. Do not open a browser; just write the file.

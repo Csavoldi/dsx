@@ -1,1 +1,0 @@
-Write a Rust command-line todo manager (cargo project) that stores tasks in a JSON file: add, list, done, remove, and filter by tag. Use only the standard library plus serde and serde_json. Include unit tests and make sure `cargo test` passes.
