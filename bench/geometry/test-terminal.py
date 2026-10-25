@@ -1,6 +1,22 @@
 import unittest
-from terminal import Screen,certify
+from terminal import Screen,certify,split_frames
 class TerminalCertification(unittest.TestCase):
+    def test_duplicate_home_does_not_create_a_frame(self):
+        payload='\r\n'.join(['⠿'*10+'⣿'*10]*8)
+        one='\x1b[H'+payload
+        doubled='\x1b[H'+payload+'\x1b[H'
+        frames=split_frames(doubled*8)
+        self.assertEqual(frames,split_frames(one*8))
+        self.assertTrue(certify(frames,20,10)['pass'])
+    def test_space_only_frame_is_preserved(self):
+        frames=split_frames('\x1b[H⣿\x1b[H \x1b[H')
+        self.assertEqual(frames,['⣿',' '])
+        self.assertEqual(split_frames('\x1b[H\x1b[0m\r\n\x1b[H'),[])
+    def test_duplicate_home_does_not_hide_real_trails(self):
+        long='\r\n'.join(['⠿'*10+'⣿'*10]*8)
+        short='\r\n'.join(['⠿'*5+'⣿'*5]*8)
+        frames=split_frames(''.join('\x1b[H'+x+'\x1b[H' for x in [long]*3+[short]*3))
+        self.assertGreater(certify(frames,24,10)['max_ghost_fraction'],.1)
     def test_clearing_removes_trails(self):
         s=Screen(10,4);s.feed('\x1b[H'+'⣿'*6);s.feed('\x1b[H'+'⣿'*2);self.assertEqual(len(s.dots()),6)
         s.feed('\x1b[H'+'⣿'*2+'\x1b[K');self.assertEqual(len(s.dots()),2)

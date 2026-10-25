@@ -43,3 +43,12 @@ node bench/geometry/test-stop.mjs
 The terminal checks exercise clearing, RGB colors, delayed wrapping, meaningful shading, and rejection of residual trails. The stop-guard checks require a matching certificate and successful self-check, reject stale artifact hashes, and verify that subsequent tools are disabled.
 
 `judge_v6.py` is a standalone checker that measures framing from VT screen coordinates, including renderers that position every row explicitly. The normal runner still uses version 5 for `--acceptance-stop`; current comparisons keep that checker unchanged. Version 6 passed the reviewed GPU-sampling cube and continued to reject the failed tetrahedron and CPU-sampling cube in retrospective checks. It does not repair submissions or weaken shading, size, clearing or animation checks.
+
+Standalone `judge_v7.py` also excludes intervals that contain only terminal
+controls between consecutive cursor-home commands. A renderer may return home
+at both the end and start of each redraw; those empty intervals neither redraw
+the screen nor count toward FPS. Space-only redraws still count, and the same
+shading, ghosting, size, resize and cleanup checks apply. Versions 5 and 6 and
+original receipts remain available. Apply one judge version to all artifacts
+in a comparison and report retrospective adjudication separately from the
+judge used by the agent's acceptance extension.

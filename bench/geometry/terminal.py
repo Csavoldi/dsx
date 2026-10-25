@@ -86,3 +86,15 @@ def certify(frames,cols,rows):
     ghost=max((c['ghost_fraction'] for c in checks),default=1)
     shaded=sum(c['shading'] for c in checks)/max(len(checks),1)
     return {'supported_full_frame':supported,'max_ghost_fraction':ghost,'shaded_frame_fraction':shaded,'frames':len(checks),'pass':supported and ghost<=.015 and shaded>=.2,'limit':'ASCII/braille full-frame redraw certification; shape identity and general rendering quality still require review.'}
+
+
+def split_frames(text):
+    """Return payloads between cursor-home controls, excluding control-only gaps.
+
+    A renderer may return home after a frame and again before its next one.
+    That interval does not redraw the screen and must not count as a frame.
+    Keep all printable payloads, including spaces that erase an old image.
+    """
+    chunks = re.split(r'\x1b\[(?:0;0|1;1|0|1)?[Hf]', text)[1:]
+    return [chunk for chunk in chunks
+            if any(ord(c) >= 32 for c in CSI.sub('', chunk))]
