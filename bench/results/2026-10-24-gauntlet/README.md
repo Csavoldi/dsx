@@ -257,3 +257,11 @@ thinking-close token intentionally changes generation and needs task-quality
 validation; it is disabled by default. Forced positions and original samples are
 recorded in the token audit. A shorter thought stream by itself does not count as
 a successful coding task.
+
+The [512-token budget pilot](budget512.json) verifies forced closures at exactly
+token 512 and produces a renderer, but times out after 302.006 seconds with no
+passing artifact. Its 13 requests generate 10,978 engine-counted tokens at 39.52 decode
+tokens/s; client usage is available for 12 responses. The program loses shading
+when it packs face masks as boolean coverage and has a broken frame-rate delay.
+The hard cap successfully limits planning per request but does not establish a
+quality or end-to-end performance gain. The weight file is unchanged.
