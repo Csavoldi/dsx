@@ -2564,3 +2564,5 @@ extern "C" __global__ void chase(const uint32_t *__restrict__ next, int steps, u
   for (int s = 0; s < steps; s++) i = __ldcg(next + i);
   *out = i;
 }
+
+#include "sampling.cuh"

@@ -54,6 +54,9 @@ struct Args {
     /// Warm with the exact continuation, then freeze placement for matched optimistic upper bounds.
     #[arg(long)]
     warm_cache_oracle: bool,
+    /// Compare CPU sampling and device sampling on identical forced IDs and frozen placement.
+    #[arg(long)]
+    sampler_probe: bool,
 }
 
 fn top(x: &[f32]) -> u32 {
@@ -211,6 +214,45 @@ fn main() -> Result<()> {
         emit(
             json!({"event":"cache_oracle","warmup_tokens":tokens.len(),"timed_adaptation":false,"limit":"Placement was warmed using the exact future continuation; this is an optimistic cache upper bound."}),
         );
+    }
+    if a.sampler_probe {
+        ensure!(a.warm_cache_oracle, "--sampler-probe requires --warm-cache-oracle");
+        use dsx_core::server::sample::Sampler;
+        use dsx::sampling::StepOutput;
+        gm.restore(&root)?;
+        let _ = gm.step_sampled(tokens[0], 0.5f64.to_bits())?;
+        let seed_base = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64;
+        for round in 0..a.rounds {
+            let mut cpu_tokens = None;
+            let mut gpu_tokens = None;
+            for gpu in if round % 2 == 0 { [false,true] } else { [true,false] } {
+                gm.restore(&root)?;
+                let picks = gm.cpu_picks();
+                let mut sampler = Sampler::new(1.0,1.0,Some(seed_base.wrapping_add(round as u64)));
+                let mut sampled = Vec::with_capacity(tokens.len());
+                let mut fallbacks = 0usize;
+                let start = Instant::now();
+                for &token in &tokens {
+                    let selected = if gpu {
+                        let saved = sampler.clone();
+                        let bits = sampler.uniform_bits();
+                        match gm.step_sampled(token,bits)? {
+                            StepOutput::Token(next) => next,
+                            StepOutput::Logits(logits) => {sampler = saved;fallbacks += 1;sampler.sample(&logits)}
+                        }
+                    } else { sampler.sample(&gm.step(token)?) };
+                    sampled.push(selected);
+                }
+                let elapsed = start.elapsed().as_secs_f64();
+                let after = gm.cpu_picks();
+                emit(json!({"event":"sampler_timing","round":round,"gpu_sampling":gpu,"tokens":tokens.len(),"elapsed_s":elapsed,"effective_tok_s":tokens.len() as f64/elapsed,"cpu_picks":after.1-picks.1,"routed_picks":after.0-picks.0,"fallbacks":fallbacks,"seed":seed_base.wrapping_add(round as u64),"sampled_tokens":sampled}));
+                if gpu {gpu_tokens = Some(sampled);} else {cpu_tokens = Some(sampled);}
+            }
+            let cpu = cpu_tokens.unwrap();let gpu = gpu_tokens.unwrap();
+            emit(json!({"event":"sampler_comparison","round":round,"changed_token_draws":cpu.iter().zip(&gpu).filter(|(a,b)|a!=b).count(),"draws":cpu.len()}));
+        }
+        emit(json!({"event":"done"}));
+        return Ok(());
     }
     if let Some(path) = &a.dump_reference {
         use std::io::Write;

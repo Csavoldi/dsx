@@ -137,6 +137,7 @@ pub struct GpuModel<'m> {
     win_idx: Buf,
     comp_idx: Buf,
     logits: Buf,
+    gpu_sampler: Option<crate::sampling::GpuSampler>,
     lat: Buf,
     actq: Buf,
     pub pos: usize,
@@ -467,6 +468,7 @@ impl<'m> GpuModel<'m> {
             win_idx: g.alloc_zeroed(4 * c.window)?,
             comp_idx: g.alloc_zeroed(4 * c.idx_topk)?,
             logits: fz(c.vocab)?,
+            gpu_sampler: None,
             lat: fz(c.head_dim)?,
             actq: fz(8 * 32768)?,
             out0: fz(crate::handoff::MAXT * c.dim)?, // [t][dim]: verify passes run up to MAXT tokens
@@ -1705,6 +1707,17 @@ impl<'m> GpuModel<'m> {
     }
 
     pub fn step(&mut self, token: u32) -> Result<Vec<f32>> {
+        match self.step_output(token, None)? {
+            crate::sampling::StepOutput::Logits(logits) => Ok(logits),
+            crate::sampling::StepOutput::Token(_) => unreachable!("CPU step returned a sampled token"),
+        }
+    }
+
+    pub fn step_sampled(&mut self, token: u32, uniform_bits: u64) -> Result<crate::sampling::StepOutput> {
+        self.step_output(token, Some(uniform_bits))
+    }
+
+    fn step_output(&mut self, token: u32, uniform_bits: Option<u64>) -> Result<crate::sampling::StepOutput> {
         let t_step = std::time::Instant::now();
         // DSX_ADAPT_EARLY=1: scan and start replacements before the sync (off: window 30 measured the same swap count but
         // CPU picks 22.9 -> 26.2% and KL 0.151 -> 0.159; cause not found yet)
@@ -1715,7 +1728,16 @@ impl<'m> GpuModel<'m> {
                 self.adapt_step()?;
             }
             self.adapt_s += t.elapsed().as_secs_f64();
-            let l = self.g.download::<f32>(self.logits.ptr, self.m.cfg.vocab)?;
+            let sampled = if let Some(bits) = uniform_bits {
+                if self.gpu_sampler.is_none() {
+                    self.gpu_sampler = Some(crate::sampling::GpuSampler::new(&self.g, self.m.cfg.vocab)?);
+                }
+                self.gpu_sampler.as_ref().unwrap().sample(&self.g, self.logits.ptr, bits)?
+            } else { None };
+            let l = match sampled {
+                Some(token) => crate::sampling::StepOutput::Token(token),
+                None => crate::sampling::StepOutput::Logits(self.g.download::<f32>(self.logits.ptr, self.m.cfg.vocab)?),
+            };
             let t = std::time::Instant::now();
             if self.adapt > 0 {
                 self.adapt_commit()?;
@@ -1731,7 +1753,7 @@ impl<'m> GpuModel<'m> {
             self.adapt_s += t.elapsed().as_secs_f64();
             Ok(l)
         });
-        if let Ok(l) = &r {
+        if let Ok(crate::sampling::StepOutput::Logits(l)) = &r {
             if l.iter().any(|v| !v.is_finite()) && !self.warned_nan {
                 self.warned_nan = true;
                 eprintln!("warning: non-finite logits at position {} (token {token}); the routers fall back to valid experts", self.pos);

@@ -1,0 +1,348 @@
+{
+  "description": "Same binary and forced model inputs; six alternating CPU/GPU sampling pairs. Placement warmed with exact future and frozen, paired T16 launches enabled. This is screening, not actual agent completion performance.",
+  "arms": [
+    {
+      "gpu_sampling": false,
+      "tokens": 768,
+      "elapsed_s": 17.240280961,
+      "tok_s": 44.54683782342798,
+      "rounds": [
+        {
+          "round": 0,
+          "gpu_sampling": false,
+          "tokens": 128,
+          "elapsed_s": 2.871166928,
+          "effective_tok_s": 44.58117664693301,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292571
+        },
+        {
+          "round": 1,
+          "gpu_sampling": false,
+          "tokens": 128,
+          "elapsed_s": 2.8678333609999997,
+          "effective_tok_s": 44.63299776782254,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292572
+        },
+        {
+          "round": 2,
+          "gpu_sampling": false,
+          "tokens": 128,
+          "elapsed_s": 2.862319712,
+          "effective_tok_s": 44.71897372727872,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292573
+        },
+        {
+          "round": 3,
+          "gpu_sampling": false,
+          "tokens": 128,
+          "elapsed_s": 2.882234998,
+          "effective_tok_s": 44.409980480016365,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292574
+        },
+        {
+          "round": 4,
+          "gpu_sampling": false,
+          "tokens": 128,
+          "elapsed_s": 2.877270729,
+          "effective_tok_s": 44.486602775987855,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292575
+        },
+        {
+          "round": 5,
+          "gpu_sampling": false,
+          "tokens": 128,
+          "elapsed_s": 2.879455233,
+          "effective_tok_s": 44.45285293310202,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292576
+        }
+      ]
+    },
+    {
+      "gpu_sampling": true,
+      "tokens": 768,
+      "elapsed_s": 16.864037227,
+      "tok_s": 45.54069643361562,
+      "rounds": [
+        {
+          "round": 0,
+          "gpu_sampling": true,
+          "tokens": 128,
+          "elapsed_s": 2.798446001,
+          "effective_tok_s": 45.73967121547471,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292571
+        },
+        {
+          "round": 1,
+          "gpu_sampling": true,
+          "tokens": 128,
+          "elapsed_s": 2.800148621,
+          "effective_tok_s": 45.711859377766935,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292572
+        },
+        {
+          "round": 2,
+          "gpu_sampling": true,
+          "tokens": 128,
+          "elapsed_s": 2.8329888,
+          "effective_tok_s": 45.18196471514466,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292573
+        },
+        {
+          "round": 3,
+          "gpu_sampling": true,
+          "tokens": 128,
+          "elapsed_s": 2.80982819,
+          "effective_tok_s": 45.55438672568802,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292574
+        },
+        {
+          "round": 4,
+          "gpu_sampling": true,
+          "tokens": 128,
+          "elapsed_s": 2.809955516,
+          "effective_tok_s": 45.552322544311764,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292575
+        },
+        {
+          "round": 5,
+          "gpu_sampling": true,
+          "tokens": 128,
+          "elapsed_s": 2.812670099,
+          "effective_tok_s": 45.50835878175274,
+          "cpu_picks": 4867,
+          "routed_picks": 30720,
+          "fallbacks": 0,
+          "seed": 1792891783008292576
+        }
+      ]
+    }
+  ],
+  "gain_percent": 2.2310418847843794,
+  "comparisons": [
+    {
+      "event": "sampler_comparison",
+      "round": 0,
+      "changed_token_draws": 0,
+      "draws": 128
+    },
+    {
+      "event": "sampler_comparison",
+      "round": 1,
+      "changed_token_draws": 0,
+      "draws": 128
+    },
+    {
+      "event": "sampler_comparison",
+      "round": 2,
+      "changed_token_draws": 0,
+      "draws": 128
+    },
+    {
+      "event": "sampler_comparison",
+      "round": 3,
+      "changed_token_draws": 0,
+      "draws": 128
+    },
+    {
+      "event": "sampler_comparison",
+      "round": 4,
+      "changed_token_draws": 0,
+      "draws": 128
+    },
+    {
+      "event": "sampler_comparison",
+      "round": 5,
+      "changed_token_draws": 0,
+      "draws": 128
+    }
+  ],
+  "maximum_cpu_c": 72.0,
+  "preflight": {
+    "server_pid": 1778630,
+    "command": "/home/lxe/ai/ds41/./dsx/target/release/dsx-server --model hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf --host 0.0.0.0 --port 8090 --ctx 131072 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 --arena-gb 110 --rank calib/rank.json --defer-rank 3 --vision hf-t16/vision.safetensors ",
+    "server_md5": "363ced3dada78d1271549592de700e3d",
+    "model_stat": [
+      33204,
+      154277358,
+      66311,
+      1,
+      1000,
+      1000,
+      251592261632,
+      1792881816,
+      1792707596,
+      1792707596
+    ],
+    "eval": {
+      "heldout.i32": "9c816710d619da56761967609174231ace2f900dbe7486d376997b2abaffa716",
+      "teacher_kl.json": "1d8ca2d8bc382312ff376528c03375dfcf3a3e3f0540fb9bd0ef08ce78044822",
+      "teacher_idx.i32": "ed0fade255c0b6c4a8606e3b21a9c52b024a0d5f37e5c69ff548486c16a8ffb1",
+      "teacher_lp.f32": "e689eabd99c20cdf2edc1d24fc6516121b34fd8e05b3fedcefbe12a36004350d",
+      "heldout.txt": "2aba8db0472d7a61c800c1bde44ab1a9e25d1f19743962a9a5952cc98c24a0be"
+    },
+    "rapl_long_uw": "4095875000\n",
+    "rapl_short_uw": "180000000\n"
+  },
+  "events": [
+    {
+      "time": 1792891646.6565714,
+      "event": "preflight_health",
+      "health": {
+        "status": "ok",
+        "model": "deepseek-v4.1-flash",
+        "pending": 0
+      }
+    },
+    {
+      "time": 1792891646.9790018,
+      "event": "benchmark_power_limit",
+      "old_uw": "4095875000",
+      "new_uw": 125000000
+    },
+    {
+      "time": 1792891646.9790506,
+      "event": "stopping_server",
+      "pid": 1778630
+    },
+    {
+      "time": 1792891652.0054843,
+      "event": "device_test",
+      "name": "gpu-sampling",
+      "returncode": 0
+    },
+    {
+      "time": 1792891652.8222497,
+      "event": "device_test",
+      "name": "gpu-t16",
+      "returncode": 0
+    },
+    {
+      "time": 1792891652.8231304,
+      "event": "t16_outputs_preserved",
+      "cases": 12,
+      "fingerprint": "bac2a5bb81bdd5a8"
+    },
+    {
+      "time": 1792891652.8232062,
+      "event": "cooldown",
+      "next_arm": "sampler-probe"
+    },
+    {
+      "time": 1792891682.9174187,
+      "event": "arm_start",
+      "label": "sampler-probe",
+      "binary": "/home/lxe/ai/ds41/codex-gauntlet-20261024/sampled/oracle-bench",
+      "sha256": "2bc9ee940495b4b9ca54371844c85982f2686322b6fca8f194c6ee077a83298b",
+      "env": {
+        "DSX_ADAPT": "8",
+        "DSX_CPU_THREADS": "14",
+        "DSX_T16_PAIR_GU": "1",
+        "DSX_DEFER": "3"
+      },
+      "command": [
+        "/home/lxe/ai/ds41/guard.sh",
+        "cs-sampler-probe",
+        "118",
+        "/home/lxe/ai/ds41/codex-gauntlet-20261024/sampled/oracle-bench",
+        "--model",
+        "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+        "--rank",
+        "/home/lxe/ai/ds41/calib/rank.json",
+        "--ids",
+        "/home/lxe/ai/ds41/codex-validation-20261024/cube.ids",
+        "--continuation",
+        "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+        "--steps",
+        "128",
+        "--ctx",
+        "131072",
+        "--rounds",
+        "6",
+        "--widths",
+        "1",
+        "--rollback-steps",
+        "0",
+        "--warmup",
+        "0",
+        "--arena-gb",
+        "110",
+        "--warm-cache-oracle",
+        "--sampler-probe"
+      ]
+    },
+    {
+      "time": 1792891820.056031,
+      "event": "arm_end",
+      "label": "sampler-probe",
+      "returncode": 0,
+      "elapsed_s": 137.13856557599502
+    },
+    {
+      "time": 1792891912.1412568,
+      "event": "server_restored",
+      "success": true,
+      "health": {
+        "status": "ok",
+        "model": "deepseek-v4.1-flash",
+        "pending": 0
+      }
+    },
+    {
+      "time": 1792891912.146928,
+      "event": "power_limit_restored",
+      "uw": "4095875000"
+    },
+    {
+      "time": 1792891912.1475139,
+      "event": "lock_released"
+    }
+  ],
+  "raw_log_sha256": {
+    "gpu-sampling.log": "dd82b7fb8869c7647bf637d3171a24a7604d800081bf10aa4600364581ef7a2d",
+    "gpu-t16.log": "ce67a84c9712e59b3c1a1f8e83b05a2491ac80166a40ba37c5a091684ae7f1e0",
+    "preflight.json": "904007d58a5a568bc487d1b7b401174f4ffe7ddda424db3f46523a25c82ebe9b",
+    "server-before.log": "b9b5646449b7f395bb9195222d8df2a09ec5b94dafa406daa228666c7dcda635",
+    "events.jsonl": "1466868e042d34c185897f0ca6ef1503f3281f5736a8273053e762cd0f4ff4dd",
+    "hardware.jsonl": "41523621b73b972af27a4150004d761dc033d40a8eca829a6ee193ed48810b93",
+    "sampler-probe.log": "e1367bb0f620eb26a6344fb4789dd2720f962a2251b9f60f4c258d329bc7791f"
+  },
+  "raw_root": "/home/lxe/dsx-gauntlet-20261024/screen-sampler",
+  "limits": [
+    "GPU exp uses FP32 versus CPU FP64; small CDF rounding differences remain possible beyond measured draws.",
+    "Zero changed seeded draws in the tested 768 model outputs do not establish universal bit-identical sampling.",
+    "GPU sampling remains opt-in until reviewed gauntlet outcomes support adoption."
+  ]
+}

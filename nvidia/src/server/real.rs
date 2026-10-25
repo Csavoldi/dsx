@@ -100,6 +100,11 @@ impl Engine for Real {
         let prefill = t0.elapsed();
         let td = Instant::now();
         let mut sampler = Sampler::from_params(p);
+        let gpu_sampling = std::env::var("DSX_GPU_SAMPLE").is_ok_and(|v| v == "1")
+            && p.temperature == 1.0 && p.top_p >= 1.0
+            && p.hesitation.as_ref().is_none_or(|h| h.lambda == 0.0);
+        let mut gpu_next = None;
+        let (mut gpu_samples, mut gpu_fallbacks) = (0usize,0usize);
         let mut fin = Finish::Length;
         let mut hes = p.hesitation.clone();
         let mut lookup_audit = crate::spec::LookupAudit::from_env();
@@ -115,7 +120,7 @@ impl Engine for Real {
                 }
             }
             let clock = profile.then(Instant::now);
-            let tok = sampler.sample(&logits);
+            let tok = gpu_next.take().unwrap_or_else(|| sampler.sample(&logits));
             if let Some(t) = clock { sample_s += t.elapsed().as_secs_f64(); }
             if hes.as_ref().is_some_and(|h| tok == h.close) {
                 hes = None;
@@ -131,7 +136,16 @@ impl Engine for Real {
                 break;
             }
             let clock = profile.then(Instant::now);
-            logits = self.gm.step(tok)?;
+            if gpu_sampling {
+                let saved = sampler.clone();
+                let uniform = sampler.uniform_bits();
+                match self.gm.step_sampled(tok, uniform)? {
+                    crate::sampling::StepOutput::Token(next) => { gpu_next = Some(next); gpu_samples += 1; }
+                    crate::sampling::StepOutput::Logits(next) => { sampler = saved; logits = next; gpu_fallbacks += 1; }
+                }
+            } else {
+                logits = self.gm.step(tok)?;
+            }
             if let Some(t) = clock { step_s += t.elapsed().as_secs_f64(); steps += 1; }
             self.cached.push(tok);
             if let Some(audit) = &mut lookup_audit {
@@ -140,7 +154,7 @@ impl Engine for Real {
         }
         if profile {
             let picks = self.gm.cpu_picks();
-            tracing::info!(stats = %serde_json::json!({"steps":steps,"sample_s":sample_s,"emit_s":emit_s,"step_s":step_s,"adapt_host_s":self.gm.adapt_s-adapt_before,"model_prefill_s":model_prefill_s,"snapshot_s":snapshot_s,"routed_picks":picks.0-picks_before.0,"cpu_picks":picks.1-picks_before.1}), "runtime stats");
+            tracing::info!(stats = %serde_json::json!({"steps":steps,"gpu_sampling":gpu_sampling,"gpu_samples":gpu_samples,"gpu_fallbacks":gpu_fallbacks,"sample_s":sample_s,"emit_s":emit_s,"step_s":step_s,"adapt_host_s":self.gm.adapt_s-adapt_before,"model_prefill_s":model_prefill_s,"snapshot_s":snapshot_s,"routed_picks":picks.0-picks_before.0,"cpu_picks":picks.1-picks_before.1}), "runtime stats");
         }
         if let Some(audit) = lookup_audit {
             tracing::info!(stats = %audit.report(), "lookup audit");
