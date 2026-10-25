@@ -33,7 +33,7 @@ export default function (pi: ExtensionAPI) {
       for (const phase of check.renderer?.phases ?? []) {
         if (phase.max_dots===0) failures.push("No visible braille dots were rendered.");
         const cert=phase.frame_certification;
-        if (judgeVersion>=7 && cert?.supported_full_frame && phase.max_dots!==0) {
+        if (judgeVersion>=7 && cert?.supported_full_frame && (judgeVersion<8 || phase.max_dots!==0)) {
           if (phase.typical_width_fraction>.95 || phase.typical_height_fraction>.95) failures.push("The solid reaches the terminal boundary; leave a clear visible margin.");
           if (phase.typical_width_fraction<.2 || phase.typical_height_fraction<.2) failures.push("The solid is too small to occupy a substantial part of the terminal.");
         }

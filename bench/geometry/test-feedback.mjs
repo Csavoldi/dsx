@@ -1,9 +1,10 @@
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,copyFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';import {join} from 'node:path';import {createHash} from 'node:crypto';import assert from 'node:assert/strict';
 const root=mkdtempSync(join(tmpdir(),'dsx-feedback-'));process.env.GAUNTLET_RUN=root;process.env.GAUNTLET_JUDGE_VERSION='8';
 mkdirSync(join(root,'workspace'));writeFileSync(join(root,'workspace/render.py'),'# fixture\n');writeFileSync(join(root,'started.json'),JSON.stringify({pane:'%999'}));
 const hash=createHash('sha256').update(readFileSync(join(root,'workspace/render.py'))).digest('hex');const handlers={};
-const {default:install}=await import(new URL('./acceptance-stop.ts',import.meta.url));install({on:(name,f)=>handlers[name]=f,setActiveTools:()=>{}});
+copyFileSync(new URL('./acceptance-stop.ts',import.meta.url),join(root,'acceptance-stop.ts'));
+const {default:install}=await import(new URL('file://'+join(root,'acceptance-stop.ts')));install({on:(name,f)=>handlers[name]=f,setActiveTools:()=>{}});
 try{
  writeFileSync(join(root,'latest-check.json'),JSON.stringify({pass:false,judge_version:8,source_sha256:hash,renderer:{phases:[{max_dots:100,typical_width_fraction:.5,typical_height_fraction:.5,frame_certification:{supported_full_frame:true,shaded_frame_fraction:0,max_ghost_fraction:0}}]}}));
  const event={toolName:'bash',input:{command:'tmux capture-pane -p -t %999'},content:[{type:'text',text:'⣿'.repeat(30)}],isError:false,toolCallId:'capture'};

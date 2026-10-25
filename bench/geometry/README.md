@@ -105,3 +105,6 @@ counters must still verify persistence and its latency effect in a live run.
 Version 8 records an attempted display capture separately from a successful
 visible-Braille check. A blank capture can therefore receive a functional-failure
 note, while completion still requires the successful check of the current file.
+Each new run archives the harness sources and their hashes in `harness/` and
+loads its extension from that immutable copy. Later development cannot change a
+running task's guard; saved sources identify the behavior behind its receipt.

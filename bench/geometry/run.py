@@ -87,6 +87,11 @@ def main():
     for name in ['workspace','requests','sessions','config','revisions']: (root/name).mkdir()
     config=json.loads((HERE/'models.json').read_text());config['providers']['dsx-cube']['baseUrl']=f'http://127.0.0.1:{a.port}/v1'
     (root/'config/models.json').write_text(json.dumps(config,indent=2)+'\n')
+    # Preserve the actual sources, including an immutable extension for this process.
+    harness=root/'harness';harness.mkdir()
+    names=['run.py','proxy.py','status.py','terminal.py','judge.py','judge_v5.py','judge_v6.py','judge_v7.py','judge_v8.py','acceptance-stop.ts']
+    for name in names:(harness/name).write_bytes((HERE/name).read_bytes())
+    harness_hashes={name:hashlib.sha256((harness/name).read_bytes()).hexdigest() for name in names}
     session='dsx-geometry-'+root.name
     pane=command(['tmux','new-session','-d','-s',session,'-x','110','-y','32','-P','-F','#{pane_id}']).strip()
     task=string.Template((HERE/'PROMPT.md').read_text()).substitute(shape=a.shape,pane=pane,workspace=str(root/'workspace'))
@@ -94,7 +99,7 @@ def main():
     (root/'TASK.md').write_text(task)
     health=json.load(urllib.request.urlopen('http://192.168.0.102:8090/health',timeout=10));assert health['status']=='ok' and health['pending']==0,health
     (root/'host-state.json').write_text(command(['ssh','-o','BatchMode=yes','192.168.0.102','python3 -'],input=(HERE/'host-state.py').read_text()))
-    started={'wall':time.time(),'shape':a.shape,'arm':a.arm,'pane':pane,'contract_version':4,'reasoning':a.reasoning,'seed_base':secrets.randbits(53),'temperature':1.0,'top_p':1.0,'task_sha256':hashlib.sha256(task.encode()).hexdigest(),'health':health,'timeout_s':a.timeout,'server_log':a.server_log,'acceptance_stop':a.acceptance_stop,'judge_version':a.judge_version if a.acceptance_stop else 4,'feedback_mode':'persisted-tool-result' if a.acceptance_stop and a.judge_version>=8 else 'ephemeral-user' if a.acceptance_stop else 'none','normalize_capture_blanks':a.normalize_capture_blanks,'guidance_sha256':hashlib.sha256(a.guidance.read_bytes()).hexdigest() if a.guidance else None}
+    started={'wall':time.time(),'shape':a.shape,'arm':a.arm,'pane':pane,'contract_version':4,'reasoning':a.reasoning,'seed_base':secrets.randbits(53),'temperature':1.0,'top_p':1.0,'task_sha256':hashlib.sha256(task.encode()).hexdigest(),'health':health,'timeout_s':a.timeout,'server_log':a.server_log,'acceptance_stop':a.acceptance_stop,'judge_version':a.judge_version if a.acceptance_stop else 4,'harness_sha256':harness_hashes,'feedback_mode':'persisted-tool-result' if a.acceptance_stop and a.judge_version>=8 else 'ephemeral-user' if a.acceptance_stop else 'none','normalize_capture_blanks':a.normalize_capture_blanks,'guidance_sha256':hashlib.sha256(a.guidance.read_bytes()).hexdigest() if a.guidance else None}
     (root/'started.json').write_text(json.dumps(started,indent=2)+'\n')
     env=dict(os.environ,GAUNTLET_RUN=str(root),GAUNTLET_PORT=str(a.port),PI_CODING_AGENT_DIR=str(root/'config'),PI_TELEMETRY='0',GAUNTLET_SEED_BASE=str(started['seed_base']),GAUNTLET_JUDGE_VERSION=str(a.judge_version),GAUNTLET_NORMALIZE_CAPTURE_BLANKS='1' if a.normalize_capture_blanks else '0');env.pop('NODE_OPTIONS',None)
     proxy_log=(root/'proxy.log').open('w');agent_log=(root/'agent.jsonl').open('w')
@@ -106,7 +111,7 @@ def main():
             except OSError: time.sleep(.1)
         else: raise RuntimeError('proxy did not start')
         args=['pi','--offline','--provider','dsx-cube','--model','deepseek-v4.1-flash:'+a.reasoning,'--tools','read,bash,edit,write','--no-extensions','--no-mcp','--no-skills','--no-prompt-templates','--no-context-files','--session-dir',str(root/'sessions'),'--name',f'DSX {a.shape} {a.arm}','--mode','json','--print',task]
-        if a.acceptance_stop: args[1:1]=['--extension',str(HERE/'acceptance-stop.ts')]
+        if a.acceptance_stop: args[1:1]=['--extension',str(harness/'acceptance-stop.ts')]
         agent=subprocess.Popen(args,cwd=root/'workspace',env=env,stdout=agent_log,stderr=subprocess.STDOUT,start_new_session=True)
         (root/'runtime.json').write_text(json.dumps({'runner_pid':os.getpid(),'agent_pid':agent.pid,'proxy_pid':proxy.pid,'argv':args},indent=2)+'\n')
         last=None;attempt=0;first_pass=False;last_status=0
