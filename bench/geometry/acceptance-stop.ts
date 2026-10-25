@@ -87,8 +87,8 @@ export default function (pi: ExtensionAPI) {
     const payload=event.payload as Record<string,unknown>;
     const messages=payload.messages as Array<unknown> | undefined;
     if (!Array.isArray(messages)) return;
-    if (preserveCompletionPrefix && !accepted) {
-      if (Array.isArray(payload.tools) && payload.tools.length) previousTools=structuredClone(payload.tools);
+    if (preserveCompletionPrefix && !accepted && Array.isArray(payload.tools) && payload.tools.length) {
+      previousTools=structuredClone(payload.tools);
       const first=messages[0] as {role?:string} | undefined;
       if (first?.role==="system" || first?.role==="developer") previousSystem=structuredClone(first);
     }
