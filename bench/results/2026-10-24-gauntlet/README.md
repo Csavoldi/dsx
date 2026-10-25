@@ -14,6 +14,12 @@ The initial mechanical judge accepted a running renderer too readily. Source and
 
 `pilot-receipts.json` binds prompts, summaries, submitted code, reviews, SSE timing records, and server logs by SHA-256. Full raw receipts remain under `/home/lxe/dsx-gauntlet-20261024`. The interrupted longer tetrahedron run is excluded from completion comparisons.
 
-The first implementation candidate combines gate/up preparation and GEMV into paired grid planes, removing two launches per T16 expert layer/store. It is opt-in through `DSX_T16_PAIR_GU=1`. Hardware output fingerprints match in 12 cases covering all three gate layouts and T=1/2/4. Timing is still in progress; this device check alone does not establish a useful speedup or completed coding quality.
+The first implementation candidate combines gate/up preparation and GEMV into paired grid planes, removing two launches per T16 expert layer/store. It is opt-in through `DSX_T16_PAIR_GU=1`. Hardware output fingerprints match in 12 cases covering all three gate layouts and T=1/2/4. The completed timing comparison is recorded below; functional gauntlet validation remains pending.
 
 A separate opt-in `DSX_LOOKUP_AUDIT=1` diagnostic observes causal copy proposals in serial coding output without changing sampling or executing verification. It will measure whether prompt-copy speculation has enough opportunity to justify implementation. Unit tests pass, but no live copy-acceptance result or speculative gain has been measured yet.
+
+## Paired gate/up screening
+
+The completed ABBA comparison measured **44.0167 → 44.8244 tokens/s (+1.84%)** across 1,024 forced tokens per path. Every arm used the same compiled binary, 1,239 GPU0 and 2,757 GPU1 resident experts, 14 CPU threads at a temporary 125 W long limit, and 230 W GPU caps. Each process warmed placement with the exact future continuation and then froze it. This isolates a useful kernel candidate under an optimistic cache; it is not measured coding-task acceleration.
+
+Three arms shared the same 4,821 CPU picks per round and full-model logit fingerprint. The first paired arm finished warm-up with 4,867 CPU picks and a different fingerprint, even though expert counts matched; its result remains included in the aggregate. The paired device tests independently matched all 12 layout/token-count cases. [Screening receipts](paired-screen.json) include every arm, hashes, routing counts, hardware maximum, and restoration events. The original serving binary, unchanged model identity, and original CPU power limit were independently verified after the window; the owned GPU lock was released.

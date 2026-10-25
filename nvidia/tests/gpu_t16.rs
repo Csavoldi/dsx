@@ -205,7 +205,7 @@ fn t16_decode_bits() {
     let g = Gpu::new(0).unwrap();
     let c = ExpCfg { n_layers: 1, n_experts: 8, inter: 2304, dim: 5120, lim: 10.0, rot: 0 };
     let mut all = 0xcbf2_9ce4_8422_2325u64;
-    for (gu, dn) in [(GType::T16K15, GType::T16K2), (GType::T16K2, GType::T16K25), (GType::T16K2, GType::T16K2)] {
+    for (gu, dn) in [(GType::T16K15, GType::T16K2), (GType::T16K2, GType::T16K25), (GType::T16K2, GType::T16K2), (GType::T16K25, GType::T16K15)] {
         let mut seed = 0x5eed_b175_0000_0001u64;
         let mats: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..8)
             .map(|_| (random_matrix(gu, c.dim, c.inter, &mut seed), random_matrix(gu, c.dim, c.inter, &mut seed), random_matrix(dn, c.inter, c.dim, &mut seed)))

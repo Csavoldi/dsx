@@ -351,7 +351,7 @@ impl GpuExperts {
             }
         }
         let t16b = if t16.iter().any(|v| v.is_some()) {
-            for n in ["t16d_prep", "t16d_gemv_3", "t16d_gemv_4", "t16d_gemv_5", "t16d_gemv0_3", "t16d_gemv0_4", "t16d_gemv0_5", "t16d_post_gu", "t16d_post_down"] {
+            for n in ["t16d_prep_gu", "t16d_gemv_gu_3", "t16d_gemv_gu_4", "t16d_gemv_gu_5", "t16d_prep", "t16d_gemv_3", "t16d_gemv_4", "t16d_gemv_5", "t16d_gemv0_3", "t16d_gemv0_4", "t16d_gemv0_5", "t16d_post_gu", "t16d_post_down"] {
                 k.insert(n, g.kernel(n)?);
             }
             let (p, d, i) = (MAXT * MAXK, c.dim, c.inter);
@@ -656,7 +656,7 @@ impl GpuExperts {
 
 impl GpuExperts {
     /// T16 layer (t16.cuh t16d_*): per pick, prepare x for gate and up, two GEMVs, swiglu, prepare h, the down
-    /// GEMV, then each token's sum. Eight launches, no host round trip.
+    /// GEMV, then each token's sum. Eight launches (six with paired gate/up), no host round trip.
     #[allow(clippy::too_many_arguments)]
     fn run_t16(&self, g: &Gpu, l: usize, sel: u64, wts: u64, k: usize, t: usize, x: u64, out: u64, kg: usize, kd: usize) -> Result<()> {
         let b = self.t16b.as_ref().unwrap().ptrs();
@@ -687,11 +687,25 @@ impl GpuExperts {
         // DSX_T16_GEMV=0: the GEMV before cp.async staging (same launch and output bits; for A/Bs)
         let old = std::env::var("DSX_T16_GEMV").is_ok_and(|v| v == "0");
         let gemv = |k2: usize| self.k[if old { ["t16d_gemv0_3", "t16d_gemv0_4", "t16d_gemv0_5"] } else { ["t16d_gemv_3", "t16d_gemv_4", "t16d_gemv_5"] }[k2 - 3]];
-        for (role, xp, xd, xs) in [(0, b.xpg, b.xdg, b.xsg), (1, b.xpu, b.xdu, b.xsu)] {
-            g.launch(self.k["t16d_prep"], blocks(picks * dim / 256), 128, 0, &[Arg::P(x), Arg::I(0), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::P(xp), Arg::P(xd), Arg::P(xs)])?;
-        }
-        for (role, xp, xd, xs, part) in [(0, b.xpg, b.xdg, b.xsg, b.pg), (1, b.xpu, b.xdu, b.xsu, b.pu)] {
-            g.launch(gemv(kg), blocks(picks * inter / 32 * T16_SGU), 128, 0, &[Arg::P(xp), Arg::P(xd), Arg::P(xs), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(T16_SGU as i32), Arg::P(part)])?;
+        // Opt-in paired gate/up launches: same helper arithmetic, two independent grid.y planes.
+        // Keep the old path for matched A/Bs in one compiled binary and legacy GEMV experiments.
+        let paired = !old && std::env::var("DSX_T16_PAIR_GU").is_ok_and(|v| v == "1");
+        if paired {
+            let grid = |warps: usize| ((warps as u32).div_ceil(4), 2, 1);
+            g.launch(self.k["t16d_prep_gu"], grid(picks * dim / 256), 128, 0,
+                &[Arg::P(x), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32),
+                  Arg::P(b.xpg), Arg::P(b.xdg), Arg::P(b.xsg), Arg::P(b.xpu), Arg::P(b.xdu), Arg::P(b.xsu)])?;
+            let pair = self.k[["t16d_gemv_gu_3", "t16d_gemv_gu_4", "t16d_gemv_gu_5"][kg - 3]];
+            g.launch(pair, grid(picks * inter / 32 * T16_SGU), 128, 0,
+                &[Arg::P(b.xpg), Arg::P(b.xdg), Arg::P(b.xsg), Arg::P(b.xpu), Arg::P(b.xdu), Arg::P(b.xsu),
+                  Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(T16_SGU as i32), Arg::P(b.pg), Arg::P(b.pu)])?;
+        } else {
+            for (role, xp, xd, xs) in [(0, b.xpg, b.xdg, b.xsg), (1, b.xpu, b.xdu, b.xsu)] {
+                g.launch(self.k["t16d_prep"], blocks(picks * dim / 256), 128, 0, &[Arg::P(x), Arg::I(0), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::P(xp), Arg::P(xd), Arg::P(xs)])?;
+            }
+            for (role, xp, xd, xs, part) in [(0, b.xpg, b.xdg, b.xsg, b.pg), (1, b.xpu, b.xdu, b.xsu, b.pu)] {
+                g.launch(gemv(kg), blocks(picks * inter / 32 * T16_SGU), 128, 0, &[Arg::P(xp), Arg::P(xd), Arg::P(xs), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(role), Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(T16_SGU as i32), Arg::P(part)])?;
+            }
         }
         g.launch(self.k["t16d_post_gu"], blocks(picks * inter / 128), 128, 0, &[Arg::P(b.pg), Arg::P(b.pu), Arg::I(T16_SGU as i32), Arg::P(sel), Arg::P(wts), tab, base, li, e, ki, ti, Arg::I(dim as i32), Arg::I(inter as i32), Arg::I(kg as i32), Arg::F(self.lim), Arg::P(b.h)])?;
         g.launch(self.k["t16d_prep"], blocks(picks * inter / 256), 128, 0, &[Arg::P(b.h), Arg::I(1), Arg::P(sel), tab, base, li, e, ki, ti, Arg::I(2), Arg::I(inter as i32), Arg::I(dim as i32), Arg::I(kd as i32), Arg::P(b.xpd), Arg::P(b.xdd), Arg::P(b.xsd)])?;
