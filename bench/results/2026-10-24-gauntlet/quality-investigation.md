@@ -20,7 +20,7 @@ The candidate groups have one reviewed success in three completed trials; the un
 
 Earlier validation compared deployed af2c154 with f1f53e4 on 1,023 teacher-forced positions under fixed placement and found zero changed F32 values out of 132,253,440. That clears those default builds on that sample, not the new experimental flags or live adaptive behavior. The [earlier report](../2026-10-24-102/README.md) records this evidence.
 
-Paired T16 kernels matched 12 device cases. Three paired-launch timing arms shared the full-model logit fingerprint and routing counts of the corresponding unpaired placement. One paired warm-up ended with different CPU picks and a different fingerprint, despite equal expert counts. Cache state therefore needs to be controlled rather than inferred from resident counts.
+Paired T16 kernels matched 12 device cases. Three of the four timing arms shared the same full-model logit fingerprint and routing counts. One paired warm-up ended with different CPU picks and a different fingerprint, despite equal expert counts. Cache state therefore needs to be controlled rather than inferred from resident counts.
 
 GPU sampling matched all 768 sampled token choices on the tested forced model outputs, and all 512 synthetic full-vocabulary draws. Matching samples does not prove unchanged distributions: the GPU uses FP32 exponentials while the CPU uses FP64. Full-vocabulary KL has **not** been measured for the failed coding trajectory or the new sampler path under live adaptation.
 
