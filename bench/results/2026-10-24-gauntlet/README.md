@@ -265,3 +265,12 @@ tokens/s; client usage is available for 12 responses. The program loses shading
 when it packs face masks as boolean coverage and has a broken frame-rate delay.
 The hard cap successfully limits planning per request but does not establish a
 quality or end-to-end performance gain. The weight file is unchanged.
+
+A second [ABBA prefill screen](aux-prefill-w4-screen.json) reduces GPU1's streamed
+share with `DSX_STREAM_MAIN_W=4`, using the same executable and identical full
+expert membership in all four arms. Warm full-prompt throughput rises from
+462.261 to 472.444 tokens/s (+2.203%); the 256- and 64-token increments change by
+-0.171% and +0.254%. Forced-decode changes remain below 0.7%. CPU peaks at the
+recorded limit-safe temperature, and the original server, power settings and
+model identity are restored. This small full-prompt gain needs a live workflow
+and quality check before adoption; it does not imply faster agent completion.
