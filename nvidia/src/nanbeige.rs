@@ -470,7 +470,7 @@ impl Nanbeige {
         let part_size = if kv_bits == 3 { std::env::var("DSX_NB_PART_SIZE").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(32768) } else { 128 };
         ensure!([8192,16384,32768].contains(&part_size) || kv_bits==16,"invalid attention partition size");
         let prefill_batch = if kv_bits == 3 { std::env::var("DSX_NB_BATCH").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(512) } else { 32 };
-        ensure!((32..=1024).contains(&prefill_batch) && prefill_batch % 32 == 0, "prefill batch must be a multiple of 32 up to 1024");
+        ensure!((32..=2048).contains(&prefill_batch) && prefill_batch % 32 == 0, "prefill batch must be a multiple of 32 up to 2048");
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("config.json"))?)?;
         for (key, value) in [
@@ -882,8 +882,8 @@ impl Nanbeige {
             g.htod(self.ids.ptr, tokens)?;
         }
         g.htod(self.position.ptr, &[self.pos as i32])?;
-        let gqa = self.kv_bits == 3 && t <= 9 && (t > 1 || self.pos >= 2048);
-        let part_size = if gqa { 512 } else if self.kv_bits == 3 && t == 1 {
+        let gqa = self.kv_bits == 3 && t <= 9 && self.pos >= 2048;
+        let part_size = if gqa { 512 } else if self.kv_bits == 3 && t <= 9 {
             128
         } else {
             self.part_size
@@ -1038,10 +1038,10 @@ impl Nanbeige {
                         Arg::I(t as i32),
                     ],
                 )?;
-                if t <= 9 && (t > 1 || self.pos >= 2048) {
+                if t <= 9 && self.pos >= 2048 {
                     g.launch(g.kernel("nb_attn_q3_gqa")?,(8,splits as u32,t.div_ceil(4) as u32),256,48*1024,&[Arg::P(self.q.ptr),Arg::P(l.kc.ptr),Arg::P(l.vc.ptr),Arg::P(l.kr),Arg::P(l.vr),Arg::P(self.tmp.ptr),Arg::P(self.position.ptr),Arg::I(self.ctx as i32),Arg::I(t as i32),Arg::I(splits as i32),Arg::I(0)])?;
                     launch(g,"nb_attn_merge",(56,t as u32,1),128,&[Arg::P(self.tmp.ptr),Arg::P(self.att.ptr),Arg::I(t as i32),Arg::I(splits as i32)])?;
-                } else if t > 1 {
+                } else if t > 9 {
                     for offset in (0..t).step_by(512) {
                         let n = (t - offset).min(512);
                         g.launch(
@@ -1132,7 +1132,7 @@ impl Nanbeige {
                     ],
                 )?;
             }
-            if self.kv_bits == 16 || (t == 1 && self.pos < 2048) {
+            if self.kv_bits == 16 || (t <= 9 && self.pos < 2048) {
                 launch(
                     g,
                     "nb_attn_merge",
