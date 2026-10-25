@@ -6,7 +6,8 @@ import collections,math,re
 CSI=re.compile(r'\x1b\[([0-9;?]*)([A-Za-z])')
 DEFAULT=(220,220,220)
 class Screen:
-    def __init__(self,cols,rows):
+    def __init__(self,cols,rows,*,synchronized_updates=False):
+        self.synchronized_updates=synchronized_updates
         self.cols,self.rows=cols,rows;self.x=self.y=0;self.wrap=False;self.color=DEFAULT;self.unknown=set();self.written=set();self.clear()
     def clear(self):self.cells=[[(' ',DEFAULT) for _ in range(self.cols)] for _ in range(self.rows)]
     def erase(self,mode,line=False):
@@ -47,7 +48,7 @@ class Screen:
                         elif 30<=v<=37:self.color=tuple(205 if (v-30)&bit else 0 for bit in [1,2,4])
                         elif v not in [1,2,22]:self.unknown.add('SGR '+str(v))
                         j+=1
-                elif private and cmd in 'hl' and values[0] in [25,1049,7]:
+                elif private and cmd in 'hl' and (values[0] in [25,1049,7] or (self.synchronized_updates and values[0]==2026)):
                     if values[0]==1049 and cmd=='h':self.clear();self.x=self.y=0
                 else:self.unknown.add(raw+cmd)
                 continue
@@ -75,10 +76,10 @@ def shade_check(screen):
     density_shading=any(abs(a-b)>=2 for a in significant_density for b in significant_density)
     return color_shading or density_shading
 
-def certify(frames,cols,rows):
-    screen=Screen(cols,rows);checks=[]
+def certify(frames,cols,rows,*,synchronized_updates=False):
+    screen=Screen(cols,rows,synchronized_updates=synchronized_updates);checks=[]
     for frame in frames:
-        screen.written.clear();screen.feed('\x1b[H'+frame);fresh=Screen(cols,rows);fresh.feed('\x1b[H'+frame)
+        screen.written.clear();screen.feed('\x1b[H'+frame);fresh=Screen(cols,rows,synchronized_updates=synchronized_updates);fresh.feed('\x1b[H'+frame)
         actual=screen.dots();clean=fresh.dots();ghost=len(actual-clean)/max(len(actual),1)
         checks.append({'ghost_fraction':ghost,'shading':shade_check(screen),'written_fraction':len(screen.written)/(cols*rows),'unknown_controls':sorted(screen.unknown|fresh.unknown)})
     checks=checks[2:]

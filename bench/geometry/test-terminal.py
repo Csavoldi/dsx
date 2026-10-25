@@ -1,6 +1,12 @@
 import unittest
 from terminal import Screen,certify,split_frames
 class TerminalCertification(unittest.TestCase):
+    def test_synchronized_updates_need_explicit_reader_support(self):
+        payload='\x1b[?2026h'+'\r\n'.join(['⠿'*10+'⣿'*10]*8)+'\x1b[?2026l'
+        self.assertFalse(certify([payload]*8,20,10)['pass'])
+        self.assertTrue(certify([payload]*8,20,10,synchronized_updates=True)['pass'])
+        s=Screen(20,10,synchronized_updates=True);s.feed(payload);self.assertFalse(s.unknown)
+        self.assertEqual(len(s.dots()),160)
     def test_duplicate_home_does_not_create_a_frame(self):
         payload='\r\n'.join(['⠿'*10+'⣿'*10]*8)
         one='\x1b[H'+payload

@@ -73,9 +73,11 @@ def summarize(root):
     (root/'summary.json').write_text(json.dumps(result,indent=2)+'\n');return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('shape',choices=EXPECTED);p.add_argument('root',type=pathlib.Path);p.add_argument('--arm',default='stock');p.add_argument('--timeout',type=int,default=360);p.add_argument('--reasoning',choices=['off','low'],default='off');p.add_argument('--port',type=int,default=8987);p.add_argument('--guidance',type=pathlib.Path);p.add_argument('--server-log',default='/home/lxe/ai/ds41/serve.out');p.add_argument('--acceptance-stop',action='store_true');p.add_argument('--judge-version',type=int,choices=[5,7],default=5);p.add_argument('--normalize-capture-blanks',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('shape',choices=EXPECTED);p.add_argument('root',type=pathlib.Path);p.add_argument('--arm',default='stock');p.add_argument('--timeout',type=int,default=360);p.add_argument('--reasoning',choices=['off','low'],default='off');p.add_argument('--port',type=int,default=8987);p.add_argument('--guidance',type=pathlib.Path);p.add_argument('--server-log',default='/home/lxe/ai/ds41/serve.out');p.add_argument('--acceptance-stop',action='store_true');p.add_argument('--judge-version',type=int,choices=[5,7,8],default=5);p.add_argument('--normalize-capture-blanks',action='store_true');a=p.parse_args()
     if a.normalize_capture_blanks and not a.acceptance_stop:p.error('--normalize-capture-blanks requires --acceptance-stop')
-    if a.acceptance_stop and a.judge_version==7:
+    if a.acceptance_stop and a.judge_version==8:
+        from judge_v8 import judge as selected_judge
+    elif a.acceptance_stop and a.judge_version==7:
         from judge_v7 import judge as selected_judge
     elif a.acceptance_stop:
         from judge_v5 import judge as selected_judge

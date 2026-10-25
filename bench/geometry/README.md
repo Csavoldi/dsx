@@ -85,3 +85,11 @@ implementation without long docstrings or unrelated scaffolding. It supplies no
 rendering algorithm or geometry. Label these tasks separately: the added prompt
 can change generated solutions, and reduced output tokens alone do not prove
 better completion. The complete task and guidance hash are recorded.
+
+Standalone `judge_v8.py` adds support for synchronized-update mode (`CSI ?2026 h/l`).
+That mode brackets when a terminal displays a redraw and does not change cell
+coordinates or shading. Versions 5–7 retain their original control support;
+version 8 opts into the additional mode and is selectable explicitly with
+`--acceptance-stop --judge-version 8`. Retrospective artifact certification must
+remain separate from the original agent timeout and completion result. Human
+review still checks geometry and centering that automated extents cannot prove.
