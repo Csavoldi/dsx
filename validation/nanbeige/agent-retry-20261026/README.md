@@ -1,0 +1,15 @@
+# Nanbeige agent configuration retry
+
+The user requested a new practical-use attempt, research into Pi settings, an asciinema recording, live streaming TPS, and an independent throughput/cache observer. The active local session is `nanbeige-doom`; Pi is above the preview. All model-generated game files and complete private session/request logs remain under `/home/lxe/gauntlet-nanbeige-doom/20261026-config-retry`.
+
+The official model card recommends temperature 1.0, top-p 0.95, 65,536 maximum new tokens, retained reasoning for agent work, and XML tools. The initial observed Pi requests matched those settings. Pi's low setting only toggles this model's binary thinking switch; it does not enforce a reasoning budget. Its prior configuration therefore cannot be declared the cause of overthinking.
+
+The first retry made incorrect tmux queries, then continued planning without saving code. Its terminal failure was a reproducible tokenizer streaming error on a malformed Unicode byte-fallback run, not a user cancellation. The new decoder matches the complete configured Replace/ByteFallback/Fuse/Strip pipeline and buffers byte runs until their meaning is stable. Regression tests reproduce the original error and compare Unicode, malformed-byte, leading-space, long-run and EOF outputs against full decoding.
+
+A subsequent thinking-off attempt looped over echo/tmux checks after the recorder's read-only client prevented send-keys. The recorder now uses a normal headless attach with TERM set explicitly; control commands were verified. A staged write-only first milestone produced a 7,800-byte Python file at 51.54 backend TPS. Full tools were then restored in a fresh stage for execution, repairs, and combat features. This is assisted practical-use experimentation, not an unchanged gauntlet score. Saving a file does not establish task completion.
+
+The new `/metrics/progress` endpoint counts emitted model tokens, including reasoning and tool arguments. It reports a rolling two-second rate and a whole-response decode rate excluding the first token. The tmux status bar displays those rates, output count, and prompt-plus-output sequence length. It labels queue/prefill separately so stale previous-request rates are not presented as current decode. Sequence length is not a measurement of allocated or populated KV memory.
+
+The observer found high GPU activity, substantial prefix reuse, and a strong short-context attention partition candidate in the existing isolated measurements. Its report separates useful-code throughput from repetitive tool loops. No competing GPU benchmark ran during the gauntlet. The optional 4.0 bpw decoder candidate is downloading for a future same-runner comparison; quality, hardware fit, end-to-end speed and task success remain unmeasured.
+
+Sources: https://huggingface.co/Nanbeige/Nanbeige4.3-33B and https://huggingface.co/Luni/Nanbeige-4.3-33B-EXL3/tree/4.00bpw. Published quantization metrics on different corpora are not directly comparable to our 128-target reference sample.

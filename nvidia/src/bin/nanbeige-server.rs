@@ -2,6 +2,10 @@
 use anyhow::{Result, anyhow, ensure};
 #[path = "nanbeige/tool_stream.rs"]
 mod tool_stream;
+#[path = "nanbeige/progress.rs"]
+mod progress;
+#[path = "nanbeige/decoder.rs"]
+mod decoder;
 use axum::{
     Json, Router,
     extract::State,
@@ -53,6 +57,7 @@ struct App {
     engine: EngineHandle,
     tok: Tokenizer,
     ctx: usize,
+    progress: std::sync::Mutex<progress::LiveProgress>,
 }
 fn python_json(v: &Value) -> String {
     match v {
@@ -274,7 +279,7 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
             reasoning: String::new(),
         };
         let mut tool_stream = tool_stream::ToolStream::default();
-        let mut decoder = app.tok.decode_stream(false);
+        let mut decoder = decoder::Decoder::new(&app.tok);
         let started = std::time::Instant::now();
         let mut first_token = None;
         let mut count: usize = 0;
@@ -289,6 +294,8 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
                 EngineEvent::Token(t) => {
                     first_token.get_or_insert_with(std::time::Instant::now);
                     count += 1;
+                    let phase=if parser.thinking {"reasoning"} else if parser.pending.contains("<tool_call>") {"tool"} else {"content"};
+                    app.progress.lock().unwrap().token(&id,prompt_tokens,count,phase,std::time::Instant::now());
                     match decoder.step(t) {
                         Ok(Some(piece)) => {
                             for (k, v) in parser.push(&piece, false) {
@@ -320,6 +327,9 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
                     break;
                 }
             }
+        }
+        if let Some(piece)=decoder.finish() {
+            for (k,v) in parser.push(&piece,false) {send(chunk(&id,json!({k:v}),Value::Null));}
         }
         // Keep complete XML calls out of content; send them as structured tool_calls.
         let tooltext = parser
@@ -356,6 +366,7 @@ async fn start(app: Arc<App>, req: Value) -> Result<Response> {
                 }
             }
         }
+        app.progress.lock().unwrap().finish(&id,if tx.is_closed() && stream {"cancelled"} else if error.is_some() {"error"} else {finish});
         if let Some(e) = error {
             send(json!({"error":{"message":e}}));
             let _ = result_tx.send(Err(e));
@@ -405,6 +416,9 @@ async fn props(State(s): State<Arc<App>>) -> Json<Value> {
         json!({"default_generation_settings":{"id":0,"id_task":-1,"n_ctx":s.ctx,"is_processing":s.engine.pending()>0,"params":{"n_predict":-1,"temperature":1.,"top_k":0,"top_p":0.95,"min_p":0.,"max_tokens":4096,"stream":true,"stop":[],"samplers":["top_p","temperature"],"chat_format":"Nanbeige","reasoning_format":"deepseek","reasoning_in_content":false}},"total_slots":1,"model_path":"nanbeige4.3-33b","model_alias":"nanbeige4.3-33b","role":"model","modalities":{"vision":false,"audio":false,"video":false},"chat_template":include_str!("../../templates/nanbeige.jinja"),"bos_token":"<|im_start|>","eos_token":"<|im_end|>","build_info":"DSX Nanbeige SM120","ui_settings":{}}),
     )
 }
+async fn live_progress(State(s): State<Arc<App>>) -> Json<Value> {
+    Json(s.progress.lock().unwrap().snapshot(s.engine.pending(),s.ctx,std::time::Instant::now()))
+}
 async fn slots(State(s): State<Arc<App>>) -> Json<Value> {
     Json(json!([{"id":0,"n_ctx":s.ctx,"is_processing":s.engine.pending()>0}]))
 }
@@ -417,6 +431,7 @@ async fn main() -> Result<()> {
     }
     tracing_subscriber::fmt().with_env_filter("info").init();
     let tok = Tokenizer::from_file(a.model.join("tokenizer.json")).map_err(|e| anyhow!("{e}"))?;
+    decoder::validate(&tok)?;
     let ctx = a.ctx;
     let model = a.model.clone();
     let ng = a.no_graphs;
@@ -431,8 +446,8 @@ async fn main() -> Result<()> {
         engine.lookup = lookup;
         Ok(Box::new(engine))
     })?;
-    let app = Arc::new(App { engine, tok, ctx });
-    let router=Router::new().route("/health",get(||async{Json(json!({"status":"ok","engine":"DSX Nanbeige"}))})).route("/v1/models",get(||async{Json(json!({"object":"list","data":[{"id":"nanbeige4.3-33b","object":"model","owned_by":"local"}]}))})).route("/v1/chat/completions",post(chat)).route("/props",get(props)).route("/slots",get(slots)).route("/tools",get(dsx::server::webui::no_tools)).route("/v1/chat/completions/streams",get(dsx::server::webui::no_streams)).fallback(dsx::server::webui::asset).with_state(app);
+    let app = Arc::new(App { engine, tok, ctx, progress: std::sync::Mutex::new(progress::LiveProgress::default()) });
+    let router=Router::new().route("/health",get(||async{Json(json!({"status":"ok","engine":"DSX Nanbeige"}))})).route("/v1/models",get(||async{Json(json!({"object":"list","data":[{"id":"nanbeige4.3-33b","object":"model","owned_by":"local"}]}))})).route("/v1/chat/completions",post(chat)).route("/props",get(props)).route("/slots",get(slots)).route("/metrics/progress",get(live_progress)).route("/tools",get(dsx::server::webui::no_tools)).route("/v1/chat/completions/streams",get(dsx::server::webui::no_streams)).fallback(dsx::server::webui::asset).with_state(app);
     let listener = tokio::net::TcpListener::bind((a.host.as_str(), a.port)).await?;
     eprintln!("DSX Nanbeige listening on {}:{}", a.host, a.port);
     axum::serve(listener, router).await?;
