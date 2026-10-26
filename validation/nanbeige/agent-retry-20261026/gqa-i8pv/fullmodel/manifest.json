@@ -1,0 +1,43 @@
+{
+  "prepared_utc": "2026-10-26T17:20:11.994339+00:00",
+  "binary_source": "/home/lxe/dsx-nanbeige/target/release/dsx-nanbeige",
+  "binary_sha256": "f1f44d9ac59bb722b8a5ede370d1dbcbec97e3f317698f8db99d40a9b7aa48b4",
+  "model": "/home/lxe/nanbeige-runner/quant-exl3/result",
+  "capacity": 262144,
+  "kv_bits": 3,
+  "head_bits": 4,
+  "host_embedding": true,
+  "lookup": 0,
+  "sampling": "greedy, max128, EOS may stop early",
+  "fixed_environment": {
+    "DSX_NB_BATCH": "4096",
+    "DSX_NB_ATTN8": "2",
+    "DSX_NB_PART_SIZE": "16384",
+    "DSX_NB_EXL3_NARROW": "1",
+    "DSX_NB_EXL3_EXPERIMENT": "pf4"
+  },
+  "ppl_input_tokens": 4096,
+  "ppl_targets": 128,
+  "ppl_prefill_tokens": 3968,
+  "inputs": {
+    "4096": {
+      "path": "/home/lxe/nanbeige-runner/research-256k/wiki-4096.tokens.json",
+      "sha256": "06fcb6decff12d6e790f5dde4b7366edc6ce4f4208808699ac4ea10822ca8672"
+    },
+    "32768": {
+      "path": "/home/lxe/nanbeige-runner/research-256k/wiki-32768.tokens.json",
+      "sha256": "3749cf184811cbc20e0c2e26fdae15b6c73bf375e3cbf112741692fa5cbcc8db"
+    },
+    "65536": {
+      "path": "/home/lxe/gauntlet-nanbeige-doom/20261026-config-retry/receipts/throughput-monitor/gqa-i8pv/fullmodel/wiki-repeated-65536.tokens.json",
+      "sha256": "3d951562b0bae14fa83a43867628c22b55274ba83a5f1ec58c00e0b262db3285"
+    }
+  },
+  "limitations": [
+    "64K input repeats WikiText32K twice and is synthetic",
+    "WikiText continuation decode is not representative task completion",
+    "Output IDs may diverge because INT8 attention is approximate",
+    "Clocks are not locked; sequential pairs are not statistical confidence intervals",
+    "No source server deployment; baseline service restored in finally"
+  ]
+}

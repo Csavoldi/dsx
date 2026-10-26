@@ -1,0 +1,57 @@
+loading layer 0/52
+loading layer 1/52
+loading layer 2/52
+loading layer 3/52
+loading layer 4/52
+loading layer 5/52
+loading layer 6/52
+loading layer 7/52
+loading layer 8/52
+loading layer 9/52
+loading layer 10/52
+loading layer 11/52
+loading layer 12/52
+loading layer 13/52
+loading layer 14/52
+loading layer 15/52
+loading layer 16/52
+loading layer 17/52
+loading layer 18/52
+loading layer 19/52
+loading layer 20/52
+loading layer 21/52
+loading layer 22/52
+loading layer 23/52
+loading layer 24/52
+loading layer 25/52
+loading layer 26/52
+loading layer 27/52
+loading layer 28/52
+loading layer 29/52
+loading layer 30/52
+loading layer 31/52
+loading layer 32/52
+loading layer 33/52
+loading layer 34/52
+loading layer 35/52
+loading layer 36/52
+loading layer 37/52
+loading layer 38/52
+loading layer 39/52
+loading layer 40/52
+loading layer 41/52
+loading layer 42/52
+loading layer 43/52
+loading layer 44/52
+loading layer 45/52
+loading layer 46/52
+loading layer 47/52
+loading layer 48/52
+loading layer 49/52
+loading layer 50/52
+loading layer 51/52
+weights and KV placed; free 9114 MiB
+Training School ( RATS) at Duxford in 1946 – 1947. Posted back to Australia at the = = Post war career = =
+
+Posted back to Australia at the end of 1947, Headlam held staff appointments and training commands. During the Malayan Emergency , he was stationed at Singapore as commander of No. 90 ( Composite ) Wing and , later , RAF Tengah. He twice served as acting Air Member for Personnel in 1957 and 1959 – 60, receiving appointment as a Commander of the Order of the
+{"engine":"dsx-nanbeige","quant":"EXL3 mul1","simt_decode":false,"cuda_graphs":true,"prefill_one":false,"gpu_free_bytes":6823608320,"attention_partition_tokens":"16384","prefill_batch":"4096","prefill_attention":"2","weights":"EXL3 mul1","ctx":262144,"head_q8":false,"head_bits":4,"kv_bits":3,"host_embedding":true,"input_tokens":4096,"output_tokens":128,"load_seconds":1.073446127,"prefill_seconds":1.9962474380000002,"decode_seconds":3.47412475,"prefill_tps":2051.8498468825587,"decode_tps":36.84381224364496,"output_ids":[13524,3732,326,385,59247,152373,417,379,2464,5231,289,152343,152367,152398,152395,152408,1027,152343,152367,152398,152395,152413,152361,9067,1135,298,7365,417,269,374,374,3582,2705,6022,374,374,13,13,31385,1135,298,7365,417,269,1012,290,152343,152367,152398,152395,152413,152363,11781,6605,5066,4579,36486,297,2924,16749,152361,5980,269,6463,30969,25058,1117,430,439,86612,417,17328,361,43811,290,2105,152361,152343,152398,152368,326,48731,1583,41591,297,1117,2725,1117,106117,83052,1321,152361,949,9615,8340,361,12063,6606,14582,337,74234,289,152343,152367,152398,152394,152413,297,152343,152367,152398,152394,152398,1027,152343,152408,152368,152363,8432,19608,361,261,56517,290,269,13281,290,269],"text":"Training School ( RATS) at Duxford in 1946 – 1947. Posted back to Australia at the = = Post war career = =\n\nPosted back to Australia at the end of 1947, Headlam held staff appointments and training commands. During the Malayan Emergency , he was stationed at Singapore as commander of No. 90 ( Composite ) Wing and , later , RAF Tengah. He twice served as acting Air Member for Personnel in 1957 and 1959 – 60, receiving appointment as a Commander of the Order of the"}
