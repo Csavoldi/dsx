@@ -556,6 +556,85 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         println!("  decode top5 {:?}\n  batch  top5 {:?} rel {:.2e}\n  prompt top5 {:?} rel {:.2e}", top(&l1), top(&l2), rel(&l2, &l1), top(&l3), rel(&l3, &l1));
                     }
                     "bdense" => dec.build_bdense()?,
+                    "mem" => {
+                        let (free, total) = dec.g.mem_info()?;
+                        println!("HBM live: {:.3} GB used, {:.3} GB free / {:.3} GB total", (total - free) as f64 / 1e9, free as f64 / 1e9, total as f64 / 1e9);
+                        for slots in [1, 4, 8] {
+                            println!("{slots} slots at 262144: {:.3} GB cache state (workspace excluded)", batch::Batch::state_bytes(&dec, slots, 262144) as f64 / 1e9);
+                        }
+                    }
+                    "batch-mem" => {
+                        let slots: usize = w[1].parse()?;
+                        let ctx: usize = w[2].parse()?;
+                        let b = dec.new_batch(slots, ctx)?;
+                        let (free, total) = dec.g.mem_info()?;
+                        println!("batch-mem slots={slots} ctx={ctx}: {:.3} GB live used, {:.3} GB free (allocated batch retained during measurement)", (total - free) as f64 / 1e9, free as f64 / 1e9);
+                        drop(b);
+                    }
+                    "dense-clear" => {
+                        dec.g.sync()?;
+                        dec.graph = None;
+                        dec.vgraphs.borrow_mut().clear();
+                        dec.bgraphs.borrow_mut().clear();
+                        dec.bseen.borrow_mut().clear();
+                        dec.bdense.clear();
+                        println!("duplicate BF16 dense weights released");
+                    }
+                    "draft-dump" => {
+                        let dir = std::path::Path::new(w[1]);
+                        std::fs::create_dir_all(dir)?;
+                        anyhow::ensure!(dec.dspark.is_some(), "load draft first");
+                        let tok = tokenizers::Tokenizer::from_file(model.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let chat = "<｜begin▁of▁sentence｜><｜User｜>Write a Python function that merges two sorted lists, with tests.<｜Assistant｜></think>";
+                        let pr = tok.encode(chat, false).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().to_vec();
+                        dec.reset()?;
+                        let next = dec.prefill(&pr)?;
+                        let n = dec.pos;
+                        let block = dec.dspark.as_ref().unwrap().block;
+                        let nwin = n.min(128);
+                        let mh = dec.pf.as_ref().unwrap().dspark_bufs().0;
+                        let hidden: Vec<f32> = dec.g.dtoh(mh + ((n - nwin) * 3 * decode::D * 4) as u64, nwin * 3 * decode::D)?;
+                        let bytes = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+                        std::fs::write(dir.join("main-hidden.f32"), bytes(&hidden))?;
+                        let mut b = dec.new_batch(1, 8192)?;
+                        dec.load_slot(&mut b, 0)?;
+                        for (i, ring) in b.drings.iter().enumerate() {
+                            let raw: Vec<u8> = dec.g.dtoh(ring.ptr, (128 + 16) * decode::HD * 2)?;
+                            std::fs::write(dir.join(format!("ring-{i}.bf16")), raw)?;
+                        }
+                        let drafts = dec.batch_draft(&mut b, &[0], &[next])?;
+                        for (label, ptr) in [("norm-hi", b.xb.ptr), ("norm-lo", b.xl.ptr)] {
+                            let raw: Vec<u8> = dec.g.dtoh(ptr, block * decode::D * 2)?;
+                            std::fs::write(dir.join(format!("{label}.bf16")), raw)?;
+                        }
+                        let lg: Vec<f32> = dec.g.dtoh(b.logits.ptr, decode::VOCAB)?;
+                        std::fs::write(dir.join("first-logits-markov.f32"), bytes(&lg))?;
+                        let meta = serde_json::json!({"position": n, "anchor": next, "block": block, "drafts": drafts[0], "ring_mod": 144, "window": 128, "dim": decode::D, "head_dim": decode::HD});
+                        std::fs::write(dir.join("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
+                        println!("frozen draft saved to {}: {meta}", dir.display());
+                    }
+                    "draft-load" => {
+                        anyhow::ensure!(dec.dspark.is_none(), "draft stack already loaded");
+                        let fmt = dspark::bits_from_env().ok_or_else(|| anyhow::anyhow!("set DSXA_DSPARK before draft-load"))?;
+                        let (free, _) = dec.g.mem_info()?;
+                        anyhow::ensure!(free > dspark::bytes(fmt) + (1 << 30), "not enough free HBM for draft stack and workspace");
+                        dec.g.sync()?;
+                        dec.graph = None;
+                        dec.vgraphs.borrow_mut().clear();
+                        dec.bgraphs.borrow_mut().clear();
+                        dec.bseen.borrow_mut().clear();
+                        dec.load_dspark(model)?;
+                        println!("draft stack loaded without changing main-model expert placement");
+                    }
+                    "draft-unload" => {
+                        dec.g.sync()?;
+                        dec.graph = None;
+                        dec.vgraphs.borrow_mut().clear();
+                        dec.bgraphs.borrow_mut().clear();
+                        dec.bseen.borrow_mut().clear();
+                        dec.dspark = None;
+                        println!("draft stack unloaded");
+                    }
                     "plogit" => {
                         // plogit N: prefill N eval tokens from empty, print the top-5 and the rel. difference of the last
                         // logits from the previous plogit's (A/B of prompt-path settings)

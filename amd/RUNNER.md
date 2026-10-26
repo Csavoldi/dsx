@@ -1,9 +1,10 @@
-# dsx-amd batched runner: plan
+# dsx-amd batched runner development log
 
 Status: implementation and measurement log through rental 7, October 23, 2026. The rental ended and the droplet
 and account SSH key were deleted (see [rental ledger](box/RENTALS.md)); no runner service remains from that demo.
 Budget figures below describe those completed runs. Proposed next items are not running jobs or renewed rental
-authorization. The original single-sequence path is documented separately in [README.md](README.md).
+authorization. The current serving instructions and later rental-8 profile are in [README.md](README.md) and
+[box/AGENTIC_MI325X.md](box/AGENTIC_MI325X.md).
 
 Goal (lxe, 2026-10-23): a Volta / pocket-engine style batched inference runner for DeepSeek-V4.1-Flash on one
 MI325X, with maximum throughput for one session and for many sessions at up to 256K context. Budget $100 of
@@ -112,7 +113,7 @@ Ranking by the gap each next item closes:
 4. B >= 64: experts read at ~3.7 TB/s and dominate; closing to 5 TB/s is ~25% of the step, but the 3-bit decode is
    ALU-bound (171 VALU per 64 weights); no format change passes the budget yet.
 
-## Demo: 8 agentic sessions at 256K context, ~92 tok/s each (staged by lxe for later)
+## Historical demo recipe: 8 sessions at 256K (October 23, 2026)
 
 Measured on rental 3 (2026-10-23 ~03:00 PT): 8 sessions share a ~258K-token prefix of source files, each asks for a
 different file rewritten in full; prompt-lookup speculation gives 91.5 tok/s per session (732 total) against 64.2
@@ -133,7 +134,8 @@ Reproduce (commit at or after this section):
 For a client-facing demo use `dsx-amd serve --slots 8 --batch-ctx 262144 --ctx 262200` (same environment), the
 OpenAI-compatible server on port 8090 with continuous batching and prefix reuse; `--admin-port 8091` adds Volta's admin dashboard (`/`) and `/stats`, and `--temperature 0.6 --top-p
 0.95` matches Volta's gauntlet sampling (sampled sessions still speculate: exact speculative sampling). The gauntlet copy is
-`~/gauntlet-amd` (setup.sh, start.sh, watch.sh; Pi provider `dsx-amd` at localhost:9090).
+`~/gauntlet-amd` (setup.sh, start.sh, watch.sh; Pi provider `dsx-amd` at localhost:9090). These are external
+paths on the demo workstation, not files installed by cloning this repository. No rental from this recipe remains active.
 
 ## Single-session expert products: sweep and counters (rental 6, 2026-10-23 04:22-04:44 PT)
 

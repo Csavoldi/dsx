@@ -1,6 +1,6 @@
 # DSX Nanbeige Rust and CUDA runner
 
-This branch runs the dense Nanbeige4.3-33B model in DSX's Rust and CUDA runtime on an RTX 5090. It supports native NVFP4 weights and standard EXL3 `mul1` trellis weights, an OpenAI-compatible API, the embedded DSX web UI, and Pi tool calls. Inference does not launch vLLM, PyTorch, or llama.cpp. The EXL3 conversion and independent reference evaluations use ExLlamaV3 and PyTorch separately.
+DSX runs the dense Nanbeige4.3-33B model in DSX's Rust and CUDA runtime on an RTX 5090. It supports native NVFP4 weights and standard EXL3 `mul1` trellis weights, an OpenAI-compatible API, the embedded DSX web UI, and Pi tool calls. Inference does not launch vLLM, PyTorch, or llama.cpp. The EXL3 conversion and independent reference evaluations use ExLlamaV3 and PyTorch separately.
 
 The fork started at DSX commit `53819a1781527e9e4f2c09ded29ba666dc9fc84f`. It retains DSX's GPU boundary, safetensors reader, sampler, FIFO engine worker, cancellation handling, and web UI. Nanbeige's dense Llama execution is separate from DeepSeek's MoE, MLA, Engram, and expert streaming paths.
 
@@ -61,7 +61,7 @@ The new attention path increased perplexity by 0.234% on 128 targets, with mean 
 
 ## Earlier 2.5 bpw short-context performance
 
-The `nanbeige` branch is intended for integration into DSX `main`; it currently builds a separate `dsx-nanbeige-server` binary. The deployed EXL3 configuration uses four-row trellis prefetching, lookup width 3, 3-bit KV, a 4-bit runtime head, and CPU embedding lookup. Verification-batch graphs remain off.
+The Nanbeige backend is integrated into DSX `main` and builds a separate `dsx-nanbeige-server` binary. The deployed EXL3 configuration uses four-row trellis prefetching, lookup width 3, 3-bit KV, a 4-bit runtime head, and CPU embedding lookup. Verification-batch graphs remain off.
 
 | Request | Input tokens | Output tokens | Populated context after generation | Decode tok/s | Accepted / proposed lookup tokens |
 |---|---:|---:|---:|---:|---:|

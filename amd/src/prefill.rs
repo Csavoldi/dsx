@@ -3,6 +3,9 @@
 //! had been decoded, and returning the greedy next token.
 
 use crate::decode::*;
+pub(crate) static BGRAPH_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub(crate) static GRAPH_EPOCH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static MERGE_OUT_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 use crate::hip::{Arg, Buf, Gpu};
 use anyhow::Result;
 
@@ -473,7 +476,13 @@ impl Decoder {
         let p0a: i32 = if gmode { -1 } else { p0 as i32 };
         // batched steps (DSXA_BGRAPH=1): one HIP graph per (tokens, draft, verify, 16K-position bucket, batch),
         // captured the second time a shape is seen (the first run warms up hipBLASLt); inputs through pinned memory
-        let bgraph = bt.is_some() && std::env::var("DSXA_BGRAPH").map(|v| v == "1").unwrap_or(false) && !g.profiling();
+        let epoch = GRAPH_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+        if self.bgraph_epoch.get() != epoch {
+            self.bgraphs.borrow_mut().clear();
+            self.bseen.borrow_mut().clear();
+            self.bgraph_epoch.set(epoch);
+        }
+        let bgraph = bt.is_some() && match BGRAPH_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) { 1 => false, 2 => true, _ => std::env::var("DSXA_BGRAPH").as_deref() == Ok("1") } && !g.profiling();
         let mut bkey = (0usize, false, false, 0usize, 0u64);
         let mut bcap = false;
         if let (true, Some(b)) = (bgraph, bt) {
@@ -796,8 +805,16 @@ impl Decoder {
                 };
                 self.vlaunch("verify experts gu", vec![ej(0, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.gg.ptr, INTER, 0), ej(1, INTER, D, pf.aq.ptr, pf.as_.ptr, D, pf.uu.ptr, INTER, 0)], self.st.ptr)?;
                 let rtot = t * kk;
-                self.prep(3, pf.gg.ptr, pf.uu.ptr, INTER, 0, 0, pf.wrow.ptr, INTER, rtot, pf.hq.ptr, pf.hs.ptr, 0, pf.hqb.ptr)?;
-                self.prep(3, pf.sg.ptr, pf.su.ptr, INTER, 0, 0, 0, INTER, t, pf.shq.ptr, pf.shs.ptr, 0, pf.shqb.ptr)?;
+                if std::env::var("DSXA_SWIGLU_PAIR").as_deref() == Ok("1") {
+                    g.launch("prep_swiglu_pair_t", ((rtot + t) as u32, INTER.div_ceil(1024) as u32, 1), 256, 0,
+                        &[Arg::I(rtot as i32), Arg::P(pf.gg.ptr), Arg::P(pf.uu.ptr), Arg::P(pf.wrow.ptr),
+                          Arg::P(pf.hq.ptr), Arg::P(pf.hs.ptr), Arg::P(0), Arg::P(pf.hqb.ptr),
+                          Arg::P(pf.sg.ptr), Arg::P(pf.su.ptr), Arg::P(pf.shq.ptr), Arg::P(pf.shs.ptr),
+                          Arg::P(0), Arg::P(pf.shqb.ptr), Arg::F(c.swiglu_limit)])?;
+                } else {
+                    self.prep(3, pf.gg.ptr, pf.uu.ptr, INTER, 0, 0, pf.wrow.ptr, INTER, rtot, pf.hq.ptr, pf.hs.ptr, 0, pf.hqb.ptr)?;
+                    self.prep(3, pf.sg.ptr, pf.su.ptr, INTER, 0, 0, 0, INTER, t, pf.shq.ptr, pf.shs.ptr, 0, pf.shqb.ptr)?;
+                }
                 let mut sj = MmJob::dense(&l.sh_w2, 0, pf.shq.ptr, pf.shs.ptr, INTER, pf.y.ptr, D);
                 sj.ntok = t as i32;
                 sj.yatomic = 1;
@@ -1140,13 +1157,23 @@ impl Decoder {
         let split_max: usize = std::env::var("DSXA_ATTN_SPLIT").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize).min(128);
         if t <= split_max {
             g.launch(
-                "attn_bs",
-                (t as u32, 10, 1),
+                if b.attn_fine { "attn_bs_fine" } else { "attn_bs" },
+                (t as u32, if b.attn_fine {20} else {10}, 1),
                 1024,
                 0,
                 &[Arg::P(bp), Arg::P(bs), Arg::P(pf.q.ptr), Arg::P(b.rings[li].ptr), Arg::P((ring_stride) as u64), Arg::P(comp), Arg::P((cstride) as u64), Arg::P(pf.cidx.ptr), Arg::P(pf.ncomp.ptr), Arg::I(512), Arg::I(WIN as i32), Arg::F(1.0 / (HD as f32).sqrt()), Arg::P(l.sinks.ptr), Arg::P(b.apart.ptr)],
             )?;
-            g.launch("attn_merge_b", (t as u32, NH as u32, 1), 512, 0, &[Arg::P(pf.q.ptr), Arg::P(b.apart.ptr), Arg::P(l.sinks.ptr)])?;
+            let merge_out = match MERGE_OUT_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+                1 => false,
+                2 => true,
+                _ => std::env::var("DSXA_ATTN_MERGE_OUT").as_deref() == Ok("1"),
+            };
+            if merge_out {
+                g.launch(if b.attn_fine {"attn_merge_out_b_fine"} else {"attn_merge_out_b"}, (t as u32, NH as u32, 1), 128, 0,
+                    &[Arg::P(pf.q.ptr), Arg::P(b.apart.ptr), Arg::P(l.sinks.ptr), Arg::P(bp), Arg::P(rf), Arg::P(pf.oq.ptr), Arg::P(pf.os.ptr), Arg::P(pf.oqb.ptr)])?;
+                return Ok(());
+            }
+            g.launch(if b.attn_fine {"attn_merge_b_fine"} else {"attn_merge_b"}, (t as u32, NH as u32, 1), 512, 0, &[Arg::P(pf.q.ptr), Arg::P(b.apart.ptr), Arg::P(l.sinks.ptr)])?;
         } else {
         g.launch(
             "attn_b",

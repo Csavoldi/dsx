@@ -1,0 +1,11 @@
+{
+  "theme": "dark",
+  "quietStartup": true,
+  "collapseChangelog": true,
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 20480,
+    "keepRecentTokens": 32768
+  },
+  "hideThinkingBlock": false
+}

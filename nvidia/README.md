@@ -5,8 +5,8 @@ configuration switches, benchmark provenance and static-residency decode validat
 GPU subcommands such as `gen`, `eval` and `cmp` are absent; the CPU reference and GGUF tools remain available.
 
 DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 128 GB DDR4-3200 (or one RTX 5090).
-Rust + CUDA (cudarc driver API, one nvcc fatbin for sm_86 and sm_120). Config, readers, block formats, the CPU
-reference and the server are in [`../core`](../core) (re-exported as `dsx::model`, `dsx::server`, ...). Plan and
+Rust + CUDA uses the cudarc driver API; `CUDA_ARCHS` selects fatbin targets, default sm_86 and sm_120.
+Config, readers, block formats, the CPU reference and the server are in [`../core`](../core) (re-exported as `dsx::model`, `dsx::server`, ...). Plan and
 numbers: ../DESIGN.md, ../FINDINGS.md, ../bench/RESULTS.md.
 
 ## Build
@@ -41,6 +41,8 @@ Sensitivity: `DSX_NOISE=A-B:REL` (Gaussian noise on layers A..B's routed expert 
 
 ## Layout
 
+Implementation filenames below are under `nvidia/src/`. The `../core/src/` entry points to the shared core from this README’s directory.
+
 | file | |
 |---|---|
 | `../core/src/` | `gguf.rs`, `safetensors.rs` (mmap readers), `formats.rs`, `numerics.rs` (block decoders: Q8_0, Q2_0, PTQ1_0, Q3_K, Q6_K, FP8 32x32, FP4; fake quant; RoPE + YaRN), `model.rs` (config, weight handles, the CPU reference forward), `dspark.rs` (draft stack reference), `server/` |
@@ -55,3 +57,9 @@ Sensitivity: `DSX_NOISE=A-B:REL` (Gaussian noise on layers A..B's routed expert 
 | `topk.rs` | GPU radix top-k / candidate blocks for the sparse indexer |
 
 Experimental serving measurements: `DSX_T16_PAIR_GU=1` pairs T16 gate/up launches (default off; [screening receipts](../bench/results/2026-10-24-gauntlet/paired-screen.json)). `DSX_RUNTIME_STATS=1` logs per-request CPU sampling, emission, model-step, cache-adaptation, prefill and snapshot times. `DSX_LOOKUP_AUDIT=1` observes causal prompt-copy proposals in the actual serial output without changing sampling; it does not enable speculation. The [geometry gauntlet](../bench/geometry/README.md) records these diagnostics beside reviewed task outcomes.
+## Prefill checkpoint
+
+The [October 25 profile](../bench/results/2026-10-25-prefill/README.md) measures about 1,008 tok/s for fresh 8K prompts
+with an 8K chunk and 256K context allocation. Its four prefill options remain off by default. `prefill-bench` records
+cold and warm full-prompt passes with state reset between rounds; `t16-prefill-audit` compares the new kernels
+against their unchanged references. Both require the `cuda` feature.

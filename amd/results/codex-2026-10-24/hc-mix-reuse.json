@@ -1,0 +1,50 @@
+{
+  "hardware": "DigitalOcean single MI325X rental8",
+  "placement": {
+    "mxfp4": 3378,
+    "cb3": 11982,
+    "cb2": 0
+  },
+  "b4_context": 4000,
+  "steps_per_trial": 512,
+  "interleaved_base_ms": [
+    15.9,
+    15.8,
+    15.8
+  ],
+  "interleaved_candidate_ms": [
+    15.7,
+    15.7,
+    15.6
+  ],
+  "median_base_ms": 15.8,
+  "median_candidate_ms": 15.7,
+  "paired_mean_saving_ms": 0.16666666666666666,
+  "profile_hc_mix_base_ms": 1.04,
+  "profile_hc_mix_candidate_ms": 0.95,
+  "synthetic_cases": 36,
+  "synthetic_bitwise_equal": true,
+  "modes": [
+    "same pointer/same args",
+    "same pointer/different args",
+    "different pointers",
+    "pmix null",
+    "premix null",
+    "both null"
+  ],
+  "batches": [
+    1,
+    4,
+    8
+  ],
+  "graph_replay_tested": true,
+  "candidate_heldout": {
+    "tokens": 8184,
+    "ppl": 8.8512,
+    "kl_top256": 0.075588,
+    "top1_agree": 0.883309
+  },
+  "base_code_object_sha256": "08c7e259c95aa1b8b2afadc80dd0cd97e498f665f748052c8d1f06e9d2b6ffd1",
+  "candidate_code_object_sha256": "a815c766cb01c1b6c811a2905a3caab41aed18ca1eda2b1a6f697e5f723cc7eb",
+  "scope": "Only hc_mix_t alias-reduction reuse changes between code objects; HC premix guard retained on both; attention fusion off on both. Small measured gain with one-decimal-ms timing output, not a broad coding TPS guarantee."
+}

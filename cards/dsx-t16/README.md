@@ -25,26 +25,15 @@ routed experts in **T16**, dsx's own trellis format: exllamav3's bitshift trelli
 CPUs, quantized from DeepSeek's original weights. Runs on [**dsx**](https://github.com/lxe/dsx), a Rust + CUDA engine
 for this model.
 
-At roughly the same model size excluding Engram, the default IQ4_NL package measured KL 0.196 against dsx-ud's
-0.272. The Q6_K alternative measured 0.194, close to Maya-S's 0.195 on this eval. T16's CPU and GPU expert kernels
-were also measured faster than DSX's Unsloth codebook kernels; the speed and quality protocols are described below.
+The default package contains an IQ4_NL Engram table. The optional `q6k-engram` branch uses Q6_K instead;
+the quality measurements below identify the package used for each result.
 
-## Which build
+## Release measurements
 
-| Build | Made for | Download | KL / top-1 vs FP8 | Decode |
-|---|---|---|---:|---:|
-| [**dsx-t16**](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16) (this, v1, recommended) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 252 GB, Engram and tokenizer inside | 0.196 / 80.9% | 34.9 tok/s (36.8 with `--defer-rank 3`) |
-| [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 305 GB, Engram and tokenizer inside | 0.272 / 79.0% | 27-29.5 tok/s (32-36 with `--defer-rank 3`) |
-| [dsx-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-2bit) | 2x 24 GB NVIDIA GPU + 128 GB RAM | 148 GB + the official Engram shards (203 GB) | 0.373 / 74.4% | ~29 tok/s (35.7 with `--defer-rank 3`) |
-| [dsx-mxfp4](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4) | 1x AMD Instinct MI325X (256 GiB) | 270 GB + the official Engram shards (203 GB) | 0.049 / 90.6% | 110-114 tok/s |
-
-All run on [dsx](https://github.com/lxe/dsx) and were measured on the same eval
-([Lucebox 1017](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF), 8 x 1,024 tokens against the FP8
-model's top-256 log-probs).
-
-The table retains the original model-release measurements; quality was measured without expert deferral. Decode
-speeds were not all measured with the same runtime revision. For the later NVIDIA kernel integration, current
-switches and the unresolved decode exactness check, see [measurement status](https://github.com/lxe/dsx/blob/main/docs/current-state.md).
+The quality and speed figures below belong to this model release and its recorded runtime. They are not a new
+measurement of every later kernel revision. See [NVIDIA measurement status](https://github.com/lxe/dsx/blob/main/docs/current-state.md)
+for the runtime settings and open correctness checks, and [model release history](https://github.com/lxe/dsx/blob/main/docs/model-history.md)
+for other packages.
 
 ## At a glance
 
@@ -53,7 +42,7 @@ switches and the unresolved decode exactness check, see [measurement status](htt
 | Size | 252 GB in one GGUF file: the model (141 GB) and the Engram table at IQ4_NL (111 GB); tokenizer included. With a Q6_K Engram table (302 GB, slightly better): branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) |
 | Experts | T16 trellis: 1.5 / 1.5 / 2 bits (gate / up / down) in layers 0-19, 2 / 2 / 2.5 in layers 20-39; ~1.9 bpw |
 | Quality vs FP8 | KL 0.196 · top-1 80.9% · perplexity 9.54 (FP8: 8.56); with the Q6_K Engram table: 0.194 · 81.4% · 9.60 |
-| Speed, 2x RTX 3090 | 34.9 tok/s decode, 36.8 with `--defer-rank 3` · ~530 tok/s prefill (3K prompt) |
+| Speed, 2x RTX 3090 | Current opt-in profile: **~1,008 tok/s warm prefill (8K prompt)**. Recorded release: 34.9 tok/s decode, 36.8 with `--defer-rank 3`, ~530 tok/s prefill (3K). See [runtime checkpoint](#october-25-runtime-checkpoint). |
 | Hardware | 2x 24 GB NVIDIA GPU (RTX 3090 / 4090 / 5090), 128 GB RAM, AVX2 CPU (AVX-VNNI for the fast CPU kernel), ~255 GB NVMe ([details](#hardware)) |
 | Runtime | [dsx](https://github.com/lxe/dsx) from 2026-10-22 or later (T16 support) |
 
@@ -100,6 +89,25 @@ Calibration: 635K tokens (coding-agent sessions, agent and code prompts, the mod
 five languages, code, chat). The calib5 requant completed on 575×2048 = 1,177,600 fit tokens. It scored KL ~0.202
 and top-1 81.3% with v1's gains reused, versus v1's 0.196 / 80.9%, so it did not replace v1. Agentic-quality gains
 were not established. The gains were selected on this eval; independent gain tuning remains unmeasured.
+
+## October 25 runtime checkpoint
+
+The same T16 weights reached **1,007.84 newly processed prompt tokens/s** on two RTX 3090s, an i7-12700K and
+128 GB DDR4. The benchmark uses an 8,000-token prompt, an 8,192-token chunk, a 256K context allocation and fixed
+expert placement. It resets prompt state between rounds: the two warm passes measured 1,008.50 and 1,007.18 tok/s,
+with no reused prompt KV. The initial pass measured 928.49 tok/s. F16 Engram projections remain unchanged.
+
+The opt-in profile combines warp Hadamard transforms, fixed-bit weight expansion, fused gate/up post-processing
+and prefill buffer reuse. Buffer reuse recovers about 1.91 GB of GPU memory at this chunk size. The matched
+8K-prompt baseline with 4K chunks measured 868.07 tok/s; the final experimental screen measured 1,006.43 tok/s,
+about 16% faster. Its 64-token forced-decode continuations measured about 40.4 tok/s. That short decode check is
+separate from the 41 tok/s free-generation result with optional FP8 projections.
+
+See the [profile, code and receipts](https://github.com/lxe/dsx/blob/main/bench/results/2026-10-25-prefill/README.md)
+for the flags and complete conditions. The new options are off by default. Kernel audits cover 84 exact cases;
+the main integration also matches 129,280 final logits bit for bit. These are implementation checks, not a new
+FP8-reference quality score or a resolution of the earlier open decode check. Smaller prompts and cached tool
+updates have different throughput.
 
 ## Speed
 

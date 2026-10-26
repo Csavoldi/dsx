@@ -220,7 +220,7 @@ extern "C" __global__ void __launch_bounds__(256) hc_step(float* __restrict__ h0
             reduce_mix(pmix, ln, m0);
             hc_finish16(m0, pa, hc_eps, eps, iters, ln, nullptr, post, comb);
         }
-        if (w == 1) {
+        if (w == 1 && !xo.mixd) {
             if (premix) {
                 reduce_mix(premix, ln, m1);
                 hc_finish16(m1, prea, hc_eps, eps, iters, ln, pre, nullptr, nullptr);
@@ -1720,9 +1720,17 @@ extern "C" __global__ void hc_mix_t(const float* pmix, HcArgs pa, const float* p
         hc_finish16(m0, pa, hc_eps, eps, iters, ln, o, o + 4, o + 8);
     }
     if (premix) {
-        reduce_mix(premix + (size_t)t * NPART * 32, ln, m1);
-        hc_finish16(m1, prea, hc_eps, eps, iters, ln, o + 24, nullptr, nullptr);
+        const float* reduced = m0;
+        if (premix != pmix) {
+            reduce_mix(premix + (size_t)t * NPART * 32, ln, m1);
+            reduced = m1;
+        }
+        hc_finish16(reduced, prea, hc_eps, eps, iters, ln, o + 24, nullptr, nullptr);
     }
 }
 #include "verify.h"
 #include "batch.h"
+
+#include "sample.h"
+
+#include "reject.h"

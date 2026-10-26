@@ -1,0 +1,2347 @@
+{
+  "limits": [
+    "Warm rounds exclude round zero; all timed full prompts start at prefix_tokens=0.",
+    "Fixed-token decode is diagnostic throughput, not a completed coding task.",
+    "Chunk changes can change residency and floating-point accumulation order."
+  ],
+  "screens": {
+    "baseline": {
+      "arms": {
+        "3k-c4k": {
+          "binary_sha256": "0491ac15a28e6fb8e1dcd052e88b3cf5a13aa3163122ffa49d4110fd811c99ca",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-3k-c4k",
+            "118",
+            "/home/lxe/ai/ds41/codex-gauntlet-20261024/prefill-residency/oracle-bench",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "4",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "2",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--prefill-probe"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "64": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 2936,
+                "new_tokens": 64,
+                "elapsed_s": 0.486674229,
+                "new_tok_s": 131.50480585648597,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "d727a2ecf2abe49d"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 2936,
+                  "new_tokens": 64,
+                  "elapsed_s": 0.487627662,
+                  "new_tok_s": 131.2476813507762,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "d727a2ecf2abe49d"
+                }
+              ],
+              "warm_weighted_tps": 131.2476813507762,
+              "decode_weighted_tps": 39.35150374589916,
+              "decode_fingerprints": [
+                "acbd6e78beac375a"
+              ]
+            },
+            "256": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 2744,
+                "new_tokens": 256,
+                "elapsed_s": 1.173783834,
+                "new_tok_s": 218.09807954809506,
+                "top1": 2731,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "06f3e161993e6d19"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 2744,
+                  "new_tokens": 256,
+                  "elapsed_s": 1.1740691189999999,
+                  "new_tok_s": 218.0450842775297,
+                  "top1": 2731,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "06f3e161993e6d19"
+                }
+              ],
+              "warm_weighted_tps": 218.0450842775297,
+              "decode_weighted_tps": 39.19633673388665,
+              "decode_fingerprints": [
+                "236d50c7f61bbda8"
+              ]
+            },
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.446195349,
+                "new_tok_s": 550.8432598824872,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "13d2847b154005cc"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.802477614,
+                  "new_tok_s": 624.677560443908,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                }
+              ],
+              "warm_weighted_tps": 624.677560443908,
+              "decode_weighted_tps": 39.535929239384565,
+              "decode_fingerprints": [
+                "9d1adf6e93aff602"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 1161,
+            "main_gb": 9.8,
+            "aux_experts": 2757,
+            "aux_gb": 23.3
+          }
+        },
+        "8k-c4k": {
+          "binary_sha256": "0491ac15a28e6fb8e1dcd052e88b3cf5a13aa3163122ffa49d4110fd811c99ca",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-8k-c4k",
+            "118",
+            "/home/lxe/ai/ds41/codex-gauntlet-20261024/prefill-residency/oracle-bench",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt8000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "4",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "2",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--prefill-probe"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "64": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 7936,
+                "new_tokens": 64,
+                "elapsed_s": 0.645527241,
+                "new_tok_s": 99.14376332260778,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "ab4568cfdba77d75"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 7936,
+                  "new_tokens": 64,
+                  "elapsed_s": 0.645726064,
+                  "new_tok_s": 99.11323635218788,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "ab4568cfdba77d75"
+                }
+              ],
+              "warm_weighted_tps": 99.11323635218788,
+              "decode_weighted_tps": 39.199975155055746,
+              "decode_fingerprints": [
+                "0d2d04af03fee80b"
+              ]
+            },
+            "256": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 7744,
+                "new_tokens": 256,
+                "elapsed_s": 1.432569357,
+                "new_tok_s": 178.69989941436393,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "c69d31a71fe1eaff"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 7744,
+                  "new_tokens": 256,
+                  "elapsed_s": 1.443371586,
+                  "new_tok_s": 177.36250490384808,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "c69d31a71fe1eaff"
+                }
+              ],
+              "warm_weighted_tps": 177.36250490384808,
+              "decode_weighted_tps": 39.650265232023585,
+              "decode_fingerprints": [
+                "9d4b112bdb9d060c"
+              ]
+            },
+            "8000": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 8000,
+                "elapsed_s": 9.889629623,
+                "new_tok_s": 808.9281707167934,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "ae144c1e8420b1a7"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 9.215832067,
+                  "new_tok_s": 868.0713734624524,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "ae144c1e8420b1a7"
+                }
+              ],
+              "warm_weighted_tps": 868.0713734624524,
+              "decode_weighted_tps": 39.45785343417827,
+              "decode_fingerprints": [
+                "a18e73d795d27863"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 1161,
+            "main_gb": 9.8,
+            "aux_experts": 2757,
+            "aux_gb": 23.3
+          }
+        },
+        "8k-c8k": {
+          "binary_sha256": "0491ac15a28e6fb8e1dcd052e88b3cf5a13aa3163122ffa49d4110fd811c99ca",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-8k-c8k",
+            "118",
+            "/home/lxe/ai/ds41/codex-gauntlet-20261024/prefill-residency/oracle-bench",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt8000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "4",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "2",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "8192",
+            "--arena-gb",
+            "110",
+            "--prefill-probe"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "64": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 7936,
+                "new_tokens": 64,
+                "elapsed_s": 0.656574134,
+                "new_tok_s": 97.47566449213792,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "f230cab99ffaf894"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 7936,
+                  "new_tokens": 64,
+                  "elapsed_s": 0.660641697,
+                  "new_tok_s": 96.8755079956753,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "f230cab99ffaf894"
+                }
+              ],
+              "warm_weighted_tps": 96.8755079956753,
+              "decode_weighted_tps": 37.12913999425278,
+              "decode_fingerprints": [
+                "1bb71e47f101bd67"
+              ]
+            },
+            "256": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 7744,
+                "new_tokens": 256,
+                "elapsed_s": 1.496622886,
+                "new_tok_s": 171.05177422764604,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "4157dad657d2aae8"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 7744,
+                  "new_tokens": 256,
+                  "elapsed_s": 1.499071507,
+                  "new_tok_s": 170.77237396921586,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "4157dad657d2aae8"
+                }
+              ],
+              "warm_weighted_tps": 170.77237396921586,
+              "decode_weighted_tps": 37.62110539498126,
+              "decode_fingerprints": [
+                "f8e14164498ea32b"
+              ]
+            },
+            "8000": {
+              "cold": {
+                "event": "prefill_probe",
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 8000,
+                "elapsed_s": 8.843534654,
+                "new_tok_s": 904.6156670377875,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "88821e914b840f68"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.176726888,
+                  "new_tok_s": 978.3865976666825,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "88821e914b840f68"
+                }
+              ],
+              "warm_weighted_tps": 978.3865976666825,
+              "decode_weighted_tps": 37.42745389826582,
+              "decode_fingerprints": [
+                "f7207c275fed40cc"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 829,
+            "main_gb": 7.0,
+            "aux_experts": 2705,
+            "aux_gb": 22.9
+          }
+        }
+      },
+      "postflight": {
+        "server_pids": [
+          3415349
+        ],
+        "server_md5": "363ced3dada78d1271549592de700e3d",
+        "model_unchanged": true,
+        "power_restored": true,
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "command": "/home/lxe/ai/ds41/./dsx/target/release/dsx-server --model hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf --host 0.0.0.0 --port 8090 --ctx 262144 --chunk 4096 --main-gb=-1.5 --aux-gb=-1.0 --arena-gb 110 --rank calib/rank.json --defer-rank 3 --vision hf-t16/vision.safetensors ",
+        "recovery": "Original launcher lacks executable permission. Restarted explicitly through bash; controller deadline expired during startup. Original failure events preserved.",
+        "restored": true
+      },
+      "peak_cpu_c": 62.0,
+      "raw_sha256": {
+        "3k-c4k.log": "258239486716172b9061fe40b9883347b027c924bab09a5eb7e06e269491bad3",
+        "8k-c4k.log": "af4ec609bc689e8f6f5c159eeec5df751b8b678c1caf709ec41cdf5f3f23a008",
+        "8k-c8k.log": "7a0a0b61d5337db96b434e955942813b24e8d3a6d22f78d1d1a71430c8e72959",
+        "events.jsonl": "d1abcbf7ff7435c86c36192fc4f4d0f6816a764f30b4ca8099641af188bd73c0",
+        "hardware.jsonl": "b02297126dd4d30965c721724ccbb2d015b362fa4c5fdb9062a3dc1f7629f399",
+        "postflight.json": "12cd0e20faa4c8ab1044993e3014c7e353013d670b06cab8d15aed72dbbf25a9",
+        "preflight.json": "b143653f38026765fafbf06daf44d85db80d7154457801511e2467baa114a6f6",
+        "server-before.log": "185bee09ad754fd5116366a46ce9f19c7a808a5172f079f483fbf1c023fac22e"
+      }
+    },
+    "kernels-v2": {
+      "arms": {
+        "combined": {
+          "binary_sha256": "c8c74d9368935d3bf7e0a84847a4d7e8925d5bb2b66bbc76cd4e56b371a258f0",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-combined",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-bench",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "16",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/combined.f32",
+            "--compare-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "1",
+            "DSX_T16_SPECIALIZED_DQ": "1",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.358184842,
+                "new_tok_s": 559.8910990312565,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "13d2847b154005cc"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.722901144,
+                  "new_tok_s": 635.2027934802779,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.718240472,
+                  "new_tok_s": 635.8302460002297,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                }
+              ],
+              "warm_weighted_tps": 635.516364867543,
+              "decode_weighted_tps": 40.147549370125226,
+              "decode_fingerprints": [
+                "149f7ea3150157ba",
+                "149f7ea3150157ba"
+              ]
+            }
+          },
+          "comparisons": [
+            {
+              "event": "placement_reference_comparison",
+              "reference": "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32",
+              "difference": {
+                "rows": 1,
+                "values": 129280,
+                "changed_bits_values": 0,
+                "nonfinite_values": 0,
+                "max_abs_logit_difference": 0.0,
+                "top1_changed_rows": 0,
+                "mean_full_vocab_kl_reference_to_candidate": 0.0,
+                "max_row_full_vocab_kl": 0.0,
+                "changed_rows": []
+              }
+            }
+          ],
+          "residency": {
+            "main_experts": 1161,
+            "main_gb": 9.8,
+            "aux_experts": 2757,
+            "aux_gb": 23.3
+          }
+        },
+        "control-a": {
+          "binary_sha256": "c8c74d9368935d3bf7e0a84847a4d7e8925d5bb2b66bbc76cd4e56b371a258f0",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-control-a",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-bench",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "16",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "0",
+            "DSX_T16_SPECIALIZED_DQ": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.403362527,
+                "new_tok_s": 555.209831842549,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "13d2847b154005cc"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.769077036,
+                  "new_tok_s": 629.0525351874396,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.7725156680000005,
+                  "new_tok_s": 628.5992982935975,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                }
+              ],
+              "warm_weighted_tps": 628.8258350709832,
+              "decode_weighted_tps": 40.771272818031434,
+              "decode_fingerprints": [
+                "149f7ea3150157ba",
+                "149f7ea3150157ba"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 1161,
+            "main_gb": 9.8,
+            "aux_experts": 2757,
+            "aux_gb": 23.3
+          }
+        },
+        "control-b": {
+          "binary_sha256": "c8c74d9368935d3bf7e0a84847a4d7e8925d5bb2b66bbc76cd4e56b371a258f0",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-control-b",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-bench",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "16",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-b.f32",
+            "--compare-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "0",
+            "DSX_T16_SPECIALIZED_DQ": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.390099525,
+                "new_tok_s": 556.5759938356612,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "13d2847b154005cc"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.757626163,
+                  "new_tok_s": 630.566567699447,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.758899947,
+                  "new_tok_s": 630.3977880205684,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                }
+              ],
+              "warm_weighted_tps": 630.4821665644544,
+              "decode_weighted_tps": 40.703080799395686,
+              "decode_fingerprints": [
+                "149f7ea3150157ba",
+                "149f7ea3150157ba"
+              ]
+            }
+          },
+          "comparisons": [
+            {
+              "event": "placement_reference_comparison",
+              "reference": "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32",
+              "difference": {
+                "rows": 1,
+                "values": 129280,
+                "changed_bits_values": 0,
+                "nonfinite_values": 0,
+                "max_abs_logit_difference": 0.0,
+                "top1_changed_rows": 0,
+                "mean_full_vocab_kl_reference_to_candidate": 0.0,
+                "max_row_full_vocab_kl": 0.0,
+                "changed_rows": []
+              }
+            }
+          ],
+          "residency": {
+            "main_experts": 1161,
+            "main_gb": 9.8,
+            "aux_experts": 2757,
+            "aux_gb": 23.3
+          }
+        },
+        "specialized-dq": {
+          "binary_sha256": "c8c74d9368935d3bf7e0a84847a4d7e8925d5bb2b66bbc76cd4e56b371a258f0",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-specialized-dq",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-bench",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "16",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/specialized-dq.f32",
+            "--compare-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "0",
+            "DSX_T16_SPECIALIZED_DQ": "1",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.374772044,
+                "new_tok_s": 558.1632068189718,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "13d2847b154005cc"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.734223625,
+                  "new_tok_s": 633.6836274817922,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.740779529,
+                  "new_tok_s": 632.8073224347573,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                }
+              ],
+              "warm_weighted_tps": 633.2451717936389,
+              "decode_weighted_tps": 39.32218834952938,
+              "decode_fingerprints": [
+                "149f7ea3150157ba",
+                "149f7ea3150157ba"
+              ]
+            }
+          },
+          "comparisons": [
+            {
+              "event": "placement_reference_comparison",
+              "reference": "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32",
+              "difference": {
+                "rows": 1,
+                "values": 129280,
+                "changed_bits_values": 0,
+                "nonfinite_values": 0,
+                "max_abs_logit_difference": 0.0,
+                "top1_changed_rows": 0,
+                "mean_full_vocab_kl_reference_to_candidate": 0.0,
+                "max_row_full_vocab_kl": 0.0,
+                "changed_rows": []
+              }
+            }
+          ],
+          "residency": {
+            "main_experts": 1161,
+            "main_gb": 9.8,
+            "aux_experts": 2757,
+            "aux_gb": 23.3
+          }
+        },
+        "warp-had": {
+          "binary_sha256": "c8c74d9368935d3bf7e0a84847a4d7e8925d5bb2b66bbc76cd4e56b371a258f0",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-warp-had",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-bench",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "16",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/warp-had.f32",
+            "--compare-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "1",
+            "DSX_T16_SPECIALIZED_DQ": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.370149734,
+                "new_tok_s": 558.6436409782237,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "13d2847b154005cc"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.717990852,
+                  "new_tok_s": 635.8638865796597,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.7175115309999995,
+                  "new_tok_s": 635.9284932927492,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "13d2847b154005cc"
+                }
+              ],
+              "warm_weighted_tps": 635.8961882952026,
+              "decode_weighted_tps": 40.5684342000871,
+              "decode_fingerprints": [
+                "149f7ea3150157ba",
+                "149f7ea3150157ba"
+              ]
+            }
+          },
+          "comparisons": [
+            {
+              "event": "placement_reference_comparison",
+              "reference": "/home/lxe/ai/ds41/codex-prefill-20261025/kernels-v2/control-a.f32",
+              "difference": {
+                "rows": 1,
+                "values": 129280,
+                "changed_bits_values": 0,
+                "nonfinite_values": 0,
+                "max_abs_logit_difference": 0.0,
+                "top1_changed_rows": 0,
+                "mean_full_vocab_kl_reference_to_candidate": 0.0,
+                "max_row_full_vocab_kl": 0.0,
+                "changed_rows": []
+              }
+            }
+          ],
+          "residency": {
+            "main_experts": 1161,
+            "main_gb": 9.8,
+            "aux_experts": 2757,
+            "aux_gb": 23.3
+          }
+        }
+      },
+      "postflight": {
+        "server_pids": [
+          3437276
+        ],
+        "server_md5": "363ced3dada78d1271549592de700e3d",
+        "model_unchanged": true,
+        "power_restored": true,
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "restored": true
+      },
+      "kernel_audit": {
+        "cases": 32,
+        "changed_values": 0,
+        "explicit_compared_values": 156598272
+      },
+      "peak_cpu_c": 58.0,
+      "raw_sha256": {
+        "combined.f32": "13f6a45dd2071200bdc45d0ccb225a5abd5c8c1b5b28d4ffe10a954e17d45cf9",
+        "combined.log": "6658c961145b66e9316b55941d22adb87be8e07d593c71c01dc73d107b3281ab",
+        "control-a.f32": "13f6a45dd2071200bdc45d0ccb225a5abd5c8c1b5b28d4ffe10a954e17d45cf9",
+        "control-a.log": "ed87fd8cd37988a948cb556895c4409fbaeecb392b34a4f8d6fa5118ad9b62d2",
+        "control-b.f32": "13f6a45dd2071200bdc45d0ccb225a5abd5c8c1b5b28d4ffe10a954e17d45cf9",
+        "control-b.log": "dd9e1602a98d3f7a711db6a464f46dc1938498b36fefc17524f3aae2f92b354c",
+        "kernel-audit.jsonl": "44eab9fca04be3c4d7225cb4397ea0cb8df820ec7b89c0adda7d79ade41da359",
+        "preflight.json": "c04104b19569cf0af796ccab10cd2c77795c9099066b68054601793e232d28a0",
+        "server-before.log": "185bee09ad754fd5116366a46ce9f19c7a808a5172f079f483fbf1c023fac22e",
+        "specialized-dq.f32": "13f6a45dd2071200bdc45d0ccb225a5abd5c8c1b5b28d4ffe10a954e17d45cf9",
+        "specialized-dq.log": "6262fb6ff11c194d04bc4ca0915806db241b98e3df512160af9e8de1f6078dfb",
+        "warp-had.f32": "13f6a45dd2071200bdc45d0ccb225a5abd5c8c1b5b28d4ffe10a954e17d45cf9",
+        "warp-had.log": "c85ceb0807a868a1cb8d3d4752b022c958739b1eb6566a6444135f341e7145a5",
+        "events.jsonl": "d68b7ef5b86e1016e56f0e8e801e84298f225ed74e7f2730e50a62fac5ff3a22",
+        "hardware.jsonl": "c42efe948973e10e82d4a8f45c9a61e119da626b2c072bd6bfcf8f4c32992838",
+        "postflight.json": "46185e78d2071ce8da8e83678fd29495d8546d4260b7c496c17f43a8da3d8cf8"
+      }
+    },
+    "reuse": {
+      "arms": {
+        "3k-reuse": {
+          "binary_sha256": "fc417c17c1726691a47e0830147bd3e056949ef12e1878d8194537eb96f30e3b",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-3k-reuse",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-inplace",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "64",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "2",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "8192",
+            "--arena-gb",
+            "110",
+            "--main-gb",
+            "-1.5",
+            "--aux-gb",
+            "-1.0",
+            "--prefill-probe",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/3k-reuse.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "1",
+            "DSX_T16_SPECIALIZED_DQ": "1",
+            "DSX_PREFILL_REUSE_BUFFERS": "1",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "64": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 2936,
+                "new_tokens": 64,
+                "elapsed_s": 0.484432559,
+                "new_tok_s": 132.11333303466088,
+                "top1": 72295,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "b1d0aeef3a7f3074"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 2936,
+                  "new_tokens": 64,
+                  "elapsed_s": 0.484930115,
+                  "new_tok_s": 131.97777993226921,
+                  "top1": 72295,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "b1d0aeef3a7f3074"
+                }
+              ],
+              "warm_weighted_tps": 131.97777993226921,
+              "decode_weighted_tps": 40.619377572065005,
+              "decode_fingerprints": [
+                "0c771b75012fd2bd"
+              ]
+            },
+            "256": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 2744,
+                "new_tokens": 256,
+                "elapsed_s": 1.195417021,
+                "new_tok_s": 214.1512087437477,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "2c6f2159e4b33431"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 2744,
+                  "new_tokens": 256,
+                  "elapsed_s": 1.1939386,
+                  "new_tok_s": 214.41638623627713,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "2c6f2159e4b33431"
+                }
+              ],
+              "warm_weighted_tps": 214.41638623627713,
+              "decode_weighted_tps": 40.599515228339584,
+              "decode_fingerprints": [
+                "f1e457917c946dc5"
+              ]
+            },
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.396811411,
+                "new_tok_s": 555.8837935091225,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "67bcb9b8568c95ac"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.752105891,
+                  "new_tok_s": 631.2990637859505,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "67bcb9b8568c95ac"
+                }
+              ],
+              "warm_weighted_tps": 631.2990637859505,
+              "decode_weighted_tps": 40.68026725168535,
+              "decode_fingerprints": [
+                "1972f8a9efc31f95"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 1048,
+            "main_gb": 8.9,
+            "aux_experts": 2705,
+            "aux_gb": 22.9
+          }
+        },
+        "8k-control": {
+          "binary_sha256": "fc417c17c1726691a47e0830147bd3e056949ef12e1878d8194537eb96f30e3b",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-8k-control",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-inplace",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt8000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "64",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "8192",
+            "--arena-gb",
+            "110",
+            "--main-gb",
+            "-1.5",
+            "--aux-gb",
+            "-1.0",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/8k-control.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "0",
+            "DSX_T16_SPECIALIZED_DQ": "0",
+            "DSX_PREFILL_REUSE_BUFFERS": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "8000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 8000,
+                "elapsed_s": 8.84045047,
+                "new_tok_s": 904.9312619473337,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "88821e914b840f68"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.144139121,
+                  "new_tok_s": 982.3014908195353,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "88821e914b840f68"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.160489858,
+                  "new_tok_s": 980.3333058685605,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "88821e914b840f68"
+                }
+              ],
+              "warm_weighted_tps": 981.3164114686476,
+              "decode_weighted_tps": 39.76551596197954,
+              "decode_fingerprints": [
+                "9fa0e5afa37e2225",
+                "9fa0e5afa37e2225"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 829,
+            "main_gb": 7.0,
+            "aux_experts": 2705,
+            "aux_gb": 22.9
+          }
+        },
+        "8k-kernels": {
+          "binary_sha256": "fc417c17c1726691a47e0830147bd3e056949ef12e1878d8194537eb96f30e3b",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-8k-kernels",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-inplace",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt8000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "64",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "8192",
+            "--arena-gb",
+            "110",
+            "--main-gb",
+            "-1.5",
+            "--aux-gb",
+            "-1.0",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/8k-kernels.f32",
+            "--compare-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/8k-control.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "1",
+            "DSX_T16_SPECIALIZED_DQ": "1",
+            "DSX_PREFILL_REUSE_BUFFERS": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "8000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 8000,
+                "elapsed_s": 8.749271177,
+                "new_tok_s": 914.361875195996,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "88821e914b840f68"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.056250546,
+                  "new_tok_s": 993.0177759891134,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "88821e914b840f68"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.05567281,
+                  "new_tok_s": 993.0889931464333,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "88821e914b840f68"
+                }
+              ],
+              "warm_weighted_tps": 993.0533832909329,
+              "decode_weighted_tps": 39.67742815076856,
+              "decode_fingerprints": [
+                "9fa0e5afa37e2225",
+                "9fa0e5afa37e2225"
+              ]
+            }
+          },
+          "comparisons": [
+            {
+              "event": "placement_reference_comparison",
+              "reference": "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/8k-control.f32",
+              "difference": {
+                "rows": 1,
+                "values": 129280,
+                "changed_bits_values": 0,
+                "nonfinite_values": 0,
+                "max_abs_logit_difference": 0.0,
+                "top1_changed_rows": 0,
+                "mean_full_vocab_kl_reference_to_candidate": 0.0,
+                "max_row_full_vocab_kl": 0.0,
+                "changed_rows": []
+              }
+            }
+          ],
+          "residency": {
+            "main_experts": 829,
+            "main_gb": 7.0,
+            "aux_experts": 2705,
+            "aux_gb": 22.9
+          }
+        },
+        "8k-reuse": {
+          "binary_sha256": "fc417c17c1726691a47e0830147bd3e056949ef12e1878d8194537eb96f30e3b",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-8k-reuse",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-inplace",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt8000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "64",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "8192",
+            "--arena-gb",
+            "110",
+            "--main-gb",
+            "-1.5",
+            "--aux-gb",
+            "-1.0",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/8k-reuse.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "1",
+            "DSX_T16_SPECIALIZED_DQ": "1",
+            "DSX_PREFILL_REUSE_BUFFERS": "1",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "8000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 8000,
+                "elapsed_s": 8.72657305,
+                "new_tok_s": 916.7401629669506,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "3cefc10807d80588"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.034746506,
+                  "new_tok_s": 995.6754695404451,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "3cefc10807d80588"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.050113234,
+                  "new_tok_s": 993.7748411055456,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "3cefc10807d80588"
+                }
+              ],
+              "warm_weighted_tps": 994.7242474369255,
+              "decode_weighted_tps": 40.02839247652316,
+              "decode_fingerprints": [
+                "af44d6c0b077f63f",
+                "af44d6c0b077f63f"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 1048,
+            "main_gb": 8.9,
+            "aux_experts": 2705,
+            "aux_gb": 22.9
+          }
+        },
+        "alias-candidate": {
+          "binary_sha256": "fc417c17c1726691a47e0830147bd3e056949ef12e1878d8194537eb96f30e3b",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-alias-candidate",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-inplace",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "8",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "2",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--main-gb",
+            "7",
+            "--aux-gb",
+            "22.8",
+            "--prefill-probe",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/alias-candidate.f32",
+            "--prefill-new-tokens",
+            "3000,8,1",
+            "--compare-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/alias-control.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "0",
+            "DSX_T16_SPECIALIZED_DQ": "0",
+            "DSX_PREFILL_REUSE_BUFFERS": "1",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "1": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 2999,
+                "new_tokens": 1,
+                "elapsed_s": 0.07315901,
+                "new_tok_s": 13.66885637189459,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "fb1167e4437d8f75"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 2999,
+                  "new_tokens": 1,
+                  "elapsed_s": 0.067473652,
+                  "new_tok_s": 14.82059989875752,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "fb1167e4437d8f75"
+                }
+              ],
+              "warm_weighted_tps": 14.82059989875752,
+              "decode_weighted_tps": 37.711925464943725,
+              "decode_fingerprints": [
+                "a0daaecede471149"
+              ]
+            },
+            "8": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 2992,
+                "new_tokens": 8,
+                "elapsed_s": 0.235151914,
+                "new_tok_s": 34.02056085327037,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "4d8e847296ac886d"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 2992,
+                  "new_tokens": 8,
+                  "elapsed_s": 0.234658142,
+                  "new_tok_s": 34.09214754628033,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "4d8e847296ac886d"
+                }
+              ],
+              "warm_weighted_tps": 34.09214754628033,
+              "decode_weighted_tps": 38.233825334322425,
+              "decode_fingerprints": [
+                "1d948e44c34d3ccf"
+              ]
+            },
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.488563651,
+                "new_tok_s": 546.5910920889856,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "cb244c5eb6144f5a"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.832700481,
+                  "new_tok_s": 620.770935793486,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "cb244c5eb6144f5a"
+                }
+              ],
+              "warm_weighted_tps": 620.770935793486,
+              "decode_weighted_tps": 38.356324849611084,
+              "decode_fingerprints": [
+                "ec3643da2de1a309"
+              ]
+            }
+          },
+          "comparisons": [
+            {
+              "event": "placement_reference_comparison",
+              "reference": "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/alias-control.f32",
+              "difference": {
+                "rows": 3,
+                "values": 387840,
+                "changed_bits_values": 0,
+                "nonfinite_values": 0,
+                "max_abs_logit_difference": 0.0,
+                "top1_changed_rows": 0,
+                "mean_full_vocab_kl_reference_to_candidate": 0.0,
+                "max_row_full_vocab_kl": 0.0,
+                "changed_rows": []
+              }
+            }
+          ],
+          "residency": {
+            "main_experts": 833,
+            "main_gb": 7.0,
+            "aux_experts": 2692,
+            "aux_gb": 22.8
+          }
+        },
+        "alias-control": {
+          "binary_sha256": "fc417c17c1726691a47e0830147bd3e056949ef12e1878d8194537eb96f30e3b",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-alias-control",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-inplace",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt3000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "8",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "2",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "4096",
+            "--arena-gb",
+            "110",
+            "--main-gb",
+            "7",
+            "--aux-gb",
+            "22.8",
+            "--prefill-probe",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/reuse/alias-control.f32",
+            "--prefill-new-tokens",
+            "3000,8,1"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "0",
+            "DSX_T16_SPECIALIZED_DQ": "0",
+            "DSX_PREFILL_REUSE_BUFFERS": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "1": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 2999,
+                "new_tokens": 1,
+                "elapsed_s": 0.072810523,
+                "new_tok_s": 13.734278491585618,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "fb1167e4437d8f75"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 2999,
+                  "new_tokens": 1,
+                  "elapsed_s": 0.067526943,
+                  "new_tok_s": 14.808903758607878,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "fb1167e4437d8f75"
+                }
+              ],
+              "warm_weighted_tps": 14.808903758607878,
+              "decode_weighted_tps": 38.41500828275598,
+              "decode_fingerprints": [
+                "a0daaecede471149"
+              ]
+            },
+            "8": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 2992,
+                "new_tokens": 8,
+                "elapsed_s": 0.235773914,
+                "new_tok_s": 33.93081051366862,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "4d8e847296ac886d"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 2992,
+                  "new_tokens": 8,
+                  "elapsed_s": 0.235930993,
+                  "new_tok_s": 33.90821993446194,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "4d8e847296ac886d"
+                }
+              ],
+              "warm_weighted_tps": 33.90821993446194,
+              "decode_weighted_tps": 38.38538867857028,
+              "decode_fingerprints": [
+                "1d948e44c34d3ccf"
+              ]
+            },
+            "3000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 3000,
+                "elapsed_s": 5.491887507,
+                "new_tok_s": 546.2602786703438,
+                "top1": 102601,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "cb244c5eb6144f5a"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 3000,
+                  "elapsed_s": 4.8643810819999995,
+                  "new_tok_s": 616.7279967231811,
+                  "top1": 102601,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "cb244c5eb6144f5a"
+                }
+              ],
+              "warm_weighted_tps": 616.7279967231811,
+              "decode_weighted_tps": 37.88232212724998,
+              "decode_fingerprints": [
+                "ec3643da2de1a309"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 833,
+            "main_gb": 7.0,
+            "aux_experts": 2692,
+            "aux_gb": 22.8
+          }
+        }
+      },
+      "postflight": {
+        "server_pids": [
+          3478354
+        ],
+        "server_md5": "363ced3dada78d1271549592de700e3d",
+        "model_unchanged": true,
+        "power_restored": true,
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "restored": true
+      },
+      "kernel_audit": {
+        "cases": 44,
+        "changed_values": 0,
+        "explicit_compared_values": 165445632
+      },
+      "peak_cpu_c": 67.0,
+      "raw_sha256": {
+        "alias-control.f32": "5c958d85264092754abc324fbff0ea17d01b54d52ff7592af0bdd782b12925bb",
+        "alias-control.log": "d2174adf87539ed89fbd13c1b75fc711425dab31744c797391b39adaae9a817d",
+        "kernel-audit.jsonl": "ebc5e0ffe2aebf9d2c9245a80a6051d72e5e122390d65393979802ec35126de1",
+        "preflight.json": "70aab871eb07a288f4a51cd7607698141818397dc4f1aa1a09dcd3989ef1d930",
+        "server-before.log": "185bee09ad754fd5116366a46ce9f19c7a808a5172f079f483fbf1c023fac22e",
+        "3k-reuse.f32": "5e03d7908bd563e8442f53332921767a5e76ec0cc9a7f8d7612f30fce15b7879",
+        "3k-reuse.log": "5027c4ea3e236f5d4392a395c6c317a64d24e308f9cd0a6216489614f6bdccaa",
+        "8k-control.f32": "d095ca110e4b1ad3fd05c69726115b260b847b92ec3edd79376e1518bd096597",
+        "8k-control.log": "9b926ff1595248050c47394c27cdd3b1df84601171acebb7a3ed163800983723",
+        "8k-kernels.f32": "d095ca110e4b1ad3fd05c69726115b260b847b92ec3edd79376e1518bd096597",
+        "8k-kernels.log": "be8f3b87aa6040c8f83d46b36f1f7165f6bc523ab02f78cb3ef8c0b66161a732",
+        "8k-reuse.f32": "abf554e03a1fbbeaaebe05524b4648bf2cb997b248bb4d915cecae5bf156d6ec",
+        "8k-reuse.log": "2fade8f456f74e7a13734e93df0e292e7cd5b0c06f58df1778b0aae13cdea9dd",
+        "alias-candidate.f32": "5c958d85264092754abc324fbff0ea17d01b54d52ff7592af0bdd782b12925bb",
+        "alias-candidate.log": "127ddf1184eaa221b59d1dffcea9f2c3b8cde33627151d7c8416fde838255511",
+        "events.jsonl": "a5344c872ec1efff8b70a744739fc81f3339aa308b097c14a048e0df85310d4c",
+        "hardware.jsonl": "df4327be6f435b42882e9e42fafa265778aef07dc4b3d344752989b105e54bad",
+        "postflight.json": "1554cd75f099da014d0efe34d0307dd74fc5e42f5617a8be0d7b861668b05d72"
+      }
+    },
+    "fused": {
+      "arms": {
+        "control-a": {
+          "binary_sha256": "095cb6c3b598041d4713a2e32860258a26b99a37e57db05b8f05a050f15f42b8",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-control-a",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-fused",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt8000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "64",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "8192",
+            "--arena-gb",
+            "110",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/fused/control-a.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "1",
+            "DSX_T16_SPECIALIZED_DQ": "1",
+            "DSX_PREFILL_REUSE_BUFFERS": "1",
+            "DSX_T16_FUSED_POST_GU": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "8000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 8000,
+                "elapsed_s": 8.696385938,
+                "new_tok_s": 919.9223743098785,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "3cefc10807d80588"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.012801791,
+                  "new_tok_s": 998.4023327502774,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "3cefc10807d80588"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.023554215,
+                  "new_tok_s": 997.0643664429953,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "3cefc10807d80588"
+                }
+              ],
+              "warm_weighted_tps": 997.7329010414588,
+              "decode_weighted_tps": 40.2967170559599,
+              "decode_fingerprints": [
+                "af44d6c0b077f63f",
+                "af44d6c0b077f63f"
+              ]
+            }
+          },
+          "comparisons": [],
+          "residency": {
+            "main_experts": 1048,
+            "main_gb": 8.9,
+            "aux_experts": 2705,
+            "aux_gb": 22.9
+          }
+        },
+        "control-b": {
+          "binary_sha256": "095cb6c3b598041d4713a2e32860258a26b99a37e57db05b8f05a050f15f42b8",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-control-b",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-fused",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt8000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "64",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "8192",
+            "--arena-gb",
+            "110",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/fused/control-b.f32",
+            "--compare-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/fused/control-a.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "1",
+            "DSX_T16_SPECIALIZED_DQ": "1",
+            "DSX_PREFILL_REUSE_BUFFERS": "1",
+            "DSX_T16_FUSED_POST_GU": "0",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "8000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 8000,
+                "elapsed_s": 8.708833491,
+                "new_tok_s": 918.6075274337795,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "3cefc10807d80588"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.02779776,
+                  "new_tok_s": 996.5373118716932,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "3cefc10807d80588"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 8.034207547,
+                  "new_tok_s": 995.7422624695857,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "3cefc10807d80588"
+                }
+              ],
+              "warm_weighted_tps": 996.139628532374,
+              "decode_weighted_tps": 40.29489594195546,
+              "decode_fingerprints": [
+                "af44d6c0b077f63f",
+                "af44d6c0b077f63f"
+              ]
+            }
+          },
+          "comparisons": [
+            {
+              "event": "placement_reference_comparison",
+              "reference": "/home/lxe/ai/ds41/codex-prefill-20261025/fused/control-a.f32",
+              "difference": {
+                "rows": 1,
+                "values": 129280,
+                "changed_bits_values": 0,
+                "nonfinite_values": 0,
+                "max_abs_logit_difference": 0.0,
+                "top1_changed_rows": 0,
+                "mean_full_vocab_kl_reference_to_candidate": 0.0,
+                "max_row_full_vocab_kl": 0.0,
+                "changed_rows": []
+              }
+            }
+          ],
+          "residency": {
+            "main_experts": 1048,
+            "main_gb": 8.9,
+            "aux_experts": 2705,
+            "aux_gb": 22.9
+          }
+        },
+        "fused": {
+          "binary_sha256": "095cb6c3b598041d4713a2e32860258a26b99a37e57db05b8f05a050f15f42b8",
+          "command": [
+            "/home/lxe/ai/ds41/guard.sh",
+            "cs-fused",
+            "118",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/oracle-fused",
+            "--model",
+            "/home/lxe/ai/ds41/hf-t16one/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf",
+            "--rank",
+            "/home/lxe/ai/ds41/calib/rank.json",
+            "--ids",
+            "/home/lxe/ai/ds41/prompt8000.ids",
+            "--continuation",
+            "/home/lxe/ai/ds41/codex-validation-20261024/phase2/continuation.ids",
+            "--steps",
+            "64",
+            "--ctx",
+            "262144",
+            "--rounds",
+            "3",
+            "--widths",
+            "1",
+            "--rollback-steps",
+            "0",
+            "--warmup",
+            "0",
+            "--chunk",
+            "8192",
+            "--arena-gb",
+            "110",
+            "--prefill-probe",
+            "--prefill-full-only",
+            "--dump-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/fused/fused.f32",
+            "--compare-reference",
+            "/home/lxe/ai/ds41/codex-prefill-20261025/fused/control-a.f32"
+          ],
+          "environment": {
+            "DSX_ADAPT": "0",
+            "DSX_CPU_THREADS": "14",
+            "DSX_AUX_ADAPTIVE": "0",
+            "DSX_AUX_STREAM": "0",
+            "DSX_T16_WARP_HAD": "1",
+            "DSX_T16_SPECIALIZED_DQ": "1",
+            "DSX_PREFILL_REUSE_BUFFERS": "1",
+            "DSX_T16_FUSED_POST_GU": "1",
+            "DSX_DEFER": "3"
+          },
+          "cases": {
+            "8000": {
+              "cold": {
+                "event": "prefill_probe",
+                "profiled": false,
+                "round": 0,
+                "prefix_tokens": 0,
+                "new_tokens": 8000,
+                "elapsed_s": 8.621847453,
+                "new_tok_s": 927.8753821162045,
+                "top1": 528,
+                "nonfinite_logits": 0,
+                "logit_fingerprint": "3cefc10807d80588"
+              },
+              "warm": [
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 1,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 7.938722538,
+                  "new_tok_s": 1007.7188063579102,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "3cefc10807d80588"
+                },
+                {
+                  "event": "prefill_probe",
+                  "profiled": false,
+                  "round": 2,
+                  "prefix_tokens": 0,
+                  "new_tokens": 8000,
+                  "elapsed_s": 7.958993907,
+                  "new_tok_s": 1005.1521704224368,
+                  "top1": 528,
+                  "nonfinite_logits": 0,
+                  "logit_fingerprint": "3cefc10807d80588"
+                }
+              ],
+              "warm_weighted_tps": 1006.4338520160339,
+              "decode_weighted_tps": 40.410009988072716,
+              "decode_fingerprints": [
+                "af44d6c0b077f63f",
+                "af44d6c0b077f63f"
+              ]
+            }
+          },
+          "comparisons": [
+            {
+              "event": "placement_reference_comparison",
+              "reference": "/home/lxe/ai/ds41/codex-prefill-20261025/fused/control-a.f32",
+              "difference": {
+                "rows": 1,
+                "values": 129280,
+                "changed_bits_values": 0,
+                "nonfinite_values": 0,
+                "max_abs_logit_difference": 0.0,
+                "top1_changed_rows": 0,
+                "mean_full_vocab_kl_reference_to_candidate": 0.0,
+                "max_row_full_vocab_kl": 0.0,
+                "changed_rows": []
+              }
+            }
+          ],
+          "residency": {
+            "main_experts": 1048,
+            "main_gb": 8.9,
+            "aux_experts": 2705,
+            "aux_gb": 22.9
+          }
+        }
+      },
+      "postflight": {
+        "server_pids": [
+          3500903
+        ],
+        "server_md5": "363ced3dada78d1271549592de700e3d",
+        "model_unchanged": true,
+        "power_restored": true,
+        "health": {
+          "status": "ok",
+          "model": "deepseek-v4.1-flash",
+          "pending": 0
+        },
+        "restored": true
+      },
+      "kernel_audit": {
+        "cases": 84,
+        "changed_values": 0,
+        "explicit_compared_values": 176652288
+      },
+      "peak_cpu_c": 63.0,
+      "raw_sha256": {
+        "control-a.f32": "abf554e03a1fbbeaaebe05524b4648bf2cb997b248bb4d915cecae5bf156d6ec",
+        "control-a.log": "0dfedd178d1bb5e2476f528629a2a1b5fcced3ea28d9f17ce3aadf38168fb3a9",
+        "kernel-audit.jsonl": "caec4659e793873b55f745bc47fb02814cb19189163574650b7adbdbdbf2ef2d",
+        "preflight.json": "e5f2ea9afbbc2f1953ee60acd8953d6ac957ed1285376dfcdf33c0c7ded4be04",
+        "server-before.log": "185bee09ad754fd5116366a46ce9f19c7a808a5172f079f483fbf1c023fac22e",
+        "control-b.f32": "abf554e03a1fbbeaaebe05524b4648bf2cb997b248bb4d915cecae5bf156d6ec",
+        "control-b.log": "e99a911e0b477333de223923e2f9302b0e957592542eda108c899b5017d3b517",
+        "events.jsonl": "6992f0f2069de875f9a911f0d171a325f11c7a10c1dd51cab09172fa742972be",
+        "fused.f32": "abf554e03a1fbbeaaebe05524b4648bf2cb997b248bb4d915cecae5bf156d6ec",
+        "fused.log": "05da67fdd0598bb2523c9f152670cb5b1f3b8e711d29ed9618ab99ac7ff47ca2",
+        "hardware.jsonl": "c0c5325a3fee9fe3ba3f947a62043f37751b0a939ca876230b9e399faf507a78",
+        "postflight.json": "36f5b87882b4c57bbe40f2c863dec714ee96a8a21201948d4b02095e2af1023b"
+      }
+    }
+  }
+}

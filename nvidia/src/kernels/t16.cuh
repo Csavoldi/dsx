@@ -76,6 +76,119 @@ extern "C" __global__ void dequant_t16_f16(int k2, const unsigned char *w, __hal
   o[1] = make_uint4(h[4], h[5], h[6], h[7]);
 }
 
+// Fixed-bit specialization preserves decoded fp16 weights while removing runtime divisions.
+template<int K2, bool REPACKED>
+__device__ __forceinline__ void t16_dequant_specialized(const unsigned char *w, __half *out, int n, int k) {
+  constexpr int k2 = K2;
+  constexpr bool repacked = REPACKED;
+
+  const int kt = k >> 4, nt = n >> 4;
+  const int ti = blockIdx.x * 32 + (threadIdx.x & 31), c = threadIdx.x >> 5, tj = blockIdx.y;
+  if (ti >= kt) return;
+  const int nw = 4 * k2, nb = 32 * nw;
+  // the tile as u32 words (every layout's tiles are 16 * k2 bytes, and matrices start 4-byte aligned)
+  const uint32_t *tw = (const uint32_t *)(w + (repacked ? (size_t)ti * nt + tj : (size_t)tj * kt + ti) * 4 * nw);
+  const int t0 = c * 16;
+  const int s0 = t16_bit_end(k2, t0) - 16 + nb;  // unwrapped start of position t0's window (t0 = 0 wraps)
+  int i0 = (s0 >> 5) % nw;
+  const int i1 = i0 + 1 == nw ? 0 : i0 + 1, i2 = i1 + 1 == nw ? 0 : i1 + 1;
+  uint32_t w0 = tw[i0], w1 = tw[i1], w2 = tw[i2];
+  if (!repacked) {  // stored: stream-order bytes; GPU layout: little-endian words already MSB-first
+    w0 = __byte_perm(w0, 0, 0x0123), w1 = __byte_perm(w1, 0, 0x0123), w2 = __byte_perm(w2, 0, 0x0123);
+  }
+  const int sh = s0 & 31;
+  const uint64_t hi = (uint64_t)w0 << 32 | w1;
+  const uint64_t win = sh ? (hi << sh) | (w2 >> (32 - sh)) : hi;  // stream bits s0 .. s0 + 63, MSB first
+  const int base = nb - s0;
+  uint32_t h[8];
+#pragma unroll
+  for (int r = 0; r < 16; r += 2) {
+    const int e0 = t16_bit_end(k2, t0 + r) + base, e1 = t16_bit_end(k2, t0 + r + 1) + base;
+    const __half v0 = t16_value((uint32_t)(win >> (64 - e0)) & 0xFFFFu);
+    const __half v1 = t16_value((uint32_t)(win >> (64 - e1)) & 0xFFFFu);
+    h[r >> 1] = (uint32_t)__half_as_ushort(v0) | (uint32_t)__half_as_ushort(v1) << 16;
+  }
+  uint4 *o = (uint4 *)(out + (size_t)(tj * 16 + c) * k + ti * 16);
+  o[0] = make_uint4(h[0], h[1], h[2], h[3]);
+  o[1] = make_uint4(h[4], h[5], h[6], h[7]);
+}
+extern "C" __global__ void dequant_t16_f16_specialized(int k2, const unsigned char *w, __half *out, int n, int k, int repacked) {
+  if (repacked) {
+    if (k2 == 3) t16_dequant_specialized<3, true>(w, out, n, k);
+    else if (k2 == 4) t16_dequant_specialized<4, true>(w, out, n, k);
+    else t16_dequant_specialized<5, true>(w, out, n, k);
+  } else {
+    if (k2 == 3) t16_dequant_specialized<3, false>(w, out, n, k);
+    else if (k2 == 4) t16_dequant_specialized<4, false>(w, out, n, k);
+    else t16_dequant_specialized<5, false>(w, out, n, k);
+  }
+}
+
+// One warp owns 128 values. Butterfly order matches the block-wide reference exactly.
+__device__ __forceinline__ void t16_had128_strided(float (&v)[4], int lane) {
+#pragma unroll
+  for (int h = 1; h < 32; h <<= 1) {
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      const float other = __shfl_xor_sync(0xffffffffu, v[j], h);
+      v[j] = (lane & h) ? other - v[j] : v[j] + other;
+    }
+  }
+  const float a0 = v[0] + v[1], a1 = v[0] - v[1];
+  const float a2 = v[2] + v[3], a3 = v[2] - v[3];
+  v[0] = a0 + a2; v[1] = a1 + a3;
+  v[2] = a0 - a2; v[3] = a1 - a3;
+}
+extern "C" __global__ void t16_pre_warp(const __half *src, __half *dst, const __half *suh, int cols, int rows) {
+  const int group = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  const int groups = cols / 128, lane = threadIdx.x & 31;
+  if (group >= rows * groups) return;
+  const int col = (group % groups) * 128 + lane;
+  const size_t base = (size_t)(group / groups) * cols + col;
+  float v[4];
+#pragma unroll
+  for (int j = 0; j < 4; ++j) v[j] = __half2float(src[base + j * 32]) * __half2float(suh[col + j * 32]);
+  t16_had128_strided(v, lane);
+#pragma unroll
+  for (int j = 0; j < 4; ++j) dst[base + j * 32] = __float2half(v[j] * 0.08838834764831845f);
+}
+extern "C" __global__ void t16_post_warp(float *y, const __half *svh, int cols, float gain, int rows) {
+  const int group = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  const int groups = cols / 128, lane = threadIdx.x & 31;
+  if (group >= rows * groups) return;
+  const int col = (group % groups) * 128 + lane;
+  const size_t base = (size_t)(group / groups) * cols + col;
+  float v[4];
+#pragma unroll
+  for (int j = 0; j < 4; ++j) v[j] = y[base + j * 32];
+  t16_had128_strided(v, lane);
+#pragma unroll
+  for (int j = 0; j < 4; ++j) y[base + j * 32] = v[j] * 0.08838834764831845f * __half2float(svh[col + j * 32]) * gain;
+}
+
+// Gate/up Hadamard post transforms followed by the unchanged bf16-rounded SwiGLU.
+// The intermediate post-transformed gate/up arrays are dead after SwiGLU, so keep them in registers.
+extern "C" __global__ void t16_post_gu_warp(const float *gate, const float *up,
+    const __half *sg, const __half *su, const float *weights, __half *out,
+    int cols, int rows, float gain, float lim) {
+  const int group = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  const int groups = cols / 128, lane = threadIdx.x & 31;
+  if (group >= rows * groups) return;
+  const int row = group / groups, col = (group % groups) * 128 + lane;
+  const size_t base = (size_t)row * cols + col;
+  float g[4], u[4];
+#pragma unroll
+  for (int j = 0; j < 4; ++j) { g[j] = gate[base + j * 32]; u[j] = up[base + j * 32]; }
+  t16_had128_strided(g, lane); t16_had128_strided(u, lane);
+  const float wt = weights ? weights[row] : 1.f;
+#pragma unroll
+  for (int j = 0; j < 4; ++j) {
+    const float gv = fminf(g[j] * 0.08838834764831845f * __half2float(sg[col + j * 32]) * gain, lim);
+    const float uv = fminf(fmaxf(u[j] * 0.08838834764831845f * __half2float(su[col + j * 32]) * gain, -lim), lim);
+    out[base + j * 32] = __float2half(bf16r(gv / (1.f + expf(-gv)) * uv * wt));
+  }
+}
+
 // stored layout -> GPU layout (exllamav3's tile order, little-endian u32 words); suh / svh copied. One thread per
 // 4 bytes of the matrix (trellis | suh | svh, the same size).
 extern "C" __global__ void repack_t16(int k2, const unsigned char *src, unsigned char *dst, int k, int n) {

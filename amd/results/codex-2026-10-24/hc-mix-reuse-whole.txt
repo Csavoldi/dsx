@@ -1,0 +1,32 @@
+== env DSXA_ATTN_MERGE_OUT 0
+== reload /root/stage2-base.hsaco
+reloaded /root/stage2-base.hsaco
+== bsweep 8192 4000 512 4 distinct
+B=4   ctx~4000: 15.9 ms/step, 62.8 tok/s per session, 251 total | kernels 16.7 ms in 1050 launches: verify experts gu 2.96/40, verify experts down 1.77/40, prep_t 1.63/240, attn_bs 1.35/40, hc_mix_t 1.04/83, mm router+shared 0.93/40, hc_step 0.80/83, mm wo_b 0.76/40, mm q_b 0.75/40, mm wo_a 0.68/40, iscore_b 0.52/9, mm q_a/kv/comp 0.52/40, route_t 0.39/40, batch shared down 0.37/40, batch head 0.35/1, bgroup 0.31/40, attn_out_b 0.31/40, attn_merge_b 0.29/40, rope_b 0.29/48, kv_b 0.24/40, itopk_b 0.14/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, embed_t 0.01/1, hc_final_b 0.01/1
+== reload /root/hc-mix-reuse.hsaco
+reloaded /root/hc-mix-reuse.hsaco
+== bsweep 8192 4000 512 4 distinct
+B=4   ctx~4000: 15.7 ms/step, 63.9 tok/s per session, 256 total | kernels 16.8 ms in 1050 launches: verify experts gu 3.07/40, verify experts down 1.82/40, prep_t 1.64/240, attn_bs 1.34/40, hc_mix_t 0.95/83, mm router+shared 0.92/40, hc_step 0.80/83, mm wo_b 0.76/40, mm q_b 0.75/40, mm wo_a 0.68/40, iscore_b 0.52/9, mm q_a/kv/comp 0.51/40, route_t 0.38/40, batch shared down 0.37/40, batch head 0.35/1, attn_out_b 0.31/40, bgroup 0.30/40, attn_merge_b 0.29/40, rope_b 0.29/48, kv_b 0.24/40, itopk_b 0.15/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/stage2-base.hsaco
+reloaded /root/stage2-base.hsaco
+== bsweep 8192 4000 512 4 distinct
+B=4   ctx~4000: 15.8 ms/step, 63.4 tok/s per session, 254 total | kernels 16.9 ms in 1050 launches: verify experts gu 3.09/40, verify experts down 1.84/40, prep_t 1.64/240, attn_bs 1.34/40, hc_mix_t 1.04/83, mm router+shared 0.94/40, hc_step 0.81/83, mm wo_b 0.76/40, mm q_b 0.75/40, mm wo_a 0.69/40, iscore_b 0.52/9, mm q_a/kv/comp 0.52/40, route_t 0.38/40, batch shared down 0.36/40, batch head 0.35/1, attn_out_b 0.30/40, bgroup 0.30/40, attn_merge_b 0.29/40, rope_b 0.28/48, kv_b 0.23/40, itopk_b 0.15/8, mm engram 0.08/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.03/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/hc-mix-reuse.hsaco
+reloaded /root/hc-mix-reuse.hsaco
+== bsweep 8192 4000 512 4 distinct
+B=4   ctx~4000: 15.7 ms/step, 63.7 tok/s per session, 255 total | kernels 16.7 ms in 1050 launches: verify experts gu 3.03/40, verify experts down 1.80/40, prep_t 1.63/240, attn_bs 1.34/40, hc_mix_t 0.96/83, mm router+shared 0.94/40, hc_step 0.81/83, mm wo_b 0.76/40, mm q_b 0.75/40, mm wo_a 0.69/40, iscore_b 0.52/9, mm q_a/kv/comp 0.51/40, route_t 0.38/40, batch shared down 0.37/40, batch head 0.35/1, attn_out_b 0.30/40, bgroup 0.30/40, attn_merge_b 0.29/40, rope_b 0.28/48, kv_b 0.23/40, itopk_b 0.15/8, mm engram 0.08/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/stage2-base.hsaco
+reloaded /root/stage2-base.hsaco
+== bsweep 8192 4000 512 4 distinct
+B=4   ctx~4000: 15.8 ms/step, 63.5 tok/s per session, 254 total | kernels 16.8 ms in 1050 launches: verify experts gu 3.03/40, verify experts down 1.79/40, prep_t 1.64/240, attn_bs 1.35/40, hc_mix_t 1.04/83, mm router+shared 0.94/40, hc_step 0.81/83, mm wo_b 0.76/40, mm q_b 0.75/40, mm wo_a 0.68/40, iscore_b 0.52/9, mm q_a/kv/comp 0.51/40, route_t 0.39/40, batch shared down 0.36/40, batch head 0.35/1, attn_out_b 0.31/40, bgroup 0.30/40, attn_merge_b 0.29/40, rope_b 0.28/48, kv_b 0.24/40, itopk_b 0.15/8, mm engram 0.09/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, hc_final_b 0.01/1, embed_t 0.01/1
+== reload /root/hc-mix-reuse.hsaco
+reloaded /root/hc-mix-reuse.hsaco
+== bsweep 8192 4000 512 4 distinct
+B=4   ctx~4000: 15.6 ms/step, 64.2 tok/s per session, 257 total | kernels 16.7 ms in 1050 launches: verify experts gu 3.04/40, verify experts down 1.81/40, prep_t 1.63/240, attn_bs 1.34/40, hc_mix_t 0.95/83, mm router+shared 0.93/40, hc_step 0.80/83, mm wo_b 0.76/40, mm q_b 0.76/40, mm wo_a 0.68/40, iscore_b 0.52/9, mm q_a/kv/comp 0.51/40, route_t 0.39/40, batch shared down 0.36/40, batch head 0.36/1, attn_out_b 0.31/40, bgroup 0.30/40, attn_merge_b 0.29/40, rope_b 0.28/48, kv_b 0.23/40, itopk_b 0.14/8, mm engram 0.08/2, comp_b 0.08/4, argmax_b 0.04/1, icand_b 0.02/1, engram_act_t 0.02/2, engram_sums 0.01/2, vzero 0.01/2, (memset) 0.01/2, embed_t 0.01/1, hc_final_b 0.01/1
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1157 (6 s, 18.1 ms/step)
+pos 512: kl 0.0868 (11 s, 18.3 ms/step)
+pos 768: kl 0.0780 (17 s, 18.5 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 18.59, "replicas": [{"ppl": 8.8512, "kl_top256": 0.075588, "top1_agree": 0.883309}]}
+== reload /root/stage2-base.hsaco
+reloaded /root/stage2-base.hsaco

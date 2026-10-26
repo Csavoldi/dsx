@@ -1,83 +1,165 @@
-# dsx-amd: the MI325X runner
+<h1 align="center">dsx-amd</h1>
 
-This page describes the original single-sequence path and its model-release measurements. The later batched
-scheduler is selected with `serve --slots N --batch-ctx C`; it adds prompt-lookup speculation for sampled requests,
-an optional `--admin-port`, and per-step graphs. See [RUNNER.md](RUNNER.md) for the separate measurements and
-[demo/README.md](demo/README.md) for reproducing the completed demo. Rental 7 ended on October 23; the recorded
-droplet and key were deleted. These instructions do not describe an active hosted service.
+<p align="center"><b>DeepSeek-V4.1-Flash-1017 (552 B + 196 B Engram) on one AMD MI325X</b><br>
+~100 tokens/s per session with four coding agents · full routing, no expert pruning · Rust + HIP ·
+OpenAI- and Anthropic-compatible API</p>
 
-DeepSeek-V4.1-Flash-1017 on one AMD Instinct MI325X (gfx942, 256 GiB HBM3E): the whole model except the Engram
-tables in HBM, one HIP graph per decode step, MFMA prompt kernels, DSpark speculative decoding. Rust + HIP; the
-config, readers, CPU reference and server come from [`../core`](../core). Measurements: [../FINDINGS-AMD.md](../FINDINGS-AMD.md).
+<p align="center">
+<a href="https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--mxfp4-yellow" alt="Model: dsx-mxfp4"></a>
+<a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+<a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust"></a>
+<a href="https://rocm.docs.amd.com/"><img src="https://img.shields.io/badge/ROCm-7-ED1C24?logo=amd" alt="ROCm 7"></a>
+</p>
 
-## Run
+**[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)** on one 256 GiB AMD
+Instinct MI325X. dsx-amd keeps the model's experts and dense weights in GPU memory, with the 196 B Engram table on
+NVMe and in the host's page cache. It is an engine written in Rust and HIP for this model and this GPU. The model
+configuration, file readers, CPU reference and API server come from the same [`dsx-core`](../core) as the
+[two-3090 runner](../README.md).
 
-| 1x MI325X | |
+- **Four agents at once:** about 100 decode tokens/s per session in measured four-session coding workloads.
+- **Room for the model:** native MXFP4 experts mixed with fitted 3-bit experts, placed to fit the available GPU memory.
+- **Close to the original:** the published build picks the same next token as FP8 90.6% of the time on the Lucebox eval.
+  The serving profile below makes more room for batching and drafts, with about 88.3% agreement in an earlier evaluation of its expert placement.
+- **Plugs into your tools:** OpenAI- and Anthropic-compatible API with streaming and tool calls, plus a chat in the browser.
+- **Long conversations:** a 256K context budget and up to eight concurrent sessions in the coding profile.
+
+## The model
+
+https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4
+
+Six GGUF shards, 270.5 GB. The published build keeps 8,992 routed experts in the checkpoint's own MXFP4 format and
+fits the remaining 6,368 to a 3-bit codebook. All 15,360 experts remain available to the router. Dense weights retain
+the checkpoint's FP8 and BF16 formats; the Engram table is read from the official checkpoint's separate shards.
+
+Against the FP8 model on the [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) eval
+(8 × 1,024 tokens), the published build has **90.6% next-token agreement**, KL 0.049 and perplexity 8.71
+(FP8: 8.56).
+
+The coding profile reserves more GPU memory for concurrent sessions and the checkpoint's native draft stack.
+Its expert placement is 3,378 MXFP4 and 11,982 3-bit experts, about 235.8 GB. An earlier evaluation with this expert
+placement measured top-256 KL 0.076–0.083 and about 88.3% next-token agreement. That is a placement measurement,
+not a fresh quality evaluation of the final serving build. [Measurements and quantization details](../FINDINGS-AMD.md).
+
+## How fast is it?
+
+The coding profile measured **102–108 decode tokens/s per session** in two fixed four-session code replays.
+Earlier trials reached as low as 88; these are short windows with all four sessions decoding and no prefill,
+so they do not describe end-to-end request throughput. A single-session code replay measured 246 tokens/s;
+eight concurrent sessions averaged 61 each, or 486 total. The four-session workload is the main tuning target.
+
+The earlier published-build measurements used a different serving configuration:
+
+| Published build, one MI325X | |
 |---|---:|
-| Decode at 4K / 128K / 256K context | 114 / 112 / 110 tok/s |
-| With DSpark drafts (greedy) | 1.4-1.7x on code, 1.2-1.4x on math, ~1.0x on prose |
-| Prefill, 4K / 16K / 128K-token prompt | 1,840 / 1,640 / 1,160 tok/s |
-| Quality vs FP8 (Lucebox eval) | KL 0.049, top-1 90.6% |
-| Cost at $3.80/h, one stream | $9.3 per million generated tokens, $0.64 per million prompt tokens |
+| Decode at 4K / 128K / 256K context | 114 / 112 / 110 tokens/s |
+| Prefill at 4K / 16K / 128K | ~1,640 / ~1,640 / ~1,160 tokens/s |
+| Greedy DSpark speedup | 1.4–1.7× on code, 1.2–1.4× on math, ~1.0× on prose |
 
-From the repo root:
+The coding profile uses target-verified five-token native MTP proposals and prompt lookup. At positive temperature,
+proposals go through probabilistic acceptance and rejection. It gives ongoing output priority by running extra
+decode rounds between prompt chunks. [Profile settings and limits](box/AGENTIC_MI325X.md).
+
+## Quick start
+
+From the repository root, download the build and the official checkpoint files used for configuration, the Engram
+table and the native draft stack:
 
 ```bash
 hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-mxfp4 --local-dir dsx-mxfp4
 hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --local-dir v41-1017 \
-  --include config.json tokenizer.json model.safetensors.index.json model-00047-of-00048.safetensors model-00048-of-00048.safetensors
+  --include config.json tokenizer.json model.safetensors.index.json \
+    model-00044-of-00048.safetensors model-00045-of-00048.safetensors \
+    model-00046-of-00048.safetensors model-00047-of-00048.safetensors \
+    model-00048-of-00048.safetensors
 cp dsx-mxfp4/dsx-engram.json v41-1017/
 
-cargo build --release -p dsx-amd      # ROCm 7, gfx942
-DSXA_WEIGHTS=dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf \
-  ./target/release/dsx-amd serve --model v41-1017 --ctx 262144 --host 0.0.0.0 --port 8090
+cargo build --release -p dsx-amd
 ```
 
-`--model` is the official checkpoint directory (config, tokenizer, Engram shards, plus `dsx-engram.json` from the
-quant repo). `DSXA_DSPARK=3` adds the checkpoint's DSpark draft layers for greedy requests; they are read from the
-official `mtp.*` tensors (add `model-00044-of-00048.safetensors` .. `model-00046-of-00048.safetensors` to the
-download) and take 6.5 GB of HBM, so 1,613 cold experts go to 3-bit
-(KL 0.056). Measurements and design notes: [../FINDINGS-AMD.md](../FINDINGS-AMD.md).
-
-The server is the same as the NVIDIA runner's (web UI at `/`, OpenAI-compatible `/v1`, Anthropic `/v1/messages`).
-
-## Build
+Start the coding profile:
 
 ```bash
-cargo build --release -p dsx-amd    # from the repo root; ROCm 7 (hipcc at /opt/rocm/bin, or HIPCC=...)
+DSX_MODEL_DIR="$PWD/v41-1017" \
+DSXA_WEIGHTS="$PWD/dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf" \
+DSX_RANK="$PWD/dsx-mxfp4/expert-rank.json" \
+  bash amd/box/serve-agentic-mi325x.sh
 ```
 
-Without ROCm the host code still compiles (`cargo check -p dsx-amd`), with no kernels embedded.
+Open `http://localhost:8090/` for the web UI, or point an OpenAI client at `http://localhost:8090/v1`
+(Anthropic clients at `http://localhost:8090`). The profile binds the API and admin service to loopback;
+use an SSH tunnel when the GPU is on another machine.
 
-## Commands
+```bash
+curl http://localhost:8090/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "deepseek-v4.1-flash",
+    "stream": true,
+    "reasoning_effort": "none",
+    "messages": [
+      {"role": "user", "content": "Write a haiku about MoE routing."}
+    ]
+  }'
+```
+
+The profile defaults to temperature 0.1 and top_p 1.0. A request can override them. The decode measurements above
+used thinking off, as in this example.
+
+To run the published build without the draft stack or the coding profile:
+
+```bash
+DSXA_WEIGHTS="$PWD/dsx-mxfp4/DeepSeek-V4.1-Flash-1017-dsx-mxfp4-00001-of-00006.gguf" \
+  ./target/release/dsx-amd serve --model v41-1017 --ctx 262144 \
+    --host 127.0.0.1 --port 8090
+```
+
+## Requirements
 
 | | |
 |---|---|
-| `dsx-amd serve --model DIR` | the API server and web UI; `DIR` is the official checkpoint directory (config, tokenizer, Engram shards, `dsx-engram.json`) |
-| `dsx-amd export --model DIR --rank RANK --out FILE` | load the checkpoint with the MXFP4 + 3-bit placement and write it as one GGUF (split with `dsx split`) |
-| `dsx-amd eval --model DIR --eval EVALDIR` | KL / top-1 / perplexity on Lucebox's 1017 eval set |
-| `dsx-amd check --model DIR --ids ...` | GPU decode (or `DSXA_PREFILL=n` the prompt path) against the CPU reference, per layer with `DSX_DUMP` |
-| `dsx-amd bench`, `selftest` | decode speed at a context length; kernel tests against CPU implementations |
-| `dsx-amd dev --model DIR` | load once, then run commands written to the `--cmd` file (default `/root/dev.cmd`) (`bench`, `prof`, `pbench`, `vtest`, `spec`, `eval`, `reload KERNELS.hsaco`, ...) |
+| GPU | One AMD Instinct MI325X, 256 GiB HBM3E (`gfx942`) |
+| ROCm | 7; measured on 7.14 |
+| Host | Tested with 20 vCPUs and 157 GiB RAM |
+| Disk | NVMe, with room for the 270.5 GB export and the official Engram and MTP shards |
+| Build | Rust and `hipcc` (`/opt/rocm/bin/hipcc`, or set `HIPCC`) |
 
-| Environment | |
+The kernels compile for `gfx942`. Other AMD GPUs need their own kernel build and memory configuration.
+Without ROCm, the host code can be checked with `cargo check -p dsx-amd`, but the resulting build has no GPU kernels.
+
+## Tools
+
+Run `./target/release/dsx-amd --help` for the command list, or add `--help` to a command for its options.
+
+| Command | |
 |---|---|
-| `DSXA_WEIGHTS=FILE.gguf` | load a dsx-amd export (the first shard) instead of re-quantizing the checkpoint |
-| `DSXA_DSPARK=3` (or `2`) | load the DSpark draft layers (official shards 44-46), experts in a 3-bit (2-bit) codebook; greedy requests use them |
-| `DSXA_SPEC_MIN=2.0` | accepted drafts per pass below which speculation pauses for 15 plain tokens |
-| `DSXA_VGRAPH=0` | verify / draft passes without HIP graphs |
-| `DSXA_HEAD_FP8=1`, `DSXA_V2=1`, `DSXA_MM1=1`, `DSXA_ATTN_T=1` | alternative kernels (FP8 head, global-activation GEMVs, the first prompt GEMM, per-head-group prompt attention) |
+| `serve --model DIR` | API server and web UI |
+| `export --model DIR --rank RANK --out FILE` | write the MXFP4 + 3-bit placement to GGUF; split with `dsx split` |
+| `eval --model DIR --eval EVALDIR` | KL, next-token agreement and perplexity on the Lucebox eval |
+| `check --model DIR --ids ...` | compare GPU decode with the CPU reference |
+| `bench`, `selftest` | decode timing and kernel checks against CPU implementations |
+| `dev --model DIR` | load once, then run benchmarks or reload kernels through a command file |
 
-## Layout
+## How it works
+
+- **Experts stay in GPU memory.** The loader keeps the hottest experts in native MXFP4 and uses fitted 3-bit
+  codebooks for colder experts. The memory budget determines how many fit in each format.
+- **The Engram table stays on the host.** Each token looks up a small set of rows from the NVMe-backed table;
+  the operating system caches frequently used pages in RAM.
+- **Drafts save weight reads.** The checkpoint's MTP stack proposes tokens, and the main model verifies several
+  positions together. Prompt lookup can also propose continuations from text already in the conversation.
+- **Sessions share GPU work.** Continuous batching combines active sessions while admitting new prompts in chunks.
+  The coding profile limits verification rows and spaces prompt chunks to keep decoding responsive.
+
+## Docs
 
 | | |
 |---|---|
-| `src/decode.rs` | weights to HBM (placement by free memory), the decode step recorded as one HIP graph |
-| `src/prefill.rs` | the prompt path (2048-token chunks), also run for verify passes and DSpark draft blocks |
-| `src/verify.rs`, `kernels/verify.h` | multi-token GEMVs for verify passes (positions as MFMA columns, device-side expert grouping) |
-| `src/dspark.rs` | the DSpark draft stack, window updates, the speculative loop |
-| `src/load.rs`, `src/ck.rs`, `src/export.rs` | checkpoint tensors to device tile layouts; checkpoint or export as one source; the GGUF export |
-| `src/serve.rs` | the server's engine (prefix reuse, greedy through DSpark when loaded) |
-| `kernels/` | `dsxa.hip` (decode kernels), `gemv.h` (weight tile formats, MFMA GEMV waves), `prefill.h` (prompt kernels), `verify.h` |
-| `box/`, `tools/`, `lab/` | setup scripts for a rented box, codebook fitting and eval conversion, kernel experiments |
-| `results/` | raw logs behind the numbers |
+| [box/AGENTIC_MI325X.md](box/AGENTIC_MI325X.md) | coding profile, memory placement, sampling and live tuning |
+| [../FINDINGS-AMD.md](../FINDINGS-AMD.md) | published-build measurements, quantization and kernel design |
+| [RUNNER.md](RUNNER.md) | development notes and earlier experiments |
+| [../core/](../core/) | shared model code, readers, CPU reference, server and web UI |
+| [src/](src/), [kernels/](kernels/) | AMD runner and HIP kernels |
+| [box/](box/), [tools/](tools/), [lab/](lab/) | host setup, quantization tools and kernel experiments |
+
+MIT license.

@@ -1,0 +1,30 @@
+{
+  "source_base": "bf5fcc0255fc774ac49348eabf25e4cf8269ac75",
+  "experiment_commit": "0f59d63647f1c6722135fcdfc3f37f959769598d",
+  "source_sha256": {
+    "nvidia/Cargo.toml": "97b7aa4d3c3140259024d37d0d5d436e34fdbdca3757ebed555630a667f4559e",
+    "nvidia/src/gpumodel.rs": "7558b446012b4fd469d6331020f4b9fe67cc3fbdbcebbb62fdc68218e3d19599",
+    "nvidia/src/gpumodel/prefill.rs": "e062000092d1cfdeb0401ec4ab1377fafb5c2f52f2ec4432f2e52a6b9a952251",
+    "nvidia/src/kernels/t16.cuh": "9ebc906a0a2e5b49199502a9cd48b8e32950fafbe019a961042b9adc8ee53101",
+    "nvidia/src/bin/prefill-bench.rs": "faa1a217b7fcd9a0d38db3c55b489c086fa7864754375d22a1f93af8ebbb3066",
+    "nvidia/src/bin/t16-prefill-audit.rs": "c29d384be0d707f1f741be59e13e9a4caddf331dc12ee46e995860affcd3bf0b"
+  },
+  "fixtures_sha256": {
+    "prompt3000.ids": "c19e1bd5778e64a872f5889526e3e1d27a2f9acc55a3fbb856e05109f578d494",
+    "prompt8000.ids": "ab1ec61991f4005ae953f8e0820c2afeac1a330c62fea998ea1efc8c11c33b15",
+    "continuation.ids": "0f0c1acb9c4f441f426927c7bf4d9d42c3c3e220321d16a75adb253a41b2c8a4"
+  },
+  "rank_sha256": "4afadccff5134056539193ae92c5a8e79278867ef06bdc52b4db3df278491674",
+  "server_sha256": "a90d8cf6598d1145685fbc2ff25cf165e05c22ee6d0b10c41682f10894a5982e",
+  "prefill_bench_sha256": "9fc9d6d6479ceeaafd38a2cde73667ae0c2dde13ebf1633bd1af51fd15cfc7e9",
+  "source_commit": "0bd1b1754371144e1827f82a00228e578ac086e1",
+  "benchmark_cpu_package_limit_w": 125,
+  "hardware_readback": {
+    "utc": "2026-10-25T14:07:31.680276+00:00",
+    "scope": "After checkpoint, while cube gauntlet is running; controllers did not change GPU caps.",
+    "gpu_csv": [
+      "0, NVIDIA GeForce RTX 3090, 230.00 W, 350.00 W, 24576 MiB",
+      "1, NVIDIA GeForce RTX 3090, 230.00 W, 420.00 W, 24576 MiB"
+    ]
+  }
+}

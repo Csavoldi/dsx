@@ -1,0 +1,27 @@
+== reload /root/stage2-base.hsaco
+reloaded /root/stage2-base.hsaco
+== env DSXA_ATTN_MERGE_OUT 0
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1163 (5 s, 18.0 ms/step)
+pos 512: kl 0.0869 (11 s, 18.2 ms/step)
+pos 768: kl 0.0775 (17 s, 18.3 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 18.47, "replicas": [{"ppl": 8.8629, "kl_top256": 0.075480, "top1_agree": 0.881354}]}
+== env DSXA_ATTN_MERGE_OUT 1
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1093 (5 s, 17.9 ms/step)
+pos 512: kl 0.0840 (11 s, 18.1 ms/step)
+pos 768: kl 0.0753 (17 s, 18.2 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 18.34, "replicas": [{"ppl": 8.8753, "kl_top256": 0.072737, "top1_agree": 0.886608}]}
+== env DSXA_ATTN_MERGE_OUT 0
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1176 (5 s, 18.1 ms/step)
+pos 512: kl 0.0874 (11 s, 18.3 ms/step)
+pos 768: kl 0.0774 (17 s, 18.4 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 18.51, "replicas": [{"ppl": 8.8121, "kl_top256": 0.075011, "top1_agree": 0.882576}]}
+== env DSXA_ATTN_MERGE_OUT 1
+== beval /data/models/lucebox/eval 8 1
+pos 256: kl 0.1207 (5 s, 17.9 ms/step)
+pos 512: kl 0.0880 (11 s, 18.1 ms/step)
+pos 768: kl 0.0785 (17 s, 18.2 ms/step)
+{"batch": 8, "tokens": 8184, "ms_per_step": 18.37, "replicas": [{"ppl": 8.8672, "kl_top256": 0.075465, "top1_agree": 0.883798}]}
+== env DSXA_ATTN_MERGE_OUT 0

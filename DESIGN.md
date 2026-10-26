@@ -16,7 +16,7 @@ these choices is in [FINDINGS.md](FINDINGS.md), section 3.
 4. **Roles follow the links.** At startup each GPU's host bandwidth is measured: the best-linked GPU (GPU0 here) is
    the main one; other GPUs are expert stores. A store whose link is at least half as fast swaps experts like the main
    GPU's cache and takes a share of prefill's expert stream; a slower one (GPU1 on a PCIe 3.0 x4 slot) keeps a fixed
-   set and carries only activations.
+   set. It receives activations and computes its resident experts, without streaming nonresident expert weights.
 5. **Quant formats fit the kernels:** the T16 CPU path uses AVX-VNNI integer dot products, while its GPU decode path uses
    staged trellis loads and `dp4a`. Other supported expert formats use their own CPU and GPU paths, including int8
    `mma.sync` tiles. Throughput depends on bit rate and processor; see [docs/t16.md](docs/t16.md).

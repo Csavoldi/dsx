@@ -1,0 +1,102 @@
+B=1 pos=1 masked=0 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=1 masked=0 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=1 masked=1 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=1 masked=1 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=1 masked=2 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=1 masked=2 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=4000 masked=0 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+TIME B=1 graph=0 round=0 fused=0 us=8.276
+TIME B=1 graph=0 round=0 fused=1 us=4.409
+TIME B=1 graph=0 round=1 fused=0 us=8.276
+TIME B=1 graph=0 round=1 fused=1 us=4.408
+TIME B=1 graph=0 round=2 fused=0 us=8.336
+TIME B=1 graph=0 round=2 fused=1 us=4.439
+TIME B=1 graph=0 round=3 fused=0 us=8.284
+TIME B=1 graph=0 round=3 fused=1 us=4.832
+B=1 pos=4000 masked=0 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+TIME B=1 graph=1 round=0 fused=0 us=10.940
+TIME B=1 graph=1 round=0 fused=1 us=5.441
+TIME B=1 graph=1 round=1 fused=0 us=10.665
+TIME B=1 graph=1 round=1 fused=1 us=5.443
+TIME B=1 graph=1 round=2 fused=0 us=10.670
+TIME B=1 graph=1 round=2 fused=1 us=5.456
+TIME B=1 graph=1 round=3 fused=0 us=10.659
+TIME B=1 graph=1 round=3 fused=1 us=5.450
+B=1 pos=4000 masked=1 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=4000 masked=1 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=4000 masked=2 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=4000 masked=2 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=129000 masked=0 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=129000 masked=0 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=129000 masked=1 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=129000 masked=1 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=129000 masked=2 graph=0 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=1 pos=129000 masked=2 graph=1 bytes=233472 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=1 masked=0 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=1 masked=0 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=1 masked=1 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=1 masked=1 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=1 masked=2 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=1 masked=2 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=4000 masked=0 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+TIME B=4 graph=0 round=0 fused=0 us=8.452
+TIME B=4 graph=0 round=0 fused=1 us=4.583
+TIME B=4 graph=0 round=1 fused=0 us=8.498
+TIME B=4 graph=0 round=1 fused=1 us=4.584
+TIME B=4 graph=0 round=2 fused=0 us=8.446
+TIME B=4 graph=0 round=2 fused=1 us=4.603
+TIME B=4 graph=0 round=3 fused=0 us=8.532
+TIME B=4 graph=0 round=3 fused=1 us=4.582
+B=4 pos=4000 masked=0 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+TIME B=4 graph=1 round=0 fused=0 us=10.764
+TIME B=4 graph=1 round=0 fused=1 us=5.542
+TIME B=4 graph=1 round=1 fused=0 us=10.750
+TIME B=4 graph=1 round=1 fused=1 us=5.541
+TIME B=4 graph=1 round=2 fused=0 us=10.760
+TIME B=4 graph=1 round=2 fused=1 us=5.544
+TIME B=4 graph=1 round=3 fused=0 us=10.764
+TIME B=4 graph=1 round=3 fused=1 us=5.543
+B=4 pos=4000 masked=1 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=4000 masked=1 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=4000 masked=2 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=4000 masked=2 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=129000 masked=0 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=129000 masked=0 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=129000 masked=1 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=129000 masked=1 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=129000 masked=2 graph=0 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=4 pos=129000 masked=2 graph=1 bytes=933888 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=1 masked=0 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=1 masked=0 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=1 masked=1 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=1 masked=1 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=1 masked=2 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=1 masked=2 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=4000 masked=0 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+TIME B=8 graph=0 round=0 fused=0 us=9.199
+TIME B=8 graph=0 round=0 fused=1 us=4.682
+TIME B=8 graph=0 round=1 fused=0 us=9.192
+TIME B=8 graph=0 round=1 fused=1 us=4.681
+TIME B=8 graph=0 round=2 fused=0 us=9.186
+TIME B=8 graph=0 round=2 fused=1 us=4.710
+TIME B=8 graph=0 round=3 fused=0 us=9.214
+TIME B=8 graph=0 round=3 fused=1 us=4.686
+B=8 pos=4000 masked=0 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+TIME B=8 graph=1 round=0 fused=0 us=10.988
+TIME B=8 graph=1 round=0 fused=1 us=5.655
+TIME B=8 graph=1 round=1 fused=0 us=10.976
+TIME B=8 graph=1 round=1 fused=1 us=5.654
+TIME B=8 graph=1 round=2 fused=0 us=10.973
+TIME B=8 graph=1 round=2 fused=1 us=5.651
+TIME B=8 graph=1 round=3 fused=0 us=10.978
+TIME B=8 graph=1 round=3 fused=1 us=5.652
+B=8 pos=4000 masked=1 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=4000 masked=1 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=4000 masked=2 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=4000 masked=2 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=129000 masked=0 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=129000 masked=0 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=129000 masked=1 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=129000 masked=1 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=129000 masked=2 graph=0 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0
+B=8 pos=129000 masked=2 graph=1 bytes=1867776 differing_bytes=0 q_values=0 qmax=0 code_bytes=0 scale_bytes=0 bf16_bytes=0

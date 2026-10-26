@@ -1,1 +1,0 @@
-Write a chess move generator in TypeScript-free modern JavaScript (Node, no dependencies): board representation, legal move generation including castling, en passant and promotion, check and checkmate detection, and a perft function. Verify perft(3) from the starting position equals 8902 and print the result.

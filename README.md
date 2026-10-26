@@ -6,6 +6,7 @@ shared serving infrastructure and browser UI</p>
 
 <p align="center">
 <a href="https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--t16-yellow" alt="Model: dsx-t16"></a>
+<a href="https://x.com/lxe"><img src="docs/assets/twitter-lxe.svg" alt="Follow @lxe on Twitter / X"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust"></a>
 <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-13-76B900?logo=nvidia" alt="CUDA 13"></a>
@@ -13,77 +14,40 @@ shared serving infrastructure and browser UI</p>
 
 ## Choose a model
 
-DSX has separate GPU backends for DeepSeek and Nanbeige. Select a model by building and starting its server binary; each binary uses the shared DSX worker, sampler, GPU utilities, and browser UI.
+DSX includes separate GPU backends for DeepSeek and Nanbeige. Build and start the server binary for the model you want; both use the shared DSX worker, sampler, GPU utilities and browser UI.
 
-| Model | Branch | Server | Measured hardware and throughput | Instructions |
-|---|---|---|---|---|
-| DeepSeek-V4.1-Flash-1017 | [`main`](https://github.com/lxe/dsx/tree/main) | `dsx-server` | Two RTX 3090s + 128 GB RAM; about 35 decode tok/s and 530 prefill tok/s on a 3000-token prompt | [DeepSeek setup below](#deepseek-quick-start) |
-| Nanbeige4.3-33B, EXL3 4.0 bpw default | [`nanbeige`](https://github.com/lxe/dsx/tree/nanbeige), experimental | `dsx-nanbeige-server` | One RTX 5090; 4.0 bpw default for quality; matched quant and context-scaling receipts in setup guide | [Nanbeige setup and measurements](README.nanbeige.md) |
+| Model | Server | Hardware and current configuration | Instructions |
+| --- | --- | --- | --- |
+| DeepSeek-V4.1-Flash-1017 | `dsx-server` | Two RTX 3090s and 128 GB RAM; T16 experts with CPU offload | [DeepSeek quick start](#deepseek-quick-start) |
+| Nanbeige4.3-33B | `dsx-nanbeige-server` | One RTX 5090; Luni EXL3 4.0 bpw decoder, Q3 KV, runtime 4-bit head and INT8 GQA decode attention | [Nanbeige setup and measurements](README.nanbeige.md) |
 
-These figures come from different models, hardware, and workloads. Nanbeige allocates 262144-token context capacity. Current tests include 4.0 bpw precision checks and a separate 2.5 bpw attention comparison at populated contexts through 65664 tokens; the setup guide identifies each recipe. Task-completion evaluation is pending. The [benchmark receipt](validation/nanbeige/continue-prefetch-summary.json) includes prompt lengths, speculative acceptance, precision drift, and measurement limits.
-
-The `nanbeige` branch is intended for integration into `main` and remains separate while the new backend is evaluated. Both backends already share `core/` readers, the `server::Engine` worker contract, request scheduling, cancellation, sampling, and the embedded web UI. Nanbeige supplies its own dense attention, KV cache, quantized projections, chat template, and OpenAI protocol adapter. DeepSeek retains its MoE, MLA, Engram, and expert-offloading implementation. No source-directory move is needed to keep these execution paths separate.
+The Nanbeige default uses an existing Luni quant; DSX did not re-quantize the 4.0 bpw candidate. It improved measured precision over the local 2.5 bpw pack while reducing short-context throughput. It is the current quality-focused choice, not a proven optimum across every quant or agent task. The setup guide separates quant comparisons, populated-context timing, precision losses and assisted task results. Both backends are integrated in `main`.
 
 ## DeepSeek runner
 
-Models this size usually need a datacenter. dsx runs
-**[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)** (DeepSeek, MIT license;
-a 552 B mixture of experts plus a 196 B Engram memory) on a desktop with two RTX 3090s, 128 GB of RAM and an NVMe
-drive. The DeepSeek backend is written in Rust and CUDA for this architecture. The experts each token uses most stay on the GPUs,
-the next ones in RAM where the CPU computes them. The GPUs and CPU compute their assigned experts in parallel,
-and the main GPU waits for the partial results before combining them. Optional expert deferral reduces that wait.
+dsx runs **[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)**
+locally on two RTX 3090s and 128 GB of RAM. It is a Rust and CUDA inference engine with a T16 quantized model,
+a browser chat UI, image input, and OpenAI- and Anthropic-compatible APIs for coding agents.
 
-- **Fast:** ~35 tokens/s writing the answer and ~530 tokens/s reading a 3,000-token prompt on two RTX 3090s.
-- **Close to the original:** the same next token as the FP8 model 81% of the time on the Lucebox eval, with dsx's own T16 experts.
-- **One download:** one 252 GB GGUF file, with the Engram table and tokenizer inside.
-- **Plugs into your tools:** OpenAI- and Anthropic-compatible API with streaming, ready for coding agents.
-- **Everything in the box:** a chat in the browser, pictures, thinking on or off, effort levels.
-
-## The model
-
-https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16
-
-One 252 GB GGUF file. The routed experts are in T16, dsx's own trellis format (exllamav3's bitshift trellis with a
-codebook made for desktop CPUs, [docs/t16.md](docs/t16.md)) at 1.5-2.5 bits, quantized from DeepSeek's original
-weights. The dense weights are Q8_0 and the Engram table is IQ4_NL (Unsloth's, from their UD-IQ1_M GGUF), and the
-tokenizer is stored in the GGUF; the vision tower is `vision.safetensors` beside it.
-
-Against the FP8 model on the [Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) eval
-(8 x 1,024 tokens), it picks the same next token 80.9% of the time, with KL 0.196 and perplexity 9.54 (FP8: 8.56).
-These are prefill-path measurements with deferral off. The T16 output gains were selected on this eval, so the
-figures are somewhat optimistic. They do not certify the numerics of every later kernel revision; see
-[measurement status](docs/current-state.md#quality-and-the-open-decode-check).
-
-The branch [`q6k-engram`](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16/tree/q6k-engram) has the same
-model with a Q6_K Engram table: a 302 GB download in 4 shards, KL 0.194 and 81.4%. That is 28% lower KL than [dsx-ud](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-ud), the same size with
-[Unsloth](https://github.com/unslothai/unsloth)'s [UD-IQ1_M](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)
-experts (KL 0.272), which dsx also runs. The model sizes excluding Engram are ~141 GB and ~142 GB respectively.
-
-## How fast is it?
-
-The published T16 v1 runs on two RTX 3090s (24 GB each), an i7-12700K and 128 GB of DDR4 measured 34.9 tokens/s
-without deferral and 36.8 with `--defer-rank 3` after a 3K prompt. A later prefill improvement reached ~530 tokens/s
-on a 3,000-token prompt. These are dated measurements, with different builds for the decode and prefill rows.
-
-The October 23 integrated kernels measured 33.86 → 37.03 tokens/s in an interleaved teacher-forced decode comparison
-with deferral and optional FP8 Engram projections enabled. That FP8 conversion is off by default. The 41 tokens/s
-free-generation result used different generated text and is not a controlled speed comparison. Context size, routing
-and cache warm-up affect serving speed; [measurement status](docs/current-state.md) records the configurations,
-quality caveats and raw logs. Unsloth's UD-IQ1_M measured ~12 tokens/s in the earlier llama.cpp comparison on this PC.
+The [current model](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16) is a single 252 GB GGUF with
+the experts, Engram memory and tokenizer included. The download also supplies the expert ranking and a separate
+vision tower. [T16](docs/t16-format.md) uses a trellis format designed for both desktop CPU and GPU execution.
 
 ## DeepSeek quick start
 
-Download the build (the Engram table and tokenizer are inside it):
+The reference machine has two 24 GB RTX 3090s, an i7-12700K, 128 GB of RAM and an NVMe drive with about 255 GB free.
+You need Rust, CUDA 13 and an x86 CPU with AVX2; AVX-VNNI or AVX-512 VNNI is preferred.
+
+Download the model and build the NVIDIA runner:
 
 ```bash
 hf download lxe/DeepSeek-V4.1-Flash-1017-dsx-t16 --local-dir dsx-t16
+CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
 ```
 
-Build for your GPU (`CUDA_ARCHS` from the table under [Requirements](#requirements)) and start the server:
+Use `CUDA_ARCHS=89` for an RTX 4090 or `120` for an RTX 5090. Start the server:
 
 ```bash
-CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
-
 ./target/release/dsx-server \
   --model dsx-t16/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf \
   --rank dsx-t16/expert-rank.json \
@@ -93,12 +57,25 @@ CUDA_ARCHS=86 cargo build --release -p dsx --features cuda
   --host 0.0.0.0 --port 8090
 ```
 
-`--defer-rank 3` adds low-ranked CPU expert outputs one layer late. On the recorded T16 decode eval it raised KL
-from about 0.208 to 0.237; leave it out to avoid that approximation. The quality figures above were measured
-without deferral.
+Open **http://localhost:8090/** for the chat UI. The server loads `vision.safetensors` beside the model for image input.
+Use `--no-vision` for text only.
 
-Open `http://localhost:8090/` for the web UI, or point any OpenAI client at `http://localhost:8090/v1` (Anthropic
-clients at `http://localhost:8090`):
+`--defer-rank 3` lets lower-ranked CPU experts finish one layer late to reduce GPU waiting. It changes the model’s
+computation; omit the flag to disable that approximation. See [server configuration](docs/server.md) for all options
+and [expert placement](docs/placement.md) for other memory and GPU configurations.
+
+## Coding agents and API
+
+Point an OpenAI-compatible client at `http://localhost:8090/v1`, or an Anthropic-compatible client at
+`http://localhost:8090`. The model ID is `deepseek-v4.1-flash`.
+
+For [Pi](https://github.com/badlogic/pi-mono), follow the [provider setup](docs/agents.md), then run:
+
+```bash
+pi --provider dsx --model deepseek-v4.1-flash:off
+```
+
+Thinking is on at high effort by default. Requests can turn it off or choose another effort. For example:
 
 ```bash
 curl http://localhost:8090/v1/chat/completions \
@@ -108,202 +85,48 @@ curl http://localhost:8090/v1/chat/completions \
     "stream": true,
     "reasoning_effort": "none",
     "messages": [
-      {"role": "user", "content": "Write a haiku about MoE routing."}
+      {"role": "user", "content": "Write a Python function that merges sorted iterators."}
     ]
   }'
 ```
 
-### Agents
+The default sampling is temperature 1 and top-p 1. [Thinking controls](docs/server.md#thinking) cover both APIs.
+Use `--api-key` to require authentication.
 
-For the [pi](https://github.com/badlogic/pi-mono) coding agent, add this to `~/.pi/agent/models.json`:
+## Performance
 
-```json
-{
-  "providers": {
-    "dsx": {
-      "baseUrl": "http://localhost:8090/v1",
-      "api": "openai-completions",
-      "apiKey": "none",
-      "authHeader": false,
-      "compat": {
-        "supportsDeveloperRole": false,
-        "supportsReasoningEffort": true,
-        "maxTokensField": "max_tokens"
-      },
-      "models": [
-        {
-          "id": "deepseek-v4.1-flash",
-          "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 131072,
-          "maxTokens": 8192,
-          "thinkingLevelMap": {
-            "off": "none",
-            "minimal": null,
-            "low": "low",
-            "medium": null,
-            "high": "high",
-            "xhigh": null,
-            "max": "max"
-          }
-        }
-      ]
-    }
-  }
-}
-```
+On the reference two-3090 machine, a T16 free-generation run measured **41.0 tokens/s** with `--defer-rank 3` and
+optional FP8 Engram projections (`DSX_ENGRAM_FP8=1`). FP8 projections are off by default. This was a 120-token run
+after 300 tokens; throughput depends on context length, expert routing and cache warm-up.
 
-```bash
-pi --provider dsx --model deepseek-v4.1-flash:off
-```
+The October 25 prefill checkpoint measured **1,008 tokens/s** on an 8,000-token prompt with an 8K chunk,
+256K context allocation and the same T16 weights. The [prefill profile and receipts](bench/results/2026-10-25-prefill/README.md)
+cover the opt-in kernels, buffer reuse, warm-up and expert placement. This is a separate measurement from the
+41 tokens/s generation result above; smaller prompt updates have different throughput.
 
-With `--api-key`: drop `"authHeader": false`, set `"apiKey"` to the key and point `baseUrl` at the server's URL.
-
-## DeepSeek requirements
-
-| | |
-|---|---|
-| GPU | NVIDIA, 24 GB of VRAM or more |
-| CUDA | 13 |
-| RAM | 128 GB |
-| CPU | x86 with AVX2 (AVX-VNNI or AVX-512 VNNI preferred) |
-| Disk | ~255 GB on an NVMe drive |
-
-| GPU | `CUDA_ARCHS` | Status |
-|---|---|---|
-| RTX 3090 | 86 | runs |
-| RTX 4090 | 89 | runs |
-| RTX 5090 | 120 | runs |
-| A100 | 80 | builds, not run yet |
-
-## Parameters
-
-`dsx-server` needs `--model`; every other option has a default.
-
-**Model files**
-
-| | |
-|---|---|
-| `--model` | the model GGUF; for a model in shards, the first one (the others load from beside it) |
-| `--engram` | directory with the official checkpoint's Engram shards (`model-00047/00048-of-00048.safetensors`), or a GGUF holding the table; default: the table in the model GGUF |
-| `--tokenizer` | the official `tokenizer.json`; default: the one stored in the model GGUF |
-| `--rank` | expert hotness order (`expert-rank.json` in the quant repo) |
-| `--vision` / `--no-vision` | image input (default: `vision.safetensors` beside the model); `--no-vision` for text only |
-
-**Server**
-
-| | |
-|---|---|
-| `--host`, `--port` | listen address (default `127.0.0.1:8090`) |
-| `--api-key` | require this key (`Authorization: Bearer <key>` or `x-api-key`; env `DSX_API_KEY`) |
-| `--model-name` | model id reported by `/v1/models` (default `deepseek-v4.1-flash`) |
-| `--ctx` | context window, prompt + generated tokens (default 32768) |
-| `--max-tokens` | generation cap when a request sets none (default 8192) |
-
-**Sampling defaults** (a request's own fields override them)
-
-| | |
-|---|---|
-| `--temperature`, `--top-p` | default 1.0 and 1.0, the model's recommended sampling |
-| `--hesitation-penalty` | logit penalty on hesitation tokens ("Wait", "But", ...) while reasoning; 0 = off (default) |
-
-**Memory** (dsx places experts on the GPUs automatically; [docs/placement.md](docs/placement.md) lists the overrides)
-
-| | |
-|---|---|
-| `--arena-gb` | RAM for experts the CPU computes (default 0; ~110 on 128 GB) |
-| `--chunk` | prefill tokens per pass (default 4096); smaller leaves more VRAM for experts |
-| `DSX_GPUS=0,2` | use only these GPUs (all by default) |
-
-**Speed**
-
-| | |
-|---|---|
-| `--defer-rank R` | add the CPU's lower-ranked experts (router rank R or lower, 0 = best of 6) one layer later instead of waiting for them. T16 decode eval: KL ~0.208 → 0.237 at R=3; R=2/1 raised it to 0.260/0.306 and were rejected. Off by default; the quick start opts into R=3. Speed depends on build and text; see [measurement status](docs/current-state.md) |
-
-Settings by machine (the flags are explained in [docs/placement.md](docs/placement.md)):
-
-| Machine | Flags |
-|---|---|
-| 2x 24 GB GPU, 128 GB RAM | `--arena-gb 110` |
-| 2x 24 GB GPU, both PCIe x16, 150+ GB RAM | `--arena-gb 135` |
-| 1x 32 GB GPU, 128 GB RAM | `--main-gb=-2.0 --arena-gb 80`, `DSX_ADAPT=0` |
-
-## Thinking
-
-Thinking is on by default, at high effort. A request turns it off or sets the effort:
-
-| | OpenAI API (`/v1/chat/completions`) | Anthropic API (`/v1/messages`) |
-|---|---|---|
-| Thinking off | `"reasoning_effort": "none"` or `"thinking": {"type": "disabled"}` | `"thinking": {"type": "disabled"}` |
-| Effort | `"reasoning_effort"`: `low` (or `minimal`), `high` (or `medium`), `xhigh`, `max` | `"output_config": {"effort": ...}`: `low`, `high` (or `medium`), `xhigh`, `max` |
-
-## Docs
-
-| | |
-|---|---|
-| [docs/current-state.md](docs/current-state.md) | current NVIDIA defaults, release and benchmark provenance, known limitations |
-| [docs/placement.md](docs/placement.md) | where the experts go (VRAM, RAM, disk) and how to tune it |
-| [DESIGN.md](DESIGN.md) | how a token runs: the per-layer handoff between GPUs and CPU, prefill, the server |
-| [nvidia/README.md](nvidia/README.md) | the `dsx` command-line tools (`gen`, `eval`, `cmp`, `ref`, `spec`) and debug switches |
-| [docs/techniques.md](docs/techniques.md), [FINDINGS.md](FINDINGS.md) | techniques with sources, and measurements |
-
-The [geometry coding gauntlet](bench/geometry/README.md) measures reviewed task completion and elapsed time with isolated Pi sessions. Its [current receipts](bench/results/2026-10-24-gauntlet/README.md) separate functional outcomes from engine throughput and experimental timing.
-
-## Repo
-
-| Path | |
-|---|---|
-| [`core/`](core/) | config, GGUF / safetensors readers, block formats, the CPU reference forward, the server and web UI |
-| [`nvidia/`](nvidia/) | the desktop runner: CUDA kernels, expert placement over VRAM / RAM / disk, CPU expert kernels ([nvidia/README.md](nvidia/README.md)) |
-| [`amd/`](amd/) | a separate runner for one AMD MI325X, with its own near-lossless MXFP4 build ([amd/README.md](amd/README.md)) |
-| [`quant/`](quant/) | quantization experiments and tools, with native CUDA GPTQ |
-| [`cards/`](cards/) | the Hugging Face model cards |
-| [`docs/`](docs/) | the docs listed above |
-
-`cargo build --release` builds `core` and the NVIDIA runner; without `--features cuda`, the runner is built for the
-CPU only. Binaries go to `target/release/`.
+The [measurement record](docs/current-state.md) gives build identities, quality measurements and open checks.
 
 ## How it works
 
-The model has 15,360 experts (384 in each of its 40 layers), and each token uses 6 per layer. Together they take far
-more memory than two GPUs have, so dsx spreads them over everything the PC has and keeps each one where it's cheapest
-to run.
+The model selects six of its 384 experts in each layer. dsx keeps frequently used experts on the GPUs and computes
+the remaining selected experts on the CPU from RAM. The CPU and GPUs work in parallel, and the main GPU combines
+their results. An adaptive cache follows the experts used by the current conversation.
 
-- **Hot experts on the GPUs, the rest in RAM:** a ranking from calibration text says which experts the model picks
-  most. Fixed GPU stores hold their own experts; adaptive GPU caches keep backing copies in the RAM arena. The
-  current T16 placement on the measured two-3090 system fits every expert in VRAM or RAM, with no file-only experts.
-  Smaller arenas can leave cold experts in the GGUF for the CPU to read on demand. The GPU share of picks varies
-  with the conversation and placement.
-- **It follows your conversation:** after every token, dsx counts which experts were used and swaps a few hot ones
-  from RAM onto the main GPU in the background, replacing ones that went cold. A coding session and a chat about
-  history end up with different experts on the card.
-- **It measures your GPUs:** at startup, dsx times how fast each GPU talks to the CPU and checks its memory. The
-  best-connected card becomes the main GPU and holds the dense weights (attention and the shared parts), the conversation's memory (the KV cache)
-  and its own expert cache. Every other card only holds experts. A card with a link about as fast swaps its experts
-  too and helps stream experts during long prompts. A card in a slow slot (a PCIe x4 slot, say) keeps a fixed set of
-  experts instead, because copying experts would compete with the work it needs every layer. Mismatched cards are
-  fine: up to six GPUs, each used for what it's good at.
-- **GPUs and CPU work at the same time:** in every layer, the main GPU picks the experts and hands their input to the
-  CPU and the other GPUs through shared memory. Each computes its own experts in parallel, and the main GPU adds the
-  results. The handoff takes about 6 µs and never waits on the operating system.
-- **Fast CPU kernels:** the experts in RAM run on hand-written AVX2 / AVX-VNNI kernels across the CPU's performance
-  cores. The RAM arena is CUDA-registered and requests huge pages; allocation can fall back to 4 KiB pages under
-  memory pressure, which lowers measured host-to-GPU copy bandwidth.
-- **Optional deferral:** `--defer-rank 3` lets the CPU's least important experts finish one layer late instead of
-  holding up the GPU. It changes the residual computation; its measured quality cost is described above.
-- **Long prompts:** prompts are read in chunks of 4,096 tokens. The experts no GPU holds stream from RAM while the
-  GPUs compute, over every fast link at once, and the other GPUs work on the same chunk in parallel.
-- **Picks up where you left off:** the last conversation stays on the GPU, so the next message only reads the new
-  text.
+At startup, dsx measures each GPU’s memory and host-link speed to assign its role. During prefill, experts stream
+from RAM over the available fast links. Follow-up requests reuse the cached conversation prefix so only new text
+needs prefill. [DESIGN.md](DESIGN.md) describes the execution and memory layout.
 
-## Credits
+## Documentation
 
-[exllamav3](https://github.com/turboderp-org/exllamav3) (turboderp, MIT) for the trellis quantizer T16 patches · [Unsloth](https://github.com/unslothai/unsloth) for dsx-t16's IQ4_NL Engram table and the expert weights in dsx-ud, from their [UD-IQ1_M GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) · [DeepSeek](https://huggingface.co/deepseek-ai) for the model (MIT) ·
-[Xolotl / Strata](https://github.com/Indras-Mirror/Xolotl) for the GSQ tools and V4.1 GGUF format (MIT; derived files in `quant/v41` carry its license) ·
-DeepSeek for the reference `model.py` the calibration runs · GPTQ ([Frantar et al.](https://arxiv.org/abs/2210.17323)) ·
-[Lucebox](https://huggingface.co/Lucebox/DeepSeek-V4.1-Flash-1017-ROCMFP-GGUF) for the eval set ·
-antirez for the calibration prompts · the web UI is [llama.cpp](https://github.com/ggml-org/llama.cpp)'s, by Georgi
-Gerganov and the ggml authors (MIT), vendored in [`core/webui`](core/webui) with its license.
+| Guide | Contents |
+|---|---|
+| [Server configuration](docs/server.md) | Model files, authentication, sampling, thinking and runtime flags |
+| [Coding agents](docs/agents.md) | Pi provider configuration |
+| [Expert placement](docs/placement.md) | GPU, RAM and disk placement; tuning for your machine |
+| [T16 format](docs/t16-format.md) | Quantization and CPU/GPU decoding |
+| [NVIDIA runner](nvidia/README.md) | CLI tools, build details and debugging |
+| [AMD runner](amd/README.md) | The separate MI325X implementation and model |
+| [Measurements](docs/current-state.md) | Current runtime status, quality evidence and benchmark history |
+| [Findings](FINDINGS.md) | Detailed experiments and optimization results |
 
-MIT license.
+MIT license. See [credits](CREDITS.md) for upstream projects, model sources and attribution.

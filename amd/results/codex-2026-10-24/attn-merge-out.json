@@ -1,0 +1,81 @@
+{
+  "hardware": "DigitalOcean single MI325X rental8",
+  "placement": {
+    "mxfp4": 3378,
+    "cb3": 11982,
+    "cb2": 0
+  },
+  "control": "DSXA_ATTN_MERGE_OUT=1; default remains off pending final serving validation",
+  "synthetic_cases": 54,
+  "all_output_bytes_equal": true,
+  "batches": [
+    1,
+    4,
+    8
+  ],
+  "positions": [
+    1,
+    4000,
+    129000
+  ],
+  "masks": [
+    "all populated",
+    "some absent splits",
+    "all absent splits"
+  ],
+  "graph_replay_tested": true,
+  "rounding": "Explicitly round sine products, then cosine FMA, matching reference packed instruction lowering",
+  "isolated_b4_base_us": [
+    8.48,
+    8.48,
+    8.465,
+    8.598
+  ],
+  "isolated_b4_candidate_us": [
+    4.589,
+    4.604,
+    4.614,
+    5.618
+  ],
+  "whole_b4_steps": 512,
+  "whole_b4_context": 4000,
+  "whole_base_ms": [
+    15.5,
+    16.0,
+    16.0
+  ],
+  "whole_candidate_ms": [
+    15.6,
+    15.6,
+    15.8
+  ],
+  "paired_mean_saving_ms": 0.16666666666666666,
+  "profile_merge_plus_output_base_ms": 0.59,
+  "profile_candidate_ms": 0.35,
+  "heldout_repeats": {
+    "positions_per_run": 8184,
+    "unique_positions": 8184,
+    "base_kl": [
+      0.077076,
+      0.07548,
+      0.075011
+    ],
+    "candidate_kl": [
+      0.078223,
+      0.072737,
+      0.075465
+    ],
+    "base_ppl": [
+      8.87,
+      8.8629,
+      8.8121
+    ],
+    "candidate_ppl": [
+      8.8256,
+      8.8753,
+      8.8672
+    ],
+    "note": "Repeated runs of the same positions calibrate existing floating-atomic variation; no signal of added quality loss. They are not additional independent test coverage."
+  },
+  "code_object_sha256": "08c7e259c95aa1b8b2afadc80dd0cd97e498f665f748052c8d1f06e9d2b6ffd1"
+}

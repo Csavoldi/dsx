@@ -8,6 +8,7 @@ What both runners share:
 | `src/dspark.rs` | the DSpark draft stack, CPU reference |
 | `src/gguf.rs`, `src/safetensors.rs` | mmap readers for GGUF splits and sharded HF checkpoints |
 | `src/formats.rs`, `src/numerics.rs` | block decoders (Q8_0, Q2_0, PTQ1_0, Q3_K, Q6_K, FP8 32x32, FP4), fake quant, RoPE + YaRN |
+| `src/t16.rs` | T16 trellis decoding and effective-weight reconstruction |
 | `src/server/` | the OpenAI / Anthropic compatible server over any `server::Engine` (chat template, tool calls, streaming, sampling), the web UI |
 | `webui/` | llama.cpp's web UI, vendored with its license |
 

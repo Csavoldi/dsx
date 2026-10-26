@@ -1,0 +1,17 @@
+{
+  "verified": true,
+  "candidate_deployed": true,
+  "original_restored": false,
+  "server_pids": [
+    3517239
+  ],
+  "health": {
+    "status": "ok",
+    "model": "deepseek-v4.1-flash",
+    "pending": 0
+  },
+  "server_md5": "2dc9b6ae169a7d41e02f5f9dbdaa6508",
+  "server_sha256": "a90d8cf6598d1145685fbc2ff25cf165e05c22ee6d0b10c41682f10894a5982e",
+  "power_restored": true,
+  "model_unchanged": true
+}

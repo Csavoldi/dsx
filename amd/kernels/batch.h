@@ -224,32 +224,44 @@ extern "C" __global__ void __launch_bounds__(1024) attn_b(const int* bpos, const
 #define ATTN_CPB 2
 #define ATTN_SPLITS 10   // (128 + 512) / (32 * ATTN_CPB)
 #define ATTN_PART (NH * HD + 128)
-extern "C" __global__ void __launch_bounds__(1024) attn_bs(const int* bpos, const int* bslot, float* __restrict__ q,
+template<int CPB, int SPLITS>
+DEV void attn_bs_impl(const int* bpos, const int* bslot, float* __restrict__ q,
                                                            const uint16_t* __restrict__ rings, long long ring_stride,
                                                            const uint8_t* __restrict__ comps, long long comp_stride,
                                                            const int* __restrict__ cidx, const int* ncomp, int ldc, int woff,
                                                            float scale, const float* sinks, float* part) {
     const int t = blockIdx.x, sp = blockIdx.y, pos = bpos[t], s = bslot[t];
     const int lo = max(0, pos - (WIN - 1));
-    const int rbeg = sp * 32 * ATTN_CPB;
-    float* pp = part + ((size_t)t * ATTN_SPLITS + sp) * ATTN_PART;
+    const int rbeg = sp * 32 * CPB;
+    float* pp = part + ((size_t)t * SPLITS + sp) * ATTN_PART;
     const int nwin = pos - lo + 1, nc = comps ? ncomp[t] : 0;
     if (rbeg >= nwin + nc) {
         if (threadIdx.x < 64) { pp[NH * HD + threadIdx.x] = -INFINITY; pp[NH * HD + 64 + threadIdx.x] = 0.f; }
         return;
     }
     attn_core(t, lo, nwin, 0, true, q, rings + (size_t)s * ring_stride, comps ? (const uint16_t*)(comps + (size_t)s * comp_stride) : nullptr,
-              cidx, nc, ldc, woff, scale, sinks, true, rbeg, rbeg + 32 * ATTN_CPB, pp);
+              cidx, nc, ldc, woff, scale, sinks, true, rbeg, rbeg + 32 * CPB, pp);
 }
+extern "C" __global__ void __launch_bounds__(1024) attn_bs(const int* bpos, const int* bslot, float* __restrict__ q,
+                                                           const uint16_t* __restrict__ rings, long long ring_stride,
+                                                           const uint8_t* __restrict__ comps, long long comp_stride,
+                                                           const int* __restrict__ cidx, const int* ncomp, int ldc, int woff,
+                                                           float scale, const float* sinks, float* part) { attn_bs_impl<2,10>(bpos,bslot,q,rings,ring_stride,comps,comp_stride,cidx,ncomp,ldc,woff,scale,sinks,part); }
+extern "C" __global__ void __launch_bounds__(1024) attn_bs_fine(const int* bpos, const int* bslot, float* __restrict__ q,
+                                                           const uint16_t* __restrict__ rings, long long ring_stride,
+                                                           const uint8_t* __restrict__ comps, long long comp_stride,
+                                                           const int* __restrict__ cidx, const int* ncomp, int ldc, int woff,
+                                                           float scale, const float* sinks, float* part) { attn_bs_impl<1,20>(bpos,bslot,q,rings,ring_stride,comps,comp_stride,cidx,ncomp,ldc,woff,scale,sinks,part); }
 // block (token, head): combine the splits' partials, add the sink, write round_bf16(O / L) over q
-extern "C" __global__ void __launch_bounds__(512) attn_merge_b(float* __restrict__ q, const float* __restrict__ part, const float* sinks) {
+template<int SPLITS>
+DEV void attn_merge_b_impl(float* __restrict__ q, const float* __restrict__ part, const float* sinks) {
     const int t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
-    const float* pp = part + (size_t)t * ATTN_SPLITS * ATTN_PART;
+    const float* pp = part + (size_t)t * SPLITS * ATTN_PART;
     float M = -INFINITY;
-    for (int s = 0; s < ATTN_SPLITS; s++) M = fmaxf(M, pp[s * ATTN_PART + NH * HD + h]);
+    for (int s = 0; s < SPLITS; s++) M = fmaxf(M, pp[s * ATTN_PART + NH * HD + h]);
     float L = 0.f, o = 0.f;
     if (M != -INFINITY) {
-        for (int s = 0; s < ATTN_SPLITS; s++) {
+        for (int s = 0; s < SPLITS; s++) {
             const float m = pp[s * ATTN_PART + NH * HD + h];
             if (m == -INFINITY) continue;
             const float e = expf(m - M);
@@ -260,6 +272,9 @@ extern "C" __global__ void __launch_bounds__(512) attn_merge_b(float* __restrict
     L += M == -INFINITY ? 1.f : expf(sinks[h] - M);
     q[((size_t)t * NH + h) * HD + d] = round_bf16(o / L);
 }
+extern "C" __global__ void __launch_bounds__(512) attn_merge_b(float* __restrict__ q, const float* __restrict__ part, const float* sinks) { attn_merge_b_impl<10>(q,part,sinks); }
+extern "C" __global__ void __launch_bounds__(512) attn_merge_b_fine(float* __restrict__ q, const float* __restrict__ part, const float* sinks) { attn_merge_b_impl<20>(q,part,sinks); }
+
 
 // after attn_b: inverse RoPE at each token's position, FP8 per 32 (+ bf16) for wo_a (attn_m_out per token)
 extern "C" __global__ void __launch_bounds__(256) attn_out_b(const int* bpos, float* __restrict__ o, const float* rf, uint8_t* oq, float* os,
@@ -284,6 +299,52 @@ extern "C" __global__ void __launch_bounds__(256) attn_out_b(const int* bpos, fl
     const size_t off = (size_t)t * NH * HD + (size_t)h0 * HD;
     write_act(8 * HD, [&](int i) -> float { return ot[i]; }, oq + off, os + off / 32, nullptr, obq + off);
 }
+
+// Merge split attention and prepare wo_a in one pass. Four neighboring dimensions
+// per thread share the denominator and keep each rotary pair in registers.
+template<int SPLITS>
+DEV void attn_merge_out_b_impl(float* __restrict__ q, const float* __restrict__ part,
+                                                                  const float* sinks, const int* bpos, const float* rf,
+                                                                  uint8_t* oq, float* os, uint16_t* obq) {
+    const int t = blockIdx.x, h = blockIdx.y, d0 = 4 * threadIdx.x;
+    const float* pp = part + (size_t)t * SPLITS * ATTN_PART;
+    float M = -INFINITY;
+    for (int s = 0; s < SPLITS; s++) M = fmaxf(M, pp[s * ATTN_PART + NH * HD + h]);
+    float L = 0.f, v[4] = {};
+    if (M != -INFINITY) {
+        for (int s = 0; s < SPLITS; s++) {
+            const float m = pp[s * ATTN_PART + NH * HD + h];
+            if (m == -INFINITY) continue;
+            const float e = expf(m - M);
+            L += pp[s * ATTN_PART + NH * HD + 64 + h] * e;
+            const float4 o = *reinterpret_cast<const float4*>(pp + s * ATTN_PART + (size_t)h * HD + d0);
+            v[0] += o.x * e; v[1] += o.y * e; v[2] += o.z * e; v[3] += o.w * e;
+        }
+    }
+    L += M == -INFINITY ? 1.f : expf(sinks[h] - M);
+    for (int j = 0; j < 4; j++) v[j] = round_bf16(v[j] / L);
+    if (d0 >= HD - RD) {
+        for (int j = 0; j < 4; j += 2) {
+            const int pi = (d0 + j - (HD - RD)) / 2;
+            const float ang = (float)bpos[t] * rf[pi];
+            const float cs = cosf(ang), sn = -sinf(ang), a = v[j], b = v[j + 1];
+            // Match attn_out_b's packed lowering: round the sine products,
+            // then fuse the cosine products with them.
+            v[j] = fmaf(a, cs, -__fmul_rn(b, sn));
+            v[j + 1] = fmaf(b, cs, __fmul_rn(a, sn));
+        }
+    }
+    const size_t off = ((size_t)t * NH + h) * HD;
+    *reinterpret_cast<float4*>(q + off + d0) = make_float4(v[0], v[1], v[2], v[3]);
+    write_act(HD, [&](int i) -> float { return v[i & 3]; }, oq + off, os + off / 32, nullptr, obq + off);
+}
+extern "C" __global__ void __launch_bounds__(128) attn_merge_out_b(float* __restrict__ q, const float* __restrict__ part,
+                                                                  const float* sinks, const int* bpos, const float* rf,
+                                                                  uint8_t* oq, float* os, uint16_t* obq) { attn_merge_out_b_impl<10>(q,part,sinks,bpos,rf,oq,os,obq); }
+extern "C" __global__ void __launch_bounds__(128) attn_merge_out_b_fine(float* __restrict__ q, const float* __restrict__ part,
+                                                                  const float* sinks, const int* bpos, const float* rf,
+                                                                  uint8_t* oq, float* os, uint16_t* obq) { attn_merge_out_b_impl<20>(q,part,sinks,bpos,rf,oq,os,obq); }
+
 
 // greedy token of each of the batch's logit rows (block per row; ties to the lowest index, as argmax)
 extern "C" __global__ void __launch_bounds__(1024) argmax_b(const float* logits, int n, int ld, int* out) {
