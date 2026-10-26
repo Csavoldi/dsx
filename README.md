@@ -21,7 +21,7 @@ DSX includes separate GPU backends for DeepSeek and Nanbeige. Build and start th
 | DeepSeek-V4.1-Flash-1017 | `dsx-server` | Two RTX 3090s and 128 GB RAM; T16 experts with CPU offload | [DeepSeek quick start](#deepseek-quick-start) |
 | Nanbeige4.3-33B | `dsx-nanbeige-server` | One RTX 5090; Luni EXL3 4.0 bpw decoder, Q3 KV, runtime 4-bit head and INT8 GQA decode attention | [Nanbeige setup and measurements](README.nanbeige.md) |
 
-The Nanbeige default uses an existing Luni quant; DSX did not re-quantize the 4.0 bpw candidate. It improved measured precision over the local 2.5 bpw pack while reducing short-context throughput. It is the current quality-focused choice, not a proven optimum across every quant or agent task. The setup guide separates quant comparisons, populated-context timing, precision losses and assisted task results. Both backends are integrated in `main`.
+The Nanbeige default uses an existing Luni quant; DSX did not re-quantize the 4.0 bpw candidate. It improved measured precision over the local 2.5 bpw pack while reducing short-context throughput. It is the current quality-focused choice, not a proven optimum across every quant or agent task. The setup guide separates quant comparisons, populated-context timing, precision losses and assisted task results. The Nanbeige backend and its experiment records live on `nanbeige`; `main` contains the DeepSeek runner.
 
 ## DeepSeek runner
 

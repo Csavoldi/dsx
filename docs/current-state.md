@@ -5,7 +5,7 @@ IQ4_NL Engram lookup table in one GGUF. The October 23, 2026 NVIDIA kernel integ
 its serving configuration. The October 25 prefill checkpoint adds opt-in kernels and buffer reuse, with an 8K-chunk serving profile.
 This page separates those runtime measurements from model-release quality scores and unfinished proposals.
 
-Nanbeige4.3-33B is integrated as a separate backend with shared serving infrastructure. Its quality-focused default uses the existing Luni 4.0 bpw EXL3 decoder; DSX did not re-quantize that candidate. The [Nanbeige guide](../README.nanbeige.md) identifies the pinned decoder, required base embedding/head pack, runtime precision choices, cache checks and context-dependent throughput. This page's remaining model and performance sections describe DeepSeek.
+The `nanbeige` branch adds a Nanbeige4.3-33B backend with shared serving infrastructure. Its quality-focused default uses the existing Luni 4.0 bpw EXL3 decoder; DSX did not re-quantize that candidate. The [Nanbeige guide](../README.nanbeige.md) identifies the pinned decoder, required base embedding/head pack, runtime precision choices, cache checks and context-dependent throughput. This page's remaining model and performance sections describe DeepSeek.
 
 ## Model package
 
