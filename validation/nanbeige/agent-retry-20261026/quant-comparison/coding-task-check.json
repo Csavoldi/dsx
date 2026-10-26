@@ -1,0 +1,20 @@
+{
+  "local2.5": {
+    "extractable_python": true,
+    "tested_range": [
+      -10,
+      10000
+    ],
+    "mismatch_count": 0,
+    "first_mismatches": []
+  },
+  "luni4.0": {
+    "extractable_python": true,
+    "tested_range": [
+      -10,
+      10000
+    ],
+    "mismatch_count": 0,
+    "first_mismatches": []
+  }
+}
