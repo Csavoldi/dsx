@@ -5,8 +5,10 @@
 //! inputs a scale and the sum of codes), `gemv` gives the raw dot products of tile columns nb0..nb1 (each column's
 //! 64-bit view from byte-aligned loads and vpshufb, 16 windows by shifts, vpmullw by 0x3A2F, vpdpbusd of the product
 //! bytes [lo hi] with [x x 0 0]: x * byte sum b, then 0.009567260742 b - 2.4375 per group), `post` the output
-//! Hadamard and svh. AVX-VNNI / AVX-512 VNNI; AVX2-only CPUs (Haswell to Broadwell, Zen 2/3) run an exact
-//! non-saturating vpdpbusd emulation (`avx2_dpbusd_exact`); other CPUs take the scalar decode.
+//! Hadamard and svh. AVX-VNNI / AVX-512 VNNI; AVX2-only CPUs (Haswell to Broadwell, Zen 2/3) build the exact byte-pair
+//! sums with vpmaddubsw against a signed +1 multiplier (<= 510, no saturation) and one vpmaddwd per dot (`avx2_dp_pair`),
+//! the pair sums hoisted out of the token loop in gemv_n; `avx2_dpbusd_exact` stays as the reference emulation for tests.
+//! Other CPUs take the scalar decode.
 
 use super::qdot::{Isa, isa};
 use crate::numerics::fwht_blocks;
@@ -39,8 +41,12 @@ pub fn mul1() -> bool {
 #[derive(Default, Clone)]
 pub struct Act {
     pub x4: Vec<i32>,
+    /// AVX2 only: x8[i / 2] = i16 pair [q_i, q_i+1] for even i, the vpmaddwd multiplier of the byte-pair sums
+    pub x8: Vec<i32>,
     /// mul1 only: x1[i] = bytes [q_i q_i q_i q_i]
     pub x1: Vec<i32>,
+    /// mul1 AVX2 only: xm1[i] = i16 pair [q_i, q_i]
+    pub xm1: Vec<i32>,
     pub d: Vec<f32>,
     pub s: Vec<i32>,
 }
@@ -71,10 +77,15 @@ pub fn prep_group(x: &[f32], suh: &[u8], gr: usize, a: &mut Act) {
         sum += q0 + q1;
         let (b0, b1) = ((q0 & 255) as u32, (q1 & 255) as u32);
         a.x4[128 * gr + i / 2] = (b0 | b0 << 8 | b1 << 16 | b1 << 24) as i32;
+        // vpmaddwd operand: signed i16 pair [q_i, q_i+1]
+        a.x8[128 * gr + i / 2] = (q0 as i16 as u16 as u32 | ((q1 as i16 as u16 as u32) << 16)) as i32;
         if mul1() {
             // sized by the caller (groups of one Act are prepped by several threads at once)
             a.x1[256 * gr + i] = (b0 * 0x0101_0101) as i32;
             a.x1[256 * gr + i + 1] = (b1 * 0x0101_0101) as i32;
+            let (d0, d1) = ((q0 as i16 as u16) as u32, (q1 as i16 as u16) as u32);
+            a.xm1[256 * gr + i] = (d0 | d0 << 16) as i32;
+            a.xm1[256 * gr + i + 1] = (d1 | d1 << 16) as i32;
         }
     }
     a.d[gr] = m / 127.0;
@@ -83,8 +94,10 @@ pub fn prep_group(x: &[f32], suh: &[u8], gr: usize, a: &mut Act) {
 
 pub fn prep(x: &[f32], suh: &[u8], k: usize, a: &mut Act) {
     a.x4.resize(k / 2, 0);
+    a.x8.resize(k / 2, 0);
     if mul1() {
         a.x1.resize(k, 0);
+        a.xm1.resize(k, 0);
     }
     a.d.resize(k / 256, 0.0);
     a.s.resize(k / 256, 0);
@@ -310,8 +323,9 @@ macro_rules! tile_n {
         let h = view($t, $p, &$msk, $vh);
         $(
             let pr = _mm256_mullo_epi16(_mm256_blend_epi16::<0b1010_1010>(sh!(l, h, $ka $($oa)?), sh!(l, h, $kb2 $($ob)?)), $mul);
+            let sums = psum(pr);
             for i in 0..N {
-                $acc[i] = dp($acc[i], pr, _mm256_set1_epi32(*$x[i].add(8 * $kb + $q)));
+                $acc[i] = dpk($acc[i], sums, _mm256_set1_epi32(*$x[i].add(8 * $kb + $q)));
             }
         )*
     }};
@@ -327,10 +341,12 @@ macro_rules! tile_n2 {
         $(
             let p0 = _mm256_mullo_epi16(_mm256_blend_epi16::<0b1010_1010>(sh!(l0, h0, $ka $($oa)?), sh!(l0, h0, $kb2 $($ob)?)), $mul);
             let p1 = _mm256_mullo_epi16(_mm256_blend_epi16::<0b1010_1010>(sh!(l1, h1, $ka $($oa)?), sh!(l1, h1, $kb2 $($ob)?)), $mul);
+            let s0 = psum(p0);
+            let s1 = psum(p1);
             for i in 0..N {
                 let xq = _mm256_set1_epi32(*$x[i].add(8 * $kb + $q));
-                $a0[i] = dp($a0[i], p0, xq);
-                $a1[i] = dp($a1[i], p1, xq);
+                $a0[i] = dpk($a0[i], s0, xq);
+                $a1[i] = dpk($a1[i], s1, xq);
             }
         )*
     }};
@@ -348,8 +364,8 @@ macro_rules! tile_m1 {
             let xq = _mm256_set1_epi32(*$x1.get_unchecked(16 * $kb + $j));
             let w0 = _mm256_and_si256(sh!(l0, h0, $k $($o)?), $m16);
             let w1 = _mm256_and_si256(sh!(l1, h1, $k $($o)?), $m16);
-            $a0 = dp($a0, _mm256_mullo_epi32(w0, $mul), xq);
-            $a1 = dp($a1, _mm256_mullo_epi32(w1, $mul), xq);
+            $a0 = dp1($a0, _mm256_mullo_epi32(w0, $mul), xq);
+            $a1 = dp1($a1, _mm256_mullo_epi32(w1, $mul), xq);
         )*
     }};
 }
@@ -394,8 +410,25 @@ pub unsafe fn avx2_dpbusd_exact(s: std::arch::x86_64::__m256i, a: std::arch::x86
     _mm256_add_epi32(s, _mm256_set_m128i(hi, lo))
 }
 
+/// AVX2 dot through exact byte-pair sums: vpmaddubsw against a signed +1 multiplier sums two bytes (<= 510, so no
+/// i16 saturation), and vpmaddwd forms one i32 dot per 32-bit lane with the [q_i, q_i+1] pair. Products are
+/// <= 510 * 128 = 65280 and their pair <= 130560, so every intermediate fits and the result equals vpdpbusd.
+/// Fewer port-5 uops than `avx2_dpbusd_exact` (no vpunpck/vpmovsxbw/vphaddd), which the tile decode also needs.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+pub unsafe fn avx2_dp_pair(s: std::arch::x86_64::__m256i, pr: std::arch::x86_64::__m256i, qp: std::arch::x86_64::__m256i) -> std::arch::x86_64::__m256i {
+    use std::arch::x86_64::*;
+    let sums = _mm256_maddubs_epi16(pr, _mm256_set1_epi8(1));
+    _mm256_add_epi32(s, _mm256_madd_epi16(sums, qp))
+}
+
 macro_rules! t16_kernels {
-    ($m:ident, $feat:literal, |$s:ident, $a:ident, $b:ident| $dp:expr) => {
+    ($m:ident, $feat:literal, $act:ident, $act1:ident,
+     |$s:ident, $a:ident, $b:ident| $dp:expr,
+     |$ps:ident| $psum:expr,
+     |$sk:ident, $pk:ident, $qk:ident| $dpk:expr,
+     |$s1:ident, $a1:ident, $b1:ident| $dp1:expr) => {
         #[cfg(target_arch = "x86_64")]
         pub mod $m {
             use super::*;
@@ -405,6 +438,27 @@ macro_rules! t16_kernels {
             #[target_feature(enable = $feat)]
             unsafe fn dp($s: __m256i, $a: __m256i, $b: __m256i) -> __m256i {
                 $dp
+            }
+
+            /// weight-side byte-pair sums, shared by every token in gemv_n (identity for VNNI)
+            #[inline]
+            #[target_feature(enable = $feat)]
+            unsafe fn psum($ps: __m256i) -> __m256i {
+                $psum
+            }
+
+            /// one token's dot from the pair sums
+            #[inline]
+            #[target_feature(enable = $feat)]
+            unsafe fn dpk($sk: __m256i, $pk: __m256i, $qk: __m256i) -> __m256i {
+                $dpk
+            }
+
+            /// the mul1 dot (one 16-bit window per 32-bit lane)
+            #[inline]
+            #[target_feature(enable = $feat)]
+            unsafe fn dp1($s1: __m256i, $a1: __m256i, $b1: __m256i) -> __m256i {
+                $dp1
             }
 
             /// 16 bytes of the tile's stream from byte s (negative: wraps to the tile end)
@@ -454,7 +508,7 @@ macro_rules! t16_kernels {
             #[target_feature(enable = $feat)]
             pub unsafe fn gemv(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32], g0: usize, g1: usize) {
                 unsafe {
-                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.x4.len() >= k / 2 && out.len() >= 16 * (nb1 - nb0));
+                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.$act.len() >= k / 2 && out.len() >= 16 * (nb1 - nb0));
                     let p = &plans()[k2 - 3];
                     let mut msk = [[[_mm_setzero_si128(); 2]; 2]; 4];
                     for v in 0..4 {
@@ -466,7 +520,7 @@ macro_rules! t16_kernels {
                     }
                     let (kt, tb) = (k / 16, 16 * k2);
                     let mul = _mm256_set1_epi16(t16::MUL as i16);
-                    let x = &a.x4[..];
+                    let x = &a.$act[..];
                     for nb in nb0..nb1 {
                         let o = out.as_mut_ptr().add((nb - nb0) * 16);
                         let (mut f0, mut f1) = if g0 == 0 { (_mm256_setzero_ps(), _mm256_setzero_ps()) } else { (_mm256_loadu_ps(o), _mm256_loadu_ps(o.add(8))) };
@@ -511,7 +565,7 @@ macro_rules! t16_kernels {
                     }
                     let (kt, tb) = (k / 16, 16 * k2);
                     let mul = _mm256_set1_epi16(t16::MUL as i16);
-                    let x: [*const i32; N] = std::array::from_fn(|i| acts[i].x4.as_ptr());
+                    let x: [*const i32; N] = std::array::from_fn(|i| acts[i].$act.as_ptr());
                     for nb in nb0..nb1 {
                         let (mut f0, mut f1) = ([_mm256_setzero_ps(); N], [_mm256_setzero_ps(); N]);
                         if g0 > 0 {
@@ -578,7 +632,7 @@ macro_rules! t16_kernels {
                 unsafe {
                     assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && acts.len() == outs.len());
                     for (a, o) in acts.iter().zip(outs.iter()) {
-                        assert!(a.x4.len() >= k / 2 && a.d.len() >= k / 256 && a.s.len() >= k / 256 && o.len() >= 16 * (nb1 - nb0));
+                        assert!(a.$act.len() >= k / 2 && a.d.len() >= k / 256 && a.s.len() >= k / 256 && o.len() >= 16 * (nb1 - nb0));
                     }
                     let mut i = 0;
                     while i < acts.len() {
@@ -603,7 +657,7 @@ macro_rules! t16_kernels {
             #[target_feature(enable = $feat)]
             pub(super) unsafe fn gemv_m1(m: &[u8], k2: usize, k: usize, n: usize, a: &Act, nb0: usize, nb1: usize, out: &mut [f32]) {
                 unsafe {
-                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.x1.len() >= k);
+                    assert!(m.len() >= t16::trellis_bytes(k2, k, n) + 16 && nb1 <= n / 16 && a.$act1.len() >= k);
                     let p = &plans()[k2 - 3];
                     let mut msk = [[[_mm_setzero_si128(); 2]; 2]; 4];
                     for v in 0..4 {
@@ -616,7 +670,7 @@ macro_rules! t16_kernels {
                     let (kt, tb) = (k / 16, 16 * k2);
                     let mul = _mm256_set1_epi32(M1_MUL as i32);
                     let m16 = _mm256_set1_epi32(0xFFFF);
-                    let x1 = &a.x1[..];
+                    let x1 = &a.$act1[..];
                     for nb in nb0..nb1 {
                         let (mut f0, mut f1) = (_mm256_setzero_ps(), _mm256_setzero_ps());
                         let col = m.as_ptr().add(nb * kt * tb);
@@ -646,9 +700,27 @@ macro_rules! t16_kernels {
     };
 }
 
-t16_kernels!(vnni, "avx2,avxvnni,fma,f16c,ssse3", |s, a, b| _mm256_dpbusd_avx_epi32(s, a, b));
-t16_kernels!(vnni512, "avx2,avx512vnni,avx512vl,fma,f16c,ssse3", |s, a, b| _mm256_dpbusd_epi32(s, a, b));
-t16_kernels!(avx2, "avx2,fma,f16c,ssse3", |s, a, b| unsafe { avx2_dpbusd_exact(s, a, b) });
+t16_kernels!(
+    vnni, "avx2,avxvnni,fma,f16c,ssse3", x4, x1,
+    |s, a, b| _mm256_dpbusd_avx_epi32(s, a, b),
+    |p| p,
+    |s, p, q| _mm256_dpbusd_avx_epi32(s, p, q),
+    |s, a, b| _mm256_dpbusd_avx_epi32(s, a, b)
+);
+t16_kernels!(
+    vnni512, "avx2,avx512vnni,avx512vl,fma,f16c,ssse3", x4, x1,
+    |s, a, b| _mm256_dpbusd_epi32(s, a, b),
+    |p| p,
+    |s, p, q| _mm256_dpbusd_epi32(s, p, q),
+    |s, a, b| _mm256_dpbusd_epi32(s, a, b)
+);
+t16_kernels!(
+    avx2, "avx2,fma,f16c,ssse3", x8, xm1,
+    |s, pr, qp| unsafe { avx2_dp_pair(s, pr, qp) },
+    |pr| _mm256_maddubs_epi16(pr, _mm256_set1_epi8(1)),
+    |s, sums, qp| _mm256_add_epi32(s, _mm256_madd_epi16(sums, qp)),
+    |s, pr, qp| unsafe { avx2_dp_pair(s, pr, qp) }
+);
 
 #[cfg(test)]
 mod tests {
@@ -663,12 +735,20 @@ mod tests {
         for (k2, k, n) in [(3usize, 512usize, 256usize), (4, 768, 128), (5, 256, 384)] {
             let ty = t16::ty_for_k2(k2).unwrap();
             let m: Vec<u8> = (0..t16::matrix_bytes(ty, k, n)).map(|_| rng(&mut seed) as u8).collect();
-            let mut a = Act { x4: vec![0; k / 2], x1: vec![0; k], d: vec![0.0; k / 256], s: vec![0; k / 256] };
+            let mut a = Act {
+                x4: vec![0; k / 2],
+                x8: vec![0; k / 2],
+                x1: vec![0; k],
+                xm1: vec![0; k],
+                d: vec![0.0; k / 256],
+                s: vec![0; k / 256],
+            };
             for i in 0..k {
                 let q = (rng(&mut seed) % 255) as i32 - 127;
                 let b = (q & 255) as u32;
                 a.x1[i] = (b * 0x0101_0101) as i32;
                 a.x4[i / 2] |= ((b | b << 8) << (16 * (i % 2))) as i32;
+                a.xm1[i] = (q as i16 as u16 as u32 | ((q as i16 as u16 as u32) << 16)) as i32;
                 a.s[i / 256] += q;
             }
             for d in a.d.iter_mut() {
@@ -681,6 +761,8 @@ mod tests {
                 Isa::Vnni => unsafe { vnni::gemv_m1(&m, k2, k, n, &a, 0, n / 16, &mut yv) },
                 #[cfg(target_arch = "x86_64")]
                 Isa::Vnni512 => unsafe { vnni512::gemv_m1(&m, k2, k, n, &a, 0, n / 16, &mut yv) },
+                #[cfg(target_arch = "x86_64")]
+                Isa::Avx2 => unsafe { avx2::gemv_m1(&m, k2, k, n, &a, 0, n / 16, &mut yv) },
                 _ => return,
             }
             assert_eq!(ys, yv, "k2 {k2}: mul1 SIMD vs scalar ({:?})", isa());
@@ -844,10 +926,13 @@ mod tests {
             // of prep_group ([q0 q0 q1 q1]: each 16-bit window's product is dotted with its q twice)
             let mut a = Act::default();
             a.x4.resize(k / 2, 0);
+            a.x8.resize(k / 2, 0);
             for i in 0..k / 2 {
                 let q0 = (rng(&mut seed) % 256) as u32;
                 let q1 = (rng(&mut seed) % 256) as u32;
                 a.x4[i] = (q0 | q0 << 8 | q1 << 16 | q1 << 24) as i32;
+                let (s0, s1) = ((q0 as u8 as i8) as i16 as u16 as u32, (q1 as u8 as i8) as i16 as u16 as u32);
+                a.x8[i] = (s0 | s1 << 16) as i32;
             }
             a.d.resize(k / 256, 1.0);
             a.s.resize(k / 256, 0);
