@@ -1,6 +1,6 @@
 # dsx: the NVIDIA runner
 
-The current default model is T16 v1. [Current state](../docs/current-state.md) records integrated kernels,
+The DeepSeek backend defaults to T16 v1. [Current state](../docs/current-state.md) records integrated kernels,
 configuration switches, benchmark provenance and static-residency decode validation. Without `--features cuda`,
 GPU subcommands such as `gen`, `eval` and `cmp` are absent; the CPU reference and GGUF tools remain available.
 
@@ -8,6 +8,8 @@ DeepSeek-V4.1-Flash(-1017) inference for one machine: 2x RTX 3090, i7-12700K, 12
 Rust + CUDA uses the cudarc driver API; `CUDA_ARCHS` selects fatbin targets, default sm_86 and sm_120.
 Config, readers, block formats, the CPU reference and the server are in [`../core`](../core) (re-exported as `dsx::model`, `dsx::server`, ...). Plan and
 numbers: ../DESIGN.md, ../FINDINGS.md, ../bench/RESULTS.md.
+
+The Nanbeige backend uses the separate `dsx-nanbeige-server` binary on one RTX 5090. Its current default is Luni's existing EXL3 4.0 bpw decoder, with a runtime 4-bit head, Q3 KV and INT8 GQA decode attention. Follow [Nanbeige setup](../README.nanbeige.md) for its pinned model downloads, decoder override and measured tradeoffs; the commands below describe DeepSeek.
 
 ## Build
 
