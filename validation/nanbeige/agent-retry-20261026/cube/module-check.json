@@ -1,0 +1,22 @@
+{
+  "character_widths": [
+    100
+  ],
+  "rows": 24,
+  "frame_changes": true,
+  "nonblank_braille_cells": [
+    374,
+    323
+  ],
+  "braille_mapping": [
+    1,
+    8,
+    2,
+    16,
+    4,
+    32,
+    64,
+    128
+  ],
+  "source_authorship": "model written, model repaired with explicit parent defect feedback; parent supplied Enter to launch once"
+}
