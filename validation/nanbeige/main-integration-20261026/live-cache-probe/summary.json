@@ -1,0 +1,7 @@
+{
+  "matched_response_message": true,
+  "first_cached_tokens": 0,
+  "second_cached_tokens": 3910,
+  "prompt_tokens": 3910,
+  "scope": "same deterministic request cold then reused prefix on deployed experimental kernel; no claim about all histories or full256K"
+}
