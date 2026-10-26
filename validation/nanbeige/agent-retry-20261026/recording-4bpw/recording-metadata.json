@@ -1,0 +1,25 @@
+{
+  "header": {
+    "version": 2,
+    "width": 100,
+    "height": 57,
+    "timestamp": 1793035680,
+    "command": "tmux attach-session -t nanbeige-doom",
+    "env": {
+      "SHELL": "/usr/bin/zsh"
+    }
+  },
+  "last_event_seconds": 496.054757,
+  "events": 34452,
+  "capture_service": "nanbeige-cube-recording-20261026.service",
+  "session": "nanbeige-doom",
+  "pane_pi": "%4",
+  "pane_preview": "%3",
+  "video_playback_speed": 4,
+  "video_idle_cap_seconds": 5,
+  "video_fps_cap": 15,
+  "video_encoder": "CPU libx264",
+  "original_cast_preserved": true,
+  "video_trim_start_seconds_after_acceleration": 19.5,
+  "decoded_frame_seconds_in_trimmed_video": 98.5
+}
