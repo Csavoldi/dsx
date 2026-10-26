@@ -1,0 +1,11 @@
+{
+  "quietStartup": true,
+  "defaultThinkingLevel": "off",
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 32768,
+    "keepRecentTokens": 49152
+  },
+  "lastChangelogVersion": "1.4.0",
+  "hideThinkingBlock": false
+}
