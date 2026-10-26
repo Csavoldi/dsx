@@ -10,6 +10,23 @@ A subsequent thinking-off attempt looped over echo/tmux checks after the recorde
 
 The new `/metrics/progress` endpoint counts emitted model tokens, including reasoning and tool arguments. It reports a rolling two-second rate and a whole-response decode rate excluding the first token. The tmux status bar displays those rates, output count, and prompt-plus-output sequence length. It labels queue/prefill separately so stale previous-request rates are not presented as current decode. Sequence length is not a measurement of allocated or populated KV memory.
 
-The observer found high GPU activity, substantial prefix reuse, and a strong short-context attention partition candidate in the existing isolated measurements. Its report separates useful-code throughput from repetitive tool loops. No competing GPU benchmark ran during the gauntlet. The optional 4.0 bpw decoder candidate is downloading for a future same-runner comparison; quality, hardware fit, end-to-end speed and task success remain unmeasured.
+The observer found high GPU activity, substantial prefix reuse, and a strong short-context attention partition candidate in the existing isolated measurements. Its report separates useful-code throughput from repetitive tool loops. No competing GPU benchmark ran during the gauntlet. The 4.0 bpw candidate is now downloaded and all five shard hashes verified. The matched comparison below measures its decoder override with the same original embedding and runtime 4-bit head; task success remains unmeasured.
 
 Sources: https://huggingface.co/Nanbeige/Nanbeige4.3-33B and https://huggingface.co/Luni/Nanbeige-4.3-33B-EXL3/tree/4.00bpw. Published quantization metrics on different corpora are not directly comparable to our 128-target reference sample.
+
+## Matched quant comparison
+
+Both recipes allocated 262,144 context capacity with Q3 KV, CPU embedding, runtime 4-bit head, batch 4096 and lookup draft length 3. A pinned baseline binary ran sequentially without the Pi agent competing for the GPU. The 4.0 bpw decoder is Luni revision `bc301055ecdfd5d992f2afaf5f6a405a7f235572`.
+
+| Decoder | 128-target perplexity after 4096 input tokens | 4096-input prefill seconds | 512-token short coding decode TPS | Free GPU bytes after quality allocation |
+| --- | ---: | ---: | ---: | ---: |
+| Local 2.5 bpw | 12.7023 | 2.1161 | 64.08 | 7,020,871,680 |
+| Luni 4.0 bpw | 11.1146 | 1.9848 | 52.95 | 1,392,705,536 |
+
+The quality sample is small. Coding output differs between quants, so its throughput also includes different lookup acceptance and output characteristics; it is one prompt, not a general task completion score. Full context allocation is proven here; filling all 262K positions with realistic history is not. The baseline 2.5 bpw server remains the default while we investigate attention scaling.
+
+## Doom stopped and cube retry
+
+The user stopped Doom after repeated implementation failures. One headless animation test had inflated tool feedback by about 50K tokens. The new bounded-output extension preserves raw output locally while summarizing animation and limiting ordinary tool results. This avoids accidental context growth but does not remove attention's scaling cost.
+
+The replacement task is a rotating wireframe cube in the same `nanbeige-doom` tmux session. The first model implementation misread a Braille cell's 2-by-4 dot dimensions as the entire canvas. The repair prompt supplies explicit terminal character and dot dimensions. This defect is recorded rather than counted as a successful cube.
