@@ -10,6 +10,8 @@ The NVFP4 path uses `primitive-ai/Nanbeige4.3-33B-NVFP4` revision `4171a7d6eabff
 
 The EXL3 pack is `lxe/Nanbeige4.3-33B-EXL3-2.5bpw`, converted from the original BF16 checkpoint at `c1093c501cc6460427c0ac634db7223d0450c0ee`. Its 364 decoder matrices use 2.5 bpw trellises, the standard `0x83DCD12D` codebook, and the upstream tensor layout. It is distinct from DSX T16's custom codebook. Embedding and norms remain BF16; the shipped head is FP16. The two weight shards total 14,402,849,061 bytes. Calibration used 32 rows of 512 tokens, with converter patches and hashes included in the model repository.
 
+The current local default uses the **Luni 4.0 bpw decoder** at revision `bc301055ecdfd5d992f2afaf5f6a405a7f235572`, with the original local pack supplying embedding, norms and the runtime-quantized 4-bit output head. All five Luni shards were hash-verified. This is a decoder override, not a repack of Luni's quantized output head; the existing head loader requires the original uncompressed head tensor. The 2.5 bpw pack remains available as a faster short-context alternative.
+
 ## Build and run
 
 ```bash
@@ -17,8 +19,11 @@ CUDA_ARCHS=120 cargo build -p dsx --features cuda --release \
   --bin dsx-nanbeige --bin dsx-nanbeige-server
 
 hf download lxe/Nanbeige4.3-33B-EXL3-2.5bpw --local-dir models/nanbeige-exl3
+hf download Luni/Nanbeige-4.3-33B-EXL3 \
+  --revision bc301055ecdfd5d992f2afaf5f6a405a7f235572 --local-dir models/nanbeige-exl3-4bpw
 DSX_NB_BATCH=4096 DSX_NB_ATTN8=2 DSX_NB_PART_SIZE=16384 \
-DSX_NB_EXL3_NARROW=1 DSX_NB_EXL3_EXPERIMENT=pf4 \
+DSX_NB_EXL3_NARROW=1 DSX_NB_EXL3_EXPERIMENT=pf4 DSX_NB_GQA_I8PV=1 \
+DSX_NB_EXL3=models/nanbeige-exl3-4bpw \
   ./target/release/dsx-nanbeige-server --model models/nanbeige-exl3 \
   --ctx 262144 --kv-bits 3 --host-embed --head-bits 4 --lookup 3 \
   --host 127.0.0.1 --port 8095
@@ -38,7 +43,23 @@ Prefix reuse checks the longest common token prefix. Short rewinds reuse GPU cac
 
 Prompt lookup proposes up to eight tokens from repeated text and verifies them with the target model. The coding workload had low acceptance and little benefit; repeated copying had high acceptance. Changing verification shapes can change floating-point rounding and free-running output, even with greedy sampling.
 
-## Current performance
+## Current default and measured tradeoffs
+
+The local default is now the 4.0 bpw decoder with `DSX_NB_GQA_I8PV=1`, 3-bit KV, a runtime 4-bit head, CPU embeddings and lookup width 3. The combined configuration passed a 128-target precision check at perplexity **11.1642**, versus **11.1146** with the same 4.0 bpw decoder and previous attention path, a 0.45% increase. A live deterministic API retry reused all **3910 prompt tokens** and returned the same response. Full 262,144-token capacity fits with approximately 1.2 GB free in the CLI quality run; populated long-context task quality remains untested.
+
+The matched short coding comparison before the attention change measured **64.08 TPS** for 2.5 bpw and **52.95 TPS** for 4.0 bpw, with perplexity **12.7023** and **11.1146** on the diagnostic sample. Against saved source logits, mean KL was **0.19287** and **0.06081**, including runtime head and KV effects. These are small diagnostics, not a broad agentic quality score.
+
+Full-model attention scaling was measured separately with the **2.5 bpw decoder**, identical binary, greedy generation, lookup disabled and 128 output tokens. The 64K input repeats the 32K WikiText fixture. These numbers must not be presented as 4.0 bpw throughput.
+
+| Actual prompt tokens | Previous attention TPS | INT8 GQA TPS |
+| ---: | ---: | ---: |
+| 4,096 | 36.84 | 46.82 |
+| 32,768 | 24.96 | 35.67 |
+| 65,536 | 14.85 | 27.08 |
+
+The new attention path increased perplexity by 0.234% on 128 targets, with mean KL 0.00208 and 98.44% top-1 agreement relative to the previous runtime. Free-running output differs. Cold prefill remains about 2,000 TPS at 4K, 910 at 32K and 540 at 64K; this decode optimization does not improve prefill. Partition tuning and projection/prefill profiling remain open work. [Raw receipts and limits](validation/nanbeige/agent-retry-20261026/gqa-i8pv/report.md).
+
+## Earlier 2.5 bpw short-context performance
 
 The `nanbeige` branch is intended for integration into DSX `main`; it currently builds a separate `dsx-nanbeige-server` binary. The deployed EXL3 configuration uses four-row trellis prefetching, lookup width 3, 3-bit KV, a 4-bit runtime head, and CPU embedding lookup. Verification-batch graphs remain off.
 

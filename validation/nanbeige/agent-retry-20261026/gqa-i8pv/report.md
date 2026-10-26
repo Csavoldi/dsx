@@ -26,7 +26,7 @@ The existing server was confirmed idle before stopping. Only the CLI was compile
 
 ## Matched full-model follow-up
 
-The same pinned CLI binary (`f1f44d9ac59bb722b8a5ede370d1dbcbec97e3f317698f8db99d40a9b7aa48b4`) ran both flag settings with unchanged EXL3 2.5 bpw weights, runtime head4, Q3 KV, host embedding, batch4,096, pf4 and allocated capacity262,144. Greedy decode disabled prompt lookup to isolate the attention change. Each run generated128 tokens and saved all output IDs.
+The same pinned CLI binary (`f1f44d9ac59bb722b8a5ede370d1dbcbec97e3f317698f8db99d40a9b7aa48b4`) ran both flag settings with unchanged EXL3 2.5 bpw weights, runtime head 4, Q3 KV, host embedding, batch 4,096, pf4 and allocated capacity 262,144. Greedy decode disabled prompt lookup to isolate the attention change. Each run generated 128 tokens and saved all output IDs.
 
 | Input tokens | Final populated context | Default output TPS | INT8 output TPS | Gain |
 | --- | ---: | ---: | ---: | ---: |
@@ -34,12 +34,12 @@ The same pinned CLI binary (`f1f44d9ac59bb722b8a5ede370d1dbcbec97e3f317698f8db99
 | 32,768 | 32,896 | 24.96 | 35.67 | 42.9% |
 | 65,536 | 65,664 | 14.85 | 27.08 | 82.3% |
 
-These are WikiText continuation workloads. The64K prompt repeats the32K token sequence twice and is explicitly synthetic. They establish full-model timing at actual populated contexts but do not establish agent task completion or100 TPS. Greedy sequences diverged at output positions23,12 and13 respectively, so later token content differs between configurations.
+These are WikiText continuation workloads. The 64K prompt repeats the 32K token sequence twice and is explicitly synthetic. They establish full-model timing at actual populated contexts but do not establish agent task completion or 100 TPS. Greedy sequences diverged at output positions 23, 12 and 13 respectively, so later token content differs between configurations.
 
-Matched teacher-forced scoring of128 targets after3,968 prefix tokens measured PPL12.70232835→12.73208187 (+0.2342%), mean KL(default||INT8)0.00208196, maximum KL0.02317962 and top1 agreement98.4375%. This quality check is short-context; long-context retrieval and task quality remain unmeasured.
+Matched teacher-forced scoring of 128 targets after 3,968 prefix tokens measured PPL 12.70232835→12.73208187 (+0.2342%), mean KL(default||INT8) 0.00208196, maximum KL 0.02317962 and top1 agreement 98.4375%. This quality check is short-context; long-context retrieval and task quality remain unmeasured.
 
-Cold prefill throughput was2,052→1,937 tokens/s at4K,905→916 at32K, and552→533 at64K. The experimental flag changes decode attention only, so no prefill improvement is claimed. Sequential single runs with unlocked clocks are not confidence intervals.
+Cold prefill throughput was 2,052→1,937 tokens/s at 4K, 905→916 at 32K, and 552→533 at 64K. The experimental flag changes decode attention only, so no prefill improvement is claimed. Sequential single runs with unlocked clocks are not confidence intervals.
 
 The runner script and exact input hashes are in `fullmodel-validation.py` and `fullmodel/manifest.json`; small receipts include `fullmodel/runs.json`, `fullmodel/summary.json` and per-run JSON containing output IDs. Full-logit files and pinned binaries are local-only large artifacts and should not be committed. The unchanged baseline service was restored and its progress endpoint verified responsive in `finally`; no experimental server was deployed.
 
-A quality-preserving adaptive partition alternative is still worth testing before choosing INT8 deployment. Existing isolated data favors128-token partitions at short contexts,256 at intermediate contexts and512 at long contexts. It needs partition-specific graph keys, default-versus-adaptive full-model comparison and numerical/caching transition checks.
+A quality-preserving adaptive partition alternative is still worth testing before choosing INT8 deployment. Existing isolated data favors 128-token partitions at short contexts, 256 at intermediate contexts and 512 at long contexts. It needs partition-specific graph keys, default-versus-adaptive full-model comparison and numerical/caching transition checks.
