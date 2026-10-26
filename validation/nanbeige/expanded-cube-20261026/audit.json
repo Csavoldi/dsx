@@ -1,0 +1,42 @@
+{
+  "source_sha256": "30dcc716eadfa4721d6a7172c08e99a181fb21ab8272774d382214384293ed1b",
+  "scope": "independent CPU geometry and Braille coordinate audit; no source edits or model feedback",
+  "canvas_api": "model-rewritten constructor takes character columns and dot rows; 20 dots yield5 character rows",
+  "bottom_dot_preserved": true,
+  "vertex_count": 8,
+  "edge_count": 12,
+  "rotation_norm_max_error": 1.1102230246251565e-16,
+  "distinct_frames": 3,
+  "frame_bounds": [
+    {
+      "nonblank_cells": 263,
+      "nonblank_rows": 23,
+      "bbox": [
+        8,
+        57,
+        0,
+        22
+      ]
+    },
+    {
+      "nonblank_cells": 212,
+      "nonblank_rows": 23,
+      "bbox": [
+        13,
+        52,
+        0,
+        22
+      ]
+    },
+    {
+      "nonblank_cells": 230,
+      "nonblank_rows": 23,
+      "bbox": [
+        9,
+        56,
+        0,
+        22
+      ]
+    }
+  ]
+}
