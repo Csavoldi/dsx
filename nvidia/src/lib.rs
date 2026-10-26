@@ -3,7 +3,6 @@
 //! reference, server) are in `dsx-core` and re-exported here under their old paths.
 
 pub use dsx_core::{dspark, formats, gguf, iqgrid, model, numerics, safetensors, t16};
-pub mod cache_order;
 
 #[cfg(feature = "cuda")]
 pub mod attn;
@@ -20,8 +19,6 @@ pub mod handoff;
 pub mod q6;
 pub mod spec;
 #[cfg(feature = "cuda")]
-pub mod sampling;
-#[cfg(feature = "cuda")]
 pub mod topk;
 
 /// The server (from dsx-core) and the GPU engine behind it.
@@ -30,6 +27,3 @@ pub mod server {
     #[cfg(feature = "cuda")]
     pub mod real;
 }
-
-#[cfg(feature = "cuda")]
-pub mod nanbeige;

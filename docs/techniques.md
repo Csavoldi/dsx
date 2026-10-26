@@ -8,7 +8,7 @@ compares with other engines for this model family. Measurements: [FINDINGS.md](.
 The default model uses T16 v1 (1.5–2.5 bpw experts, Q8_0 dense, IQ4_NL Engram lookup table). Its trellis codebook,
 column-major tile positions, damped LDLQ and baked-in output gains are described in [T16 experiments](t16.md).
 The later runtime integrates staged T16 GEMVs and small-kernel/launch changes; [current state](current-state.md)
-records the measured gains, defaults and fixed-residency decode validation. The output gains were chosen
+records the measured gains, defaults and the unresolved fixed-residency decode check. The output gains were chosen
 on the reported evaluation set. The calib5 requant completed but did not lower its general-text KL.
 
 The tables below retain the earlier scalar and Unsloth experiments. Their speed and quality numbers belong to

@@ -1,8 +1,0 @@
-{
-  "comparison": "PF4 prefetch and its occupancy geometry versus baseline; same EXL3 weights, 4096-token WikiText prefix, 128 scored targets",
-  "mean_kl": 0.0018953776722648538,
-  "top1_agreement": 0.96875,
-  "baseline_ppl": 12.7036347021727,
-  "prefetch_ppl": 12.702328353978807,
-  "weight_files_changed": false
-}

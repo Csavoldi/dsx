@@ -268,7 +268,7 @@ __device__ __forceinline__ const unsigned char *t16_mat(const ExpSlot &s, const 
 
 // x: [T][k] (per token, xpp = 0) or [T K][k] (per pick, xpp = 1). Out: xp [T K][k / 2] u32, xd / xs [T K][k / 256].
 // One warp per (pick, 256-group); block 128.
-__device__ __forceinline__ void t16d_prep_k(const float *__restrict__ x, int xpp, const int *__restrict__ sel, const ExpSlot *__restrict__ tab,
+extern "C" __global__ void t16d_prep(const float *__restrict__ x, int xpp, const int *__restrict__ sel, const ExpSlot *__restrict__ tab,
                                      const unsigned char *__restrict__ base, int layer, int E, int K, int T, int role, int k, int n, int k2,
                                      uint32_t *__restrict__ xp, float *__restrict__ xd, int *__restrict__ xs) {
   const int lane = threadIdx.x & 31, wg = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, groups = k / 256;
@@ -306,22 +306,6 @@ __device__ __forceinline__ void t16d_prep_k(const float *__restrict__ x, int xpp
   }
   for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
   if (lane == 0) xd[(size_t)j * groups + gr] = m / 127.f, xs[(size_t)j * groups + gr] = sum;
-}
-
-// The ordinary and paired launches share this arithmetic, including reduction order.
-extern "C" __global__ void t16d_prep(const float *x, int xpp, const int *sel, const ExpSlot *tab,
-                                    const unsigned char *base, int layer, int E, int K, int T, int role, int k, int n, int k2,
-                                    uint32_t *xp, float *xd, int *xs) {
-  t16d_prep_k(x, xpp, sel, tab, base, layer, E, K, T, role, k, n, k2, xp, xd, xs);
-}
-
-// grid.y selects gate (0) or up (1); independent blocks, same scratch and arithmetic.
-extern "C" __global__ void t16d_prep_gu(const float *x, const int *sel, const ExpSlot *tab,
-                                       const unsigned char *base, int layer, int E, int K, int T, int k, int n, int k2,
-                                       uint32_t *xpg, float *xdg, int *xsg, uint32_t *xpu, float *xdu, int *xsu) {
-  const int role = blockIdx.y;
-  t16d_prep_k(x, 0, sel, tab, base, layer, E, K, T, role, k, n, k2,
-               role ? xpu : xpg, role ? xdu : xdg, role ? xsu : xsg);
 }
 
 __device__ __forceinline__ uint32_t t16_fsr(uint32_t lo, uint32_t hi, int s) { return (uint32_t)((((uint64_t)hi << 32) | lo) >> s); }
@@ -486,20 +470,6 @@ T16D_GEMV0(5)
 T16D_GEMV(3)
 T16D_GEMV(4)
 T16D_GEMV(5)
-
-#define T16D_GEMV_GU(K2) \
-  extern "C" __global__ void __launch_bounds__(128) t16d_gemv_gu_##K2( \
-      const uint4 *xpg, const float *xdg, const int *xsg, const uint4 *xpu, const float *xdu, const int *xsu, \
-      const int *sel, const ExpSlot *tab, const unsigned char *base, int layer, int E, int K, int T, int k, int n, int S, \
-      float *pg, float *pu) { \
-    const int role = blockIdx.y; \
-    t16d_gemv_k<K2>(role ? xpu : xpg, role ? xdu : xdg, role ? xsu : xsg, \
-                     sel, tab, base, layer, E, K, T, role, k, n, S, role ? pu : pg); \
-  }
-T16D_GEMV_GU(3)
-T16D_GEMV_GU(4)
-T16D_GEMV_GU(5)
-
 
 // h [T K][n] = bf16(silu(min(g, lim)) * clamp(u, +-lim) * w_j), g / u = had128(sum_s part) * svh. One warp per
 // (pick, 128-block); block 128.

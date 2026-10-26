@@ -61,8 +61,6 @@ pub struct Gpu {
     /// third stream for small decode work that runs beside the main stream (the hc mixes), joined by events
     pub par: cu::CUstream,
     module: cu::CUmodule,
-    extra_modules: Vec<cu::CUmodule>,
-    extra_kernels: std::collections::HashMap<String, Kernel>,
     blas: Cell<cb::cublasHandle_t>,
 }
 
@@ -108,7 +106,7 @@ impl Gpu {
             };
             let mut module = std::ptr::null_mut();
             check(cu::cuModuleLoadData(&mut module, image.as_ptr() as *const c_void), "cuModuleLoadData")?;
-            Ok(Gpu { ordinal, name, sms, arch: (major * 10 + minor) as u32, ctx, stream, side, par, module, extra_modules:vec![], extra_kernels:Default::default(), blas: Cell::new(std::ptr::null_mut()) })
+            Ok(Gpu { ordinal, name, sms, arch: (major * 10 + minor) as u32, ctx, stream, side, par, module, blas: Cell::new(std::ptr::null_mut()) })
         }
     }
 
@@ -302,30 +300,13 @@ impl Gpu {
         unsafe { check(cu::cuMemcpyDtoDAsync_v2(dst, src, bytes, self.stream), "cuMemcpyDtoDAsync") }
     }
 
-    pub fn add_kernels(&mut self, image: &[u8], names: &[String]) -> Result<()> {
-        self.bind(); let mut module=std::ptr::null_mut();
-        unsafe {check(cu::cuModuleLoadData(&mut module,image.as_ptr().cast()),"load extra kernel module")?;}
-        self.extra_modules.push(module);
-        for name in names {let c=CString::new(name.as_str())?;let mut f=std::ptr::null_mut();unsafe{check(cu::cuModuleGetFunction(&mut f,module,c.as_ptr()),name)?;}self.extra_kernels.insert(name.clone(),Kernel(f));}
-        Ok(())
-    }
     pub fn kernel(&self, name: &str) -> Result<Kernel> {
-        if let Some(k)=self.extra_kernels.get(name){return Ok(*k);}
         let c = CString::new(name)?;
         let mut f = std::ptr::null_mut();
         unsafe { check(cu::cuModuleGetFunction(&mut f, self.module, c.as_ptr()), name)? };
         Ok(Kernel(f))
     }
 
-    pub fn active_blocks(&self, k: Kernel, threads: u32, smem: usize) -> Result<u32> {
-        let mut n=0; unsafe{check(cu::cuOccupancyMaxActiveBlocksPerMultiprocessor(&mut n,k.0,threads as i32,smem),"kernel occupancy")?;} Ok(n.max(1) as u32)
-    }
-    pub fn prefer_shared(&self, k: Kernel) -> Result<()> {
-        self.shared_carveout(k,100)
-    }
-    pub fn shared_carveout(&self, k: Kernel, percent:i32) -> Result<()> {
-        unsafe {check(cu::cuFuncSetAttribute(k.0,cu::CUfunction_attribute::CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT,percent),"shared memory carveout")}
-    }
     pub fn set_smem(&self, k: Kernel, bytes: usize) -> Result<()> {
         unsafe {
             check(
@@ -423,13 +404,7 @@ impl Gpu {
         Ok(Event(e))
     }
 
-    /// Release a completed event.
-    pub fn destroy_event(&self, e: Event) -> Result<()> {
-        self.bind();
-        unsafe { check(cu::cuEventDestroy_v2(e.0), "cuEventDestroy") }
-    }
-
-    /// An event with timing enabled (for `elapsed_ms`).
+    /// an event with timing enabled (for `elapsed_ms`)
     pub fn timed_event(&self) -> Result<Event> {
         self.bind();
         let mut e = std::ptr::null_mut();

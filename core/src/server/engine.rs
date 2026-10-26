@@ -19,8 +19,6 @@ pub struct GenParams {
     pub stop_token_ids: Vec<u32>,
     /// logit penalty on hesitation tokens while the model is reasoning (None = off)
     pub hesitation: Option<Hesitation>,
-    /// Initial thinking span close token, when the prompt ends with its opening token.
-    pub thinking_close: Option<u32>,
     /// images in the prompt, in order (their spans already expanded in the prompt ids)
     pub images: std::sync::Arc<Vec<crate::vision::ImageInput>>,
 }
@@ -82,7 +80,7 @@ pub trait BatchEngine: Send {
 #[derive(Debug)]
 pub enum Event {
     Token(u32),
-    Done { finish: Finish, stats: GenStats },
+    Done { finish: Finish },
     Error(String),
 }
 
@@ -218,7 +216,7 @@ fn run_job(engine: &mut dyn Engine, job: Job) {
         Ok(f) => {
             // the worker's own stop/length/disconnect checks win over what the engine says
             let f = if hit_stop { Finish::Stop } else if hit_len { Finish::Length } else if gone { Finish::Cancelled } else { f };
-            let _ = tx.send(Event::Done { finish: f, stats: st });
+            let _ = tx.send(Event::Done { finish: f });
             format!("{f:?}")
         }
         Err(e) => {
@@ -271,7 +269,7 @@ fn run_batch(mut engine: Box<dyn BatchEngine>, rx: std_mpsc::Receiver<Job>, pend
                     "Error".to_string()
                 }
                 (Some(f), None) => {
-                    let _ = r.tx.send(Event::Done { finish: *f, stats: GenStats { cached_prompt_tokens:engine.cached_prompt_tokens(id), ..Default::default() } });
+                    let _ = r.tx.send(Event::Done { finish: *f });
                     format!("{f:?}")
                 }
                 _ => "?".into(),
@@ -303,7 +301,7 @@ fn run_batch(mut engine: Box<dyn BatchEngine>, rx: std_mpsc::Receiver<Job>, pend
                 continue;
             }
             if j.params.max_new == 0 {
-                let _ = j.tx.send(Event::Done { finish: Finish::Length, stats:GenStats::default() });
+                let _ = j.tx.send(Event::Done { finish: Finish::Length });
                 pend.fetch_sub(1, Ordering::SeqCst);
                 continue;
             }

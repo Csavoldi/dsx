@@ -56,17 +56,7 @@ pub fn real_engine(args: &RealEngineArgs) -> Result<Box<dyn Engine>> {
 
 impl Engine for Real {
     fn generate(&mut self, prompt: &[u32], p: &GenParams, emit: &mut dyn FnMut(u32) -> bool) -> Result<Finish> {
-        let mut thinking_budget = if let Some(close)=p.thinking_close {
-            std::env::var("DSX_THINKING_BUDGET").ok().map(|raw| -> Result<_> {
-                let limit=raw.parse::<usize>()?;
-                anyhow::ensure!((1..=8192).contains(&limit), "DSX_THINKING_BUDGET must be 1..8192");
-                Ok(dsx_core::server::reasoning::TokenBudget::new(limit,close))
-            }).transpose()?
-        } else {None};
-        let mut forced_thinking_tokens=Vec::<serde_json::Value>::new();
-        let token_audit_path = std::env::var("DSX_TOKEN_AUDIT").ok();
         let t0 = Instant::now();
-        let profile = std::env::var("DSX_RUNTIME_STATS").is_ok_and(|v| v == "1");
         anyhow::ensure!(!prompt.is_empty(), "empty prompt");
         // the prefix-cache key: every image position carries the same token id, so key those by image content
         let mut key = prompt.to_vec();
@@ -96,33 +86,18 @@ impl Engine for Real {
             self.gm.images.push((im.start, rows));
         }
         let pb = self.gm.pb.take().expect("prefill buffers");
-        let prefill_clock = profile.then(Instant::now);
         let r = self.gm.prefill(&pb, &prompt[start..]);
-        let model_prefill_s = prefill_clock.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         self.gm.pb = Some(pb);
         self.gm.images.clear();
         let mut logits = r?;
-        let snapshot_clock = profile.then(Instant::now);
         self.snap = Some(self.gm.snapshot()?);
-        let snapshot_s = snapshot_clock.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         self.cached = key;
-        let initial_residency = token_audit_path.as_ref().map(|_| self.gm.validation_residency());
-        let mut output_ids = token_audit_path.as_ref().map(|_| Vec::with_capacity(p.max_new.min(8192)));
         let prefill = t0.elapsed();
         let td = Instant::now();
         let mut sampler = Sampler::from_params(p);
-        let gpu_sampling = std::env::var("DSX_GPU_SAMPLE").is_ok_and(|v| v == "1")
-            && p.temperature == 1.0 && p.top_p >= 1.0
-            && p.hesitation.as_ref().is_none_or(|h| h.lambda == 0.0);
-        let mut gpu_next = None;
-        let (mut gpu_samples, mut gpu_fallbacks) = (0usize,0usize);
         let mut fin = Finish::Length;
         let mut hes = p.hesitation.clone();
-        let mut lookup_audit = crate::spec::LookupAudit::from_env();
-        let (mut sample_s, mut emit_s, mut step_s, mut steps) = (0.0, 0.0, 0.0, 0usize);
-        let adapt_before = self.gm.adapt_s;
-        let picks_before = self.gm.cpu_picks();
-        for output_index in 0..p.max_new {
+        for _ in 0..p.max_new {
             if let Some(h) = &hes {
                 for &i in h.ids.iter() {
                     if let Some(l) = logits.get_mut(i as usize) {
@@ -130,60 +105,21 @@ impl Engine for Real {
                     }
                 }
             }
-            let clock = profile.then(Instant::now);
-            let sampled = gpu_next.take().unwrap_or_else(|| sampler.sample(&logits));
-            let tok=thinking_budget.as_mut().map_or(sampled,|budget|budget.select(sampled));
-            if tok!=sampled {forced_thinking_tokens.push(serde_json::json!({"output_index":output_index,"sampled":sampled,"forced":tok}));}
-            if let Some(t) = clock { sample_s += t.elapsed().as_secs_f64(); }
-            if let Some(ids) = &mut output_ids { ids.push(tok); }
+            let tok = sampler.sample(&logits);
             if hes.as_ref().is_some_and(|h| tok == h.close) {
                 hes = None;
             }
-            let clock = profile.then(Instant::now);
-            let keep = emit(tok);
-            if let Some(t) = clock { emit_s += t.elapsed().as_secs_f64(); }
-            if !keep {
+            if !emit(tok) {
                 fin = Finish::Cancelled;
                 break;
             }
             if self.gm.pos + 1 >= self.gm.max_ctx() {
                 break;
             }
-            let clock = profile.then(Instant::now);
-            if gpu_sampling {
-                let saved = sampler.clone();
-                let uniform = sampler.uniform_bits();
-                match self.gm.step_sampled(tok, uniform)? {
-                    crate::sampling::StepOutput::Token(next) => { gpu_next = Some(next); gpu_samples += 1; }
-                    crate::sampling::StepOutput::Logits(next) => { sampler = saved; logits = next; gpu_fallbacks += 1; }
-                }
-            } else {
-                logits = self.gm.step(tok)?;
-            }
-            if let Some(t) = clock { step_s += t.elapsed().as_secs_f64(); steps += 1; }
+            logits = self.gm.step(tok)?;
             self.cached.push(tok);
-            if let Some(audit) = &mut lookup_audit {
-                audit.observe(&self.cached);
-            }
-        }
-        if profile {
-            let picks = self.gm.cpu_picks();
-            tracing::info!(stats = %serde_json::json!({"steps":steps,"thinking_budget":thinking_budget.as_ref().map(|b|b.limit),"reasoning_tokens":thinking_budget.as_ref().map(|b|b.reasoning_tokens),"forced_thinking_close":thinking_budget.as_ref().is_some_and(|b|b.forced),"gpu_sampling":gpu_sampling,"gpu_samples":gpu_samples,"gpu_fallbacks":gpu_fallbacks,"sample_s":sample_s,"emit_s":emit_s,"step_s":step_s,"adapt_host_s":self.gm.adapt_s-adapt_before,"model_prefill_s":model_prefill_s,"snapshot_s":snapshot_s,"prefix_lcp":lcp,"prefix_start":start,"prefix_replayed_tokens":lcp-start,"routed_picks":picks.0-picks_before.0,"cpu_picks":picks.1-picks_before.1}), "runtime stats");
-        }
-        if let Some(audit) = lookup_audit {
-            tracing::info!(stats = %audit.report(), "lookup audit");
         }
         self.stats = GenStats { prefill: Some(prefill), decode: Some(td.elapsed()), cached_prompt_tokens: start };
-        if let (Some(path),Some(output)) = (token_audit_path,output_ids) {
-            use std::io::Write;
-            let record = serde_json::json!({"event":"raw_generation","thinking_budget":thinking_budget.as_ref().map(|b|b.limit),"forced_thinking_tokens":forced_thinking_tokens,"seed":p.seed,"temperature":p.temperature,"top_p":p.top_p,"prompt_token_ids":prompt,"output_token_ids":output,"processed_output_tokens":self.cached.len()-prompt.len(),"prefix_lcp":lcp,"prefix_start":start,"initial_residency":initial_residency,"final_residency":self.gm.validation_residency(),"gpu_sampling":gpu_sampling,"backend_finish":format!("{fin:?}"),"limit":"Chosen IDs include explicitly recorded forced thinking-close tokens and a stopping/cancelled token that may not have been processed; use processed_output_tokens when replaying KV/cache history."});
-            let write = || -> std::io::Result<()> {
-                let mut f=std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-                writeln!(f,"{record}")
-            };
-            if let Err(error)=write() {tracing::warn!(%error,"token audit write failed");}
-        }
-
         let _ = Duration::ZERO;
         Ok(fin)
     }

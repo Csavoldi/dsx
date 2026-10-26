@@ -260,7 +260,11 @@ fn noise_rel(li: usize) -> Option<f32> {
     n.and_then(|(a, b, rel)| (li >= a && li <= b).then_some(rel))
 }
 
-/// Chunks longer than DSX_PREFILL_CPU_MAX_N (default 512) stream every expert: on .102 the CPU share helped at
+/// DSX_STREAM_MAIN_W=x: the main GPU's link counts x times its own speed when streamed experts are split between it
+/// and the streaming aux GPUs. Default 2: an aux GPU also computes its resident experts (twice the main GPU's on 2x
+/// RTX 3090), and on PCIe 3.0 x16 links an expert's compute costs about as much as its copy; best of 1-3 on an 8K
+/// prompt (warm prefill 15.6 s streaming on the main GPU alone, 14.4-15.4 s at 1, 12.9-13.3 s at 2, 13.5 s at 3)
+/// chunks longer than this (DSX_PREFILL_CPU_MAX_N, default 512) stream every expert: on .102 the CPU share helped at
 /// 60-300 tokens (server turns 1137 -> 738 ms, 2227 -> 1698 ms), was 2% slower at 1024 and 5-20% slower at 2048-3000
 /// (few experts have few tokens there, the x download stalls the stream, and the CPU competes for DRAM with the link)
 fn prefill_cpu_max_n() -> usize {
@@ -307,10 +311,6 @@ fn pre_dev_nt() -> usize {
     *P.get_or_init(|| std::env::var("DSX_PRE_DEV_NT").ok().and_then(|v| v.parse().ok()).unwrap_or(0))
 }
 
-/// DSX_STREAM_MAIN_W=x: the main GPU's link counts x times its own speed when streamed experts are split between it
-/// and the streaming aux GPUs. Default 2: an aux GPU also computes its resident experts (twice the main GPU's on 2x
-/// RTX 3090), and on PCIe 3.0 x16 links an expert's compute costs about as much as its copy; best of 1-3 on an 8K
-/// prompt (warm prefill 15.6 s streaming on the main GPU alone, 14.4-15.4 s at 1, 12.9-13.3 s at 2, 13.5 s at 3)
 fn stream_main_weight() -> f64 {
     static W: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *W.get_or_init(|| std::env::var("DSX_STREAM_MAIN_W").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0))

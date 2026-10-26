@@ -1,9 +1,0 @@
-{
-  "at": "2026-10-26T23:15:50.965237+00:00",
-  "deployed_commit": "83f52867f2335f305c9d9521d44cd5b8d75ed980",
-  "binary_sha256": "dbf475c4bf56b112990f34bbd1bab1186143f1023283d75d385d5c3322a4e699",
-  "service": "dsx-nanbeige.service",
-  "environment": "Environment=DSX_NB_BATCH=4096 DSX_NB_ATTN8=2 DSX_NB_PART_SIZE=16384 DSX_NB_EXL3_NARROW=1 DSX_NB_EXL3_EXPERIMENT=pf4 DSX_NB_GQA_I8PV=1 DSX_NB_EXL3=/home/lxe/nanbeige-runner/models/Luni-Nanbeige-4.3-33B-EXL3-4.00bpw",
-  "cache_probe": "identical response,3910/3910 reused",
-  "live_recording": "/home/lxe/gauntlet-nanbeige-doom/20261026-expanded-cube/recordings/cube-expanded.cast"
-}

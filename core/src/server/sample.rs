@@ -53,11 +53,6 @@ impl Sampler {
         Self::new(p.temperature, p.top_p, p.seed)
     }
 
-    /// One draw for the optional device sampler. Callers restore a clone on CPU fallback.
-    pub fn uniform_bits(&mut self) -> u64 {
-        self.rng.next_f64().to_bits()
-    }
-
     /// The sampling distribution: (token, weight) pairs and their total weight, or None for greedy. Only tokens within
     /// 30 temperature-scaled logits of the max are candidates (each other token weighs < e^-30 of the top one: under
     /// 1.2e-8 of the mass over the whole vocabulary). With top_p < 1 the support is the nucleus, heaviest first.

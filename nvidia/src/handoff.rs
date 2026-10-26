@@ -192,11 +192,6 @@ impl CpuWorker {
         let (st, busy, split, leg1) = (stop.clone(), busy_ns.clone(), split_ns.clone(), leg1_ns.clone());
         let pre: Arc<PrefillChan> = Arc::new(PrefillChan::default());
         let pc = pre.clone();
-        // Fail before spawning if a requested diagnostic destination is invalid,
-        // rather than leaving GPU handoffs waiting on a failed worker thread.
-        let route_audit = std::env::var("DSX_ROUTE_AUDIT").ok().map(|p| {
-            std::io::BufWriter::new(std::fs::File::create(p).expect("create DSX_ROUTE_AUDIT"))
-        });
         let handle = std::thread::Builder::new()
             .name("cpu-experts".into())
             .spawn(move || {
@@ -219,7 +214,6 @@ impl CpuWorker {
                 let noop = std::env::var_os("DSX_CPU_NOOP").is_some();
                 // DSX_LOG_ROUTES=path: one line per (pass, layer) with every token's picks, for placement studies
                 let mut route_log = std::env::var("DSX_LOG_ROUTES").ok().and_then(|p| std::fs::File::create(p).ok()).map(std::io::BufWriter::new);
-                let mut route_audit = route_audit;
                 loop {
                     seq += 1;
                     let l = (seq as usize - 1) % nl;
@@ -362,12 +356,6 @@ impl CpuWorker {
                         }
                         xch.y_cpu_deferred(l, nt).copy_from_slice(&y);
                         xch.flag(CPUD).store(seq, Ordering::Release);
-                    }
-                    if let Some(f) = route_audit.as_mut() {
-                        use std::io::Write;
-                        let record = serde_json::json!({"sequence":seq,"layer":l,"tokens":nt,"selected":sel,"weights":wts,"cpu_immediate":experts,"cpu_deferred":dexperts,"defer_rank":defer_rank});
-                        let _ = writeln!(f, "{record}");
-                        if l + 1 == nl { let _ = f.flush(); }
                     }
                     if l + 1 == nl {
                         // end of a pass: decay the usage scores (after the flag, off the critical path)

@@ -16,7 +16,7 @@ and the GGUF's F16 Engram projections; runtime FP8 conversion remains opt-in.
 | Published T16 v1 quality | prefill-path KL 0.196, top-1 80.9%, perplexity 9.54; deferral off; output gains selected on this eval |
 | Integrated decode A/B | 33.86 → 37.03 tok/s; teacher-forced 1×1023 steps, defer=3, two interleaved rounds; candidate includes optional FP8 Engram |
 | Prefill | ~529 tok/s for 3K tokens after vectorized dequant and hugepage arena changes; earlier build |
-| Default correctness, October 24 | 132,253,440 F32 logits bit-identical to f1f53e4 on 1023 fixed-residency positions, defer=3; experimental window-35 arm remains separate |
+| Open correctness check | static-residency decode KL 0.160876 → 0.170395 in window 35; cause not isolated, not a new release-quality score |
 
 [Current state](docs/current-state.md) separates published model quality, later kernel timings, defaults and open
 checks. Section 9b gives the integrated changes; earlier sections retain the builds and measurements that motivated
@@ -437,13 +437,6 @@ not checked alone. The planned default-flags comparison with DSX_QB_ROPE off, fo
 before the final serving switch; the final deployment report kept this caveat open. Do not assume disabling q_b
 fusion resolved the shift. A possible follow-up is to make rotation explicit (__fmaf_rn / __fmul_rn) in both paths
 and verify it on sm_86. See [current checks](docs/current-state.md#quality-and-the-open-decode-check).
-
-**October 24 follow-up.** The current default flags subsequently passed a complete-logit comparison against the
-reference: 1023 positions × 129280 logits, zero changed F32 bit patterns at equal residency, adaptation off and
-rank-3 deferral. Both scored KL 0.160876 / top-1 0.832845. This clears the default integration on that sample;
-enabling only `DSX_QB_ROPE=1` then reproduced KL 0.170395 / top-1 0.822092 / NLL 2.318534 exactly. The optional
-rotation remains off. This does not clear all inputs or optional flags. See the
-[correctness and oracle receipts](bench/results/2026-10-24-102/README.md).
 
 **Lessons.** FMA contraction of the same expression differs between kernels and between sm_86 and sm_120: write the
 form out with intrinsics, and check bit-equality on the 3090, not only the 5090. KL with the adaptive cache on takes a

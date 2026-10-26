@@ -137,7 +137,6 @@ pub struct GpuModel<'m> {
     win_idx: Buf,
     comp_idx: Buf,
     logits: Buf,
-    gpu_sampler: Option<crate::sampling::GpuSampler>,
     lat: Buf,
     actq: Buf,
     pub pos: usize,
@@ -469,7 +468,6 @@ impl<'m> GpuModel<'m> {
             win_idx: g.alloc_zeroed(4 * c.window)?,
             comp_idx: g.alloc_zeroed(4 * c.idx_topk)?,
             logits: fz(c.vocab)?,
-            gpu_sampler: None,
             lat: fz(c.head_dim)?,
             actq: fz(8 * 32768)?,
             out0: fz(crate::handoff::MAXT * c.dim)?, // [t][dim]: verify passes run up to MAXT tokens
@@ -921,7 +919,6 @@ impl<'m> GpuModel<'m> {
     /// picks replacements and starts them (their copies wait for the token on the side stream); the victims' on_cpu flags
     /// go to `adapt_flags` for after the sync. Finished replacements are committed after the sync (`adapt_commit`).
     fn adapt_step(&mut self) -> Result<()> {
-        let stable = std::env::var("DSX_ADAPT_STABLE").is_ok_and(|v| v == "1");
         let ne = self.m.cfg.n_experts;
         let (Some(w), Some(arena)) = (self.worker.as_ref(), self.arena) else { return Ok(()) };
         let flags = &mut self.adapt_flags;
@@ -941,7 +938,7 @@ impl<'m> GpuModel<'m> {
                 (v >= 1.0 && w.on_cpu[i].load(std::sync::atomic::Ordering::Relaxed) && !pending.contains(&(l, e)) && arena.get(l, e).is_some()).then_some((v, l, e))
             })
             .collect();
-        crate::cache_order::candidates(&mut cand, stable);
+        cand.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         cand.truncate(room * 4);
         // per store: residents by quant types, coldest last (popped first)
         type Victims = std::collections::HashMap<(crate::gguf::GType, crate::gguf::GType), Vec<(f32, usize, usize)>>;
@@ -953,7 +950,7 @@ impl<'m> GpuModel<'m> {
                     v.entry(s.types(vl, ve).unwrap()).or_default().push((sc(vl, ve), vl, ve));
                 }
                 for x in v.values_mut() {
-                    crate::cache_order::victims(x, stable);
+                    x.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
                 }
                 v
             })
@@ -1107,14 +1104,6 @@ impl<'m> GpuModel<'m> {
         self.gemv_rows_t(w, 0, w.rows, x, y, t)
     }
 
-    /// Benchmark control: finish pending swaps and freeze the current expert placement.
-    /// Does not change model state or the normal serving path unless explicitly called.
-    pub fn freeze_residency_for_validation(&mut self) -> Result<()> {
-        self.adapt_flush()?;
-        self.adapt = 0;
-        Ok(())
-    }
-
     /// seconds the CPU expert worker has spent computing (0 without a worker)
     pub fn cpu_busy_s(&self) -> f64 {
         self.worker.as_ref().map_or(0.0, |w| w.busy_ns.load(std::sync::atomic::Ordering::Relaxed) as f64 * 1e-9)
@@ -1132,20 +1121,6 @@ impl<'m> GpuModel<'m> {
                 (s1 as f64 / n1 / 1e3, d[0] as i64 as f64 / (d[1].max(1) as f64) / 1e3)
             })
             .collect()
-    }
-
-    /// Diagnostic readback after step_sampled; adds a full synchronization/copy.
-    pub fn validation_logits(&self) -> Result<Vec<f32>> {
-        self.g.bind();
-        self.g.download(self.logits.ptr, self.m.cfg.vocab)
-    }
-
-    /// Exact store membership for replay diagnostics, sorted by (layer, expert).
-    pub fn validation_residency(&self) -> Vec<Vec<(usize, usize)>> {
-        let mut stores: Vec<Vec<_>> = vec![self.exp0.as_ref().map_or_else(Vec::new, |s| s.residents().collect())];
-        stores.extend(self.aux.iter().map(|a| a.exp.residents().collect()));
-        for store in &mut stores { store.sort_unstable(); }
-        stores
     }
 
     /// routed picks so far and how many the CPU computed
@@ -1723,17 +1698,6 @@ impl<'m> GpuModel<'m> {
     }
 
     pub fn step(&mut self, token: u32) -> Result<Vec<f32>> {
-        match self.step_output(token, None)? {
-            crate::sampling::StepOutput::Logits(logits) => Ok(logits),
-            crate::sampling::StepOutput::Token(_) => unreachable!("CPU step returned a sampled token"),
-        }
-    }
-
-    pub fn step_sampled(&mut self, token: u32, uniform_bits: u64) -> Result<crate::sampling::StepOutput> {
-        self.step_output(token, Some(uniform_bits))
-    }
-
-    fn step_output(&mut self, token: u32, uniform_bits: Option<u64>) -> Result<crate::sampling::StepOutput> {
         let t_step = std::time::Instant::now();
         // DSX_ADAPT_EARLY=1: scan and start replacements before the sync (off: window 30 measured the same swap count but
         // CPU picks 22.9 -> 26.2% and KL 0.151 -> 0.159; cause not found yet)
@@ -1744,16 +1708,7 @@ impl<'m> GpuModel<'m> {
                 self.adapt_step()?;
             }
             self.adapt_s += t.elapsed().as_secs_f64();
-            let sampled = if let Some(bits) = uniform_bits {
-                if self.gpu_sampler.is_none() {
-                    self.gpu_sampler = Some(crate::sampling::GpuSampler::new(&self.g, self.m.cfg.vocab)?);
-                }
-                self.gpu_sampler.as_ref().unwrap().sample(&self.g, self.logits.ptr, bits)?
-            } else { None };
-            let l = match sampled {
-                Some(token) => crate::sampling::StepOutput::Token(token),
-                None => crate::sampling::StepOutput::Logits(self.g.download::<f32>(self.logits.ptr, self.m.cfg.vocab)?),
-            };
+            let l = self.g.download::<f32>(self.logits.ptr, self.m.cfg.vocab)?;
             let t = std::time::Instant::now();
             if self.adapt > 0 {
                 self.adapt_commit()?;
@@ -1769,7 +1724,7 @@ impl<'m> GpuModel<'m> {
             self.adapt_s += t.elapsed().as_secs_f64();
             Ok(l)
         });
-        if let Ok(crate::sampling::StepOutput::Logits(l)) = &r {
+        if let Ok(l) = &r {
             if l.iter().any(|v| !v.is_finite()) && !self.warned_nan {
                 self.warned_nan = true;
                 eprintln!("warning: non-finite logits at position {} (token {token}); the routers fall back to valid experts", self.pos);

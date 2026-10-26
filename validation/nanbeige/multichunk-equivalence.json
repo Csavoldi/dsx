@@ -1,6 +1,0 @@
-{
-  "prompt_tokens": 250,
-  "max_abs_error": 0.0,
-  "all_final_logits_exact": true,
-  "vocab": 166912
-}

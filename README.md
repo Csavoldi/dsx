@@ -1,8 +1,8 @@
 <h1 align="center">dsx</h1>
 
-<p align="center"><b>Model-specific inference in Rust and CUDA</b><br>
-DeepSeek-V4.1-Flash on two RTX 3090s · Nanbeige4.3-33B on one RTX 5090<br>
-shared serving infrastructure and browser UI</p>
+<p align="center"><b>DeepSeek-V4.1-Flash-1017 (552 B + 196 B Engram) on your old gaming PC</b><br>
+two RTX 3090s and 128 GB of RAM · 40+ tokens/s decode · 1,000+ tokens/s prefill measured · full routing, no expert pruning · OpenAI- and
+Anthropic-compatible API · chat in the browser, pictures, thinking levels</p>
 
 <p align="center">
 <a href="https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-dsx--t16-yellow" alt="Model: dsx-t16"></a>
@@ -12,19 +12,6 @@ shared serving infrastructure and browser UI</p>
 <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-13-76B900?logo=nvidia" alt="CUDA 13"></a>
 </p>
 
-## Choose a model
-
-DSX includes separate GPU backends for DeepSeek and Nanbeige. Build and start the server binary for the model you want; both use the shared DSX worker, sampler, GPU utilities and browser UI.
-
-| Model | Server | Hardware and current configuration | Instructions |
-| --- | --- | --- | --- |
-| DeepSeek-V4.1-Flash-1017 | `dsx-server` | Two RTX 3090s and 128 GB RAM; T16 experts with CPU offload | [DeepSeek quick start](#deepseek-quick-start) |
-| Nanbeige4.3-33B | `dsx-nanbeige-server` | One RTX 5090; Luni EXL3 4.0 bpw decoder, Q3 KV, runtime 4-bit head and INT8 GQA decode attention | [Nanbeige setup and measurements](README.nanbeige.md) |
-
-The Nanbeige default uses an existing Luni quant; DSX did not re-quantize the 4.0 bpw candidate. It improved measured precision over the local 2.5 bpw pack while reducing short-context throughput. It is the current quality-focused choice, not a proven optimum across every quant or agent task. The setup guide separates quant comparisons, populated-context timing, precision losses and assisted task results. Both backends are integrated in `main`.
-
-## DeepSeek runner
-
 dsx runs **[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)**
 locally on two RTX 3090s and 128 GB of RAM. It is a Rust and CUDA inference engine with a T16 quantized model,
 a browser chat UI, image input, and OpenAI- and Anthropic-compatible APIs for coding agents.
@@ -33,7 +20,7 @@ The [current model](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-dsx-t16)
 the experts, Engram memory and tokenizer included. The download also supplies the expert ranking and a separate
 vision tower. [T16](docs/t16-format.md) uses a trellis format designed for both desktop CPU and GPU execution.
 
-## DeepSeek quick start
+## Quick start
 
 The reference machine has two 24 GB RTX 3090s, an i7-12700K, 128 GB of RAM and an NVMe drive with about 255 GB free.
 You need Rust, CUDA 13 and an x86 CPU with AVX2; AVX-VNNI or AVX-512 VNNI is preferred.

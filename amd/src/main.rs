@@ -1055,7 +1055,7 @@ fn dev(model: &Path, rank: &[(usize, usize)], ctx: usize, cmd: &Path) -> Result<
                         let plen: usize = w[4].parse()?;
                         let ngen: usize = w[5].parse()?;
                         let turns: usize = w.get(6).map(|s| s.parse()).transpose()?.unwrap_or(1);
-                        let p = dsx_core::server::GenParams { max_new: ngen, temperature: 0.0, top_p: 1.0, seed: None, stop_token_ids: vec![], hesitation: None, thinking_close: None, images: Default::default() };
+                        let p = dsx_core::server::GenParams { max_new: ngen, temperature: 0.0, top_p: 1.0, seed: None, stop_token_ids: vec![], hesitation: None, images: Default::default() };
                         let mut r = runner::Runner::new(&mut dec, slots, bctx)?;
                         let prompt = |i: usize, len: usize| -> Vec<u32> { (0..len).map(|j| ((j * 7919 + i * 104729 + 13) % 120000) as u32).collect() };
                         let t0 = Instant::now();

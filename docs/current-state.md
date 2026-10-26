@@ -1,11 +1,9 @@
 # NVIDIA runtime and measurement status
 
-The DeepSeek backend defaults to T16 v1: DeepSeek-V4.1-Flash-1017 with T16 routed experts, Q8_0 dense weights and an
+The default desktop model is T16 v1: DeepSeek-V4.1-Flash-1017 with T16 routed experts, Q8_0 dense weights and an
 IQ4_NL Engram lookup table in one GGUF. The October 23, 2026 NVIDIA kernel integration is af2c154; 76a5d0a records
 its serving configuration. The October 25 prefill checkpoint adds opt-in kernels and buffer reuse, with an 8K-chunk serving profile.
 This page separates those runtime measurements from model-release quality scores and unfinished proposals.
-
-Nanbeige4.3-33B is integrated as a separate backend with shared serving infrastructure. Its quality-focused default uses the existing Luni 4.0 bpw EXL3 decoder; DSX did not re-quantize that candidate. The [Nanbeige guide](../README.nanbeige.md) identifies the pinned decoder, required base embedding/head pack, runtime precision choices, cache checks and context-dependent throughput. This page's remaining model and performance sections describe DeepSeek.
 
 ## Model package
 
@@ -55,12 +53,6 @@ used a 256K context; changing `--ctx` changes available expert-cache memory and 
 | `DSX_PREFILL_CPU` | enabled; `0` disables | CPU assistance for short chunks |
 | `DSX_PREFILL_CPU_MAX_N` | 512 | maximum chunk size eligible for CPU assistance |
 | `DSX_ADAPT` | 8 | maximum adaptive expert replacements per token; `0` fixes residency |
-| `DSX_THINKING_BUDGET` | unset | experimental hard reasoning-token cap 1–8192 for NVIDIA thinking requests; forces a close token, intentionally changes generation, and requires task-quality validation |
-| `DSX_REASONING_SCORE` | unset | experimental native thinking score 1–100; changes only the leading V4.1 reasoning header; thinking-off requests are unchanged |
-| `DSX_ADAPT_STABLE` | off; `1` enables | explicit layer/expert ordering for equal-score adaptive cache choices; experimental reproducibility control |
-| `DSX_T16_PAIR_GU` | off; `1` enables | experimental paired gate/up T16 launches; see [screening receipts](../bench/results/2026-10-24-gauntlet/README.md#paired-gateup-screening) |
-| `DSX_GPU_SAMPLE` | off; `1` enables | experimental GPU categorical sampling at temperature 1 and top-p at least 1, with zero hesitation penalty; other settings and non-finite logits use CPU sampling |
-| `DSX_RUNTIME_STATS`, `DSX_LOOKUP_AUDIT` | off; `1` enables | per-request timing and causal copy-opportunity diagnostics; neither executes speculative decoding |
 
 The lookup table and the projection matrices are different weights. Keeping F16 projections does not mean the
 252 GB package stores the large lookup table in F16: that table remains IQ4_NL.
@@ -101,9 +93,7 @@ Exactness comparisons additionally require `DSX_ADAPT=0` and equal resident expe
 can change rounding even when weight bytes are unchanged. Cooler 8-thread quality checks are not production-thread
 timing measurements.
 
-<a id="quality-and-the-open-decode-check"></a>
-
-## Quality and decode validation
+## Quality and the open decode check
 
 The published 0.196 quality figure is a prefill-path result with deferral off. Its output gains were selected on the
 same eval, so it is not an independent quality estimate. Later decode checks use different sequence counts,
@@ -119,20 +109,9 @@ Base KL was 0.160876; the integrated arm was 0.170395, with top-1 0.832845 → 0
 at equal residency gave the same result. Thus that window did not attribute the shift to FP8 storage.
 
 The fused q_b rotation differed by one ulp in ~700/4096 rotated values on sm_86 despite a matching sm_120 bench.
-It is disabled by default. The default-flags comparison was not completed before the final serving switch, so the
-deployment report kept the KL caveat open.
-
-The [October 24 validation](../bench/results/2026-10-24-102/README.md) subsequently compared complete logits from
-the current defaults against f1f53e4, with adaptation disabled, rank-3 deferral and equal residency (GPU0 1568,
-GPU1 2794). All **132,253,440 F32 values** matched bit-for-bit across 1023 positions and a 129280-token vocabulary;
-both files have SHA-256 `fbce05f045b49ad822fc54119f0b91178531a0333b2e4dcefcfb04fe4c1d54e2`.
-Both arms scored KL 0.160876 and top-1 0.832845. Separate unmodified-binary checks also matched without deferral:
-KL 0.137649 and top-1 0.837732. These results clear the default integration on that sample, not every experimental
-flag or all possible inputs. The older window-35 arm remains a distinct historical measurement.
-
-A diagnostic control enabling only `DSX_QB_ROPE=1` reproduced window 35's KL 0.170395, top-1 0.822092 and
-NLL 2.318534 exactly. The optional fused rotation is therefore sufficient to reproduce that shift in this setup;
-the production default keeps it off.
+It is disabled by default. The planned default-flags comparison and individual T16 GEMV isolation were not completed
+before the final serving switch. The final deployment report kept the KL caveat open. Disabling q_b fusion must
+not be presented as proof that the entire default integration matches the base numerics.
 
 The original FP8 projection kernel had a separate deterministic KL change from summation order. Its replacement,
 `gemv_fp8b32_o`, preserves F16 arithmetic order; window 35 confirmed equal F16/FP8 KL at equal placement. That fix
@@ -153,10 +132,9 @@ is merged, but optional conversion remains off. Persistent gather threads remove
 
 ## Remaining work
 
-The default-flags, fixed-residency comparison against the old base passed on the October 24 sample. Verification
-still uses a different execution path from ordinary decode: multi-position blocks bypass deferral, and their
-logits require separate correctness and quality checks. Oracle upper bounds and rollback diagnostics are recorded
-in the October 24 results. Hardware scripts require a coordinated window and must not be run as unattended cleanup.
+The first correctness task is the default-flags, fixed-residency comparison against the old base on sm_86, followed
+by individual kernel isolation. It requires a coordinated hardware window; the scripts in the results directory
+stop the server and should not be launched as unattended cleanup.
 
 Subsequent proposals include profiling the adaptive-cache scan, combining T16 gate/up launch work and improving
 multi-conversation prefix reuse. Lower-bit dense weights are estimates, not implemented gains. Requantization is
@@ -190,59 +168,3 @@ kill serving through memory pressure. Do not assume old protection settings stil
 Historical raw logs, third-party vendored docs and gauntlet task definitions are retained as records. They are not
 rewritten to look like current measurements. Public model cards and GitHub files change only when these edits are
 published; a local documentation commit does not update either service.
-
-## Failure replay diagnostics
-
-`oracle-bench --serial-probe --replay-sampling cpu|gpu --replay-seed N` records the initial prefill distribution and the distributions after a fixed continuation. It supports `--dump-reference` and `--compare-reference`, records sorted initial store membership and subsequent changes, and reports sampled choices. GPU replay explicitly downloads logits after sampling. Those readbacks and logs perturb execution timing; this mode is a correctness diagnostic, not production throughput evidence.
-
-`DSX_ROUTE_AUDIT=PATH` writes buffered per-layer JSON records containing selected experts, routing weights and the CPU experts actually computed immediately or deferred. It is off by default. For compiler/kernel isolation, `DSX_KERNEL_IMAGE=/absolute/image.fatbin` selects an archived image at build time; kernel-dependent experimental flags must match the image. This retains the current host wrapper and therefore does not reproduce an entire archived serving binary. Ordinary builds compile the current CUDA sources as before.
-
-`sampler-audit --logits FILE.f32 --seed N` measures actual GPU categorical weights against CPU FP64 weights on saved vocabulary rows. It reports KL, total variation, sampled choices and a continuous-uniform CDF interval disagreement estimate. Run it only inside an owned GPU window with serving stopped. The [failure-conditioned receipt](../bench/results/2026-10-24-gauntlet/fixed-failure-replay.json) separates this sampling diagnostic from model-logit comparisons and live task quality.
-
-`DSX_TOKEN_AUDIT=PATH` optionally appends each request's raw prompt/sample token IDs, processed-token count, prefix-cache boundary and initial/final expert-store membership. The stopping or cancelled token can be sampled without entering KV state, so replays must honor `processed_output_tokens`. These receipts support text-only generation-history reconstruction; they do not include image contents. The runtime profile also records `prefix_replayed_tokens`, the matching prefix that had to be prefetched again after restoring an older snapshot.
-
-For diagnostic prefill attribution, `oracle-bench --prefill-probe --rounds 2
---trace-path warm-prefill` brackets only the second round's full-prompt prefill
-with CUDA profiler start/stop calls. Prefix preparation and forced decode remain
-outside that range. Run under Nsight with the CUDA-profiler capture range; these
-instrumented times are attribution evidence, not an untraced speed measurement.
-`bench/analyze_nsys.py --tokens N --token-kind input` labels amortized prefill
-activity per input token. The default normalization remains output tokens for
-existing decode traces.
-
-`DSX_REASONING_SCORE` is a prompt experiment, not a hard reasoning-token limit.
-The recipe currently maps low/high/max to 50/75/100. A lower native score may
-reduce planning cost, but its completion quality and latency require task tests.
-The override accepts only 1–100 and replaces only the template-generated leading
-header, preserving conversation text. With no override, prompt bytes are
-unchanged. `validation-encode` honors the same process-local override so saved
-requests can be encoded consistently with the serving window.
-
-`DSX_THINKING_BUDGET=N` is an opt-in NVIDIA generation-policy experiment (1–8192
-tokens). For a request whose prompt opens a thinking span, it emits the normal
-sampled reasoning tokens up to the limit, then forces the thinking-close token
-if the model has not closed naturally. Sampling still consumes its normal RNG
-draw; after closure, answer sampling continues normally. Thinking-off requests
-are unchanged. This intentionally changes generation and can reduce quality; it
-requires actual coding-task validation. The raw-token audit records each forced
-position, original sampled ID and chosen close ID, and runtime stats report the
-applied budget and reasoning-token count. It is not a lossless optimization.
-
-The [October 24 optimization ledger](../bench/results/2026-10-24-gauntlet/DECISIONS.md)
-links measured gains, rejected configurations, task failures and harness fixes.
-Experimental throughput results do not supersede the accepted serving configuration
-or establish improved coding completion.
-
-`oracle-bench --prefill-probe --rounds 2 --trace-path warm-prefill
---trace-new-tokens 64` captures only the warm 64-token incremental prefill. Use 256
-for the other incremental probe; omitting the option preserves full-prompt
-capture. Prefix construction and subsequent decode remain outside the captured
-range. The option rejects sizes that do not match a probed interval.
-
-HTTP usage currently sets `prompt_cache_hit_tokens` to zero in the recipe's
-initial `PromptUsage`, even when the NVIDIA engine reuses a prefix. Treat the
-HTTP `cached_tokens`/cache-hit fields as unimplemented reporting, rather than a
-measurement of cache effectiveness. The engine's `cached_prompt_tokens`, raw
-`prefix_start` and measured prefill time are authoritative for these experiments.
-Correct HTTP reporting needs an engine-to-protocol metadata path; changing a
-usage label alone would not establish real cache reuse.
