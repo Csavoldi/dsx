@@ -1,0 +1,20 @@
+{
+  "frames_changed": true,
+  "visible_dot_bounding_boxes": [
+    [
+      35,
+      62,
+      6,
+      19
+    ],
+    [
+      35,
+      60,
+      6,
+      19
+    ]
+  ],
+  "pane": "%3",
+  "terminal_line_endings": "CRLF",
+  "assisted": true
+}

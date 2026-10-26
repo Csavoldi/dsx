@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-26T17:30:16.337230+00:00",
+  "branch": "nanbeige",
+  "commit": "eb15cf1",
+  "server_binary_sha256": "18d9e920b850f2ca79b708800d229e73d92586e27dad40d8566a1a11190ad98e",
+  "effective_environment": "Environment=DSX_NB_BATCH=4096 DSX_NB_ATTN8=2 DSX_NB_PART_SIZE=16384 DSX_NB_EXL3_NARROW=1 DSX_NB_EXL3_EXPERIMENT=pf4 DSX_NB_GQA_I8PV=1 DSX_NB_EXL3=/home/lxe/nanbeige-runner/models/Luni-Nanbeige-4.3-33B-EXL3-4.00bpw",
+  "base": "/home/lxe/nanbeige-runner/quant-exl3/result",
+  "decoder_override": "/home/lxe/nanbeige-runner/models/Luni-Nanbeige-4.3-33B-EXL3-4.00bpw",
+  "decoder_revision": "bc301055ecdfd5d992f2afaf5f6a405a7f235572",
+  "runtime_head_bits": 4,
+  "kv_bits": 3,
+  "capacity": 262144,
+  "cube_session": "nanbeige-doom",
+  "recording": "recordings/cube-4bpw-20261026/cube-4bpw.cast"
+}
