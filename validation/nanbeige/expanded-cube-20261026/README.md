@@ -11,3 +11,7 @@ The agent finished naturally after writing and repairing a new renderer, then la
 The final independent CPU audit verifies eight vertices, twelve edges, rotation-norm error below 2e-16, correct bottom-row Braille preservation and three distinct rendered frames. Two live preview frames also differ. The visible wireframe remains left of the terminal center, so this is a functional rotating-cube result with imperfect framing, not a claim that every visual requirement passed. Pi is idle and the cube remains live.
 
 The audit was adjusted to the rewritten canvas constructor's documented API: it now takes a count of dot rows, rather than character rows. The bottom-dot check therefore constructs 20 dot rows and verifies that dot y=19 appears in the fifth character row. This corrects the evaluator's API assumption without changing the model-generated source.
+
+## Recording artifacts
+
+The full asciinema recording lasts 12 minutes 15 seconds, including setup, task execution, self-repairs and the final preview. The complete MP4 runs at four times speed and lasts approximately three minutes; it preserves setup and task content. CPU rendering, full video decoding, checksums and a decoded final-frame inspection passed. Large cast/video files remain local under `/home/lxe/gauntlet-nanbeige-doom/20261026-expanded-cube/recordings`; reproducible rendering instructions, hashes, metadata and the verified final frame are committed under `recording/`.

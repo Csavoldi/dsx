@@ -1,0 +1,47 @@
+{
+  "header": {
+    "version": 2,
+    "width": 100,
+    "height": 57,
+    "timestamp": 1793056321,
+    "command": "tmux attach-session -t nanbeige-doom",
+    "env": {
+      "SHELL": "/usr/bin/zsh"
+    }
+  },
+  "duration_seconds": 735.352855,
+  "events": 42064,
+  "capture_service": "nanbeige-cube-expanded-recording-20261026.service",
+  "tmux_session": "nanbeige-doom",
+  "pi_pane": "%4",
+  "preview_pane": "%3",
+  "video_speed": 4,
+  "video_fps_cap": 15,
+  "video_idle_cap_seconds": 5,
+  "model_thinking": "off",
+  "thinking_display": "visible",
+  "tool_display": "expanded",
+  "video_encoder": "CPU libx264",
+  "full_cast_preserved": true,
+  "task_trimmed": false,
+  "notes": "Model repairs and imperfect final framing are preserved.",
+  "video_ffprobe": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 980,
+        "height": 1114,
+        "pix_fmt": "yuv420p",
+        "avg_frame_rate": "105485/7773"
+      }
+    ],
+    "format": {
+      "duration": "182.894118",
+      "size": "14611481"
+    }
+  },
+  "complete_video_decode_passed": true,
+  "final_frame_visually_verified": true
+}

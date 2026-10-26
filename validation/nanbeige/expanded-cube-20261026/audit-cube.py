@@ -1,5 +1,5 @@
 import importlib.util,json,pathlib,hashlib,math,subprocess
-r=pathlib.Path(__file__).parent;p=r/'game/cube.py';out=r/'receipts';out.mkdir(exist_ok=True)
+r=pathlib.Path(__file__).parent;p=r/'game/cube.py';p=p if p.exists() else r/'model-generated-cube.py';out=r/'receipts';out.mkdir(exist_ok=True)
 report={'source_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'scope':'independent CPU geometry and Braille coordinate audit; no source edits or model feedback'}
 try:
  spec=importlib.util.spec_from_file_location('candidate_cube',p);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
