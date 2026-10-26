@@ -225,6 +225,32 @@ extern "C" __global__ void nb_attn_q3_i8pv(const float* q,const uint8_t* kc,cons
  for(int r=0;r<2;r++)wmma::store_matrix_sync(O+r*16*136+warp*16,value[r],136,wmma::mem_row_major);__syncthreads();
  for(int i=tid;i<rows*128;i+=256){int r=i/128,j=i%128;size_t off=(((size_t)(tile*32+r)*56+h)*splits+part)*130;tmp[off+2+j]=O[r*136+j];if(j==0){tmp[off]=mx[r];tmp[off+1]=den[r];}}
 }
+// Optional GQA decode: INT8 QK/PV with seven query heads sharing each KV tile.
+// Four query positions occupy up to 28 WMMA rows; the additional quantization error must be measured.
+extern "C" __global__ void nb_attn_q3_gqa_i8pv(const float* q,const uint8_t* kc,const uint8_t* vc,const __nv_bfloat16* kr,const __nv_bfloat16* vr,float* tmp,const int* pos,int ctx,int rows,int splits,int query_offset,int part_size){
+ using namespace nvcuda;extern __shared__ __align__(32) unsigned char memory[];
+ auto Q=(signed char*)memory;auto KV=(signed char*)(Q+32*144);auto K=KV;auto V=KV;auto S=(int*)(KV+64*144);auto P=(signed char*)S;auto mx=(float*)(S+32*64);auto den=mx+32;auto old=den+32;auto qs=old+32;auto ks=qs+32;auto vs=ks+64;auto ps=vs+64;auto O=(float*)KV;
+ int tile=blockIdx.z; query_offset=tile*4;rows=min(4,rows-query_offset)*7;
+ int h=blockIdx.x,part=blockIdx.y,tid=threadIdx.x,warp=tid/32,lane=tid%32,p0=*pos+query_offset,cutoff=max(0,(p0/32)*32-2048);
+ for(int r=warp;r<32;r+=8){float v[4],a=0;for(int j=0;j<4;j++){v[j]=r<rows?q[(size_t)(query_offset+r/7)*7168+(h*7+r%7)*128+lane+j*32]:0;a=fmaxf(a,fabsf(v[j]));}a=warp_max(a);float scale=a>0?a/127.f:1.f;if(lane==0){qs[r]=scale;mx[r]=-INFINITY;den[r]=0;}for(int j=0;j<4;j++)Q[r*144+lane+j*32]=max(-127,min(127,__float2int_rn(v[j]/scale)));}
+ wmma::fragment<wmma::accumulator,16,16,16,float> value[2];for(int r=0;r<2;r++)wmma::fill_fragment(value[r],0.f);__syncthreads();
+ for(int begin=part*part_size;begin<min(p0+(rows+6)/7,(part+1)*part_size);begin+=64){
+  for(int r=warp;r<64;r+=8){int p=begin+r;float scale=1;int vals[4]={0,0,0,0};if(p<p0+(rows+6)/7){size_t off=((size_t)h*ctx+p)*50;if(p>=cutoff){float x[4],a=0;for(int j=0;j<4;j++){x[j]=__bfloat162float(kr[((size_t)h*2592+p%2592)*128+lane+j*32]);a=fmaxf(a,fabsf(x[j]));}a=warp_max(a);scale=a>0?a/127.f:1.f;for(int j=0;j<4;j++)vals[j]=max(-127,min(127,__float2int_rn(x[j]/scale)));}else{scale=__bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(kc+off))*(2.1519457f/127.f);for(int j=0;j<4;j++){int feature=lane+j*32,b=off+2+(feature/8)*3;unsigned bits=(unsigned)kc[b]|((unsigned)kc[b+1]<<8)|((unsigned)kc[b+2]<<16);int code=(bits>>(feature%8*3))&7,i=code<4?code:7-code;int a=(0x0e2d4f7f>>(i*8))&255;vals[j]=code<4?-a:a;}}}float vscale=0;if(p<p0+(rows+6)/7){if(p>=cutoff){float a=0;for(int j=0;j<4;j++)a=fmaxf(a,fabsf(__bfloat162float(vr[((size_t)h*2592+p%2592)*128+lane+j*32])));vscale=warp_max(a)/127.f;}else{size_t off=((size_t)h*ctx+p)*50;vscale=__bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(vc+off))*(2.1519457f/127.f);}}if(lane==0){ks[r]=scale;vs[r]=vscale;}for(int j=0;j<4;j++)K[r*144+lane+j*32]=vals[j];}__syncthreads();
+  wmma::fragment<wmma::accumulator,16,16,16,int> scores;wmma::fill_fragment(scores,0);int qr=warp/4,kcol=warp%4;
+  #pragma unroll
+  for(int d=0;d<128;d+=16){wmma::fragment<wmma::matrix_a,16,16,16,signed char,wmma::row_major> qa;wmma::fragment<wmma::matrix_b,16,16,16,signed char,wmma::col_major> kb;wmma::load_matrix_sync(qa,Q+qr*16*144+d,144);wmma::load_matrix_sync(kb,K+kcol*16*144+d,144);wmma::mma_sync(scores,qa,kb,scores);}wmma::store_matrix_sync(S+qr*16*64+kcol*16,scores,64,wmma::mem_row_major);__syncthreads();
+  for(int r=warp;r<32;r+=8){float a=(r<rows&&begin+lane<=p0+r/7)?(float)S[r*64+lane]*qs[r]*ks[lane]*.08838834765f:-INFINITY,b=(r<rows&&begin+lane+32<=p0+r/7)?(float)S[r*64+lane+32]*qs[r]*ks[lane+32]*.08838834765f:-INFINITY;float nm=fmaxf(mx[r],warp_max(fmaxf(a,b))),prior=isfinite(nm)?expf(mx[r]-nm):0;float x=isfinite(nm)?expf(a-nm):0,y=isfinite(nm)?expf(b-nm):0;float sum=warp_sum(x+y);x*=vs[lane];y*=vs[lane+32];float scale=warp_max(fmaxf(x,y))/127.f;float inv=scale>0?1.f/scale:0;__syncwarp();P[r*256+lane]=min(127,__float2int_rn(x*inv));P[r*256+lane+32]=min(127,__float2int_rn(y*inv));if(lane==0){old[r]=prior;mx[r]=nm;den[r]=den[r]*prior+sum;ps[r]=scale;}}__syncthreads();
+  for(int i=tid;i<64*128;i+=256){int p=begin+i/128,j=i%128,v=0;if(p<p0+(rows+6)/7){if(p>=cutoff){float x=__bfloat162float(vr[((size_t)h*2592+p%2592)*128+j]);float inv=vs[i/128]>0?1.f/vs[i/128]:0;v=max(-127,min(127,__float2int_rn(x*inv)));}else{size_t off=((size_t)h*ctx+p)*50;int b=off+2+(j/8)*3;unsigned bits=(unsigned)vc[b]|((unsigned)vc[b+1]<<8)|((unsigned)vc[b+2]<<16);int code=(bits>>(j%8*3))&7,c=code<4?code:7-code;int val=(0x0e2d4f7f>>(c*8))&255;v=code<4?-val:val;}}V[(i/128)*144+i%128]=v;}__syncthreads();
+  #pragma unroll
+  for(int r=0;r<2;r++){wmma::fragment<wmma::accumulator,16,16,16,int> partial;wmma::fill_fragment(partial,0);
+   #pragma unroll
+   for(int d=0;d<64;d+=16){wmma::fragment<wmma::matrix_a,16,16,16,signed char,wmma::row_major> pa;wmma::fragment<wmma::matrix_b,16,16,16,signed char,wmma::row_major> vb;wmma::load_matrix_sync(pa,P+r*16*256+d,256);wmma::load_matrix_sync(vb,V+d*144+warp*16,144);wmma::mma_sync(partial,pa,vb,partial);}
+   for(int e=0;e<value[r].num_elements;e++){int row=r*16+lane/4+((e/2)%2)*8;value[r].x[e]=value[r].x[e]*old[row]+(float)partial.x[e]*ps[row];}}
+  __syncthreads();
+ }
+ for(int r=0;r<2;r++)wmma::store_matrix_sync(O+r*16*136+warp*16,value[r],136,wmma::mem_row_major);__syncthreads();
+ for(int i=tid;i<rows*128;i+=256){int r=i/128,j=i%128;size_t off=(((size_t)(query_offset+r/7)*56+h*7+r%7)*splits+part)*130;tmp[off+2+j]=O[r*136+j];if(j==0){tmp[off]=mx[r];tmp[off+1]=den[r];}}
+}
 // E2M1 values multiplied by two are exact signed int8 values. Preserve the two
 // E4M3 scales per 16-value dot product, using DP4A for the inner accumulation.
 __device__ __forceinline__ unsigned nb_fp4_i8x4(unsigned bits){

@@ -443,6 +443,7 @@ pub struct Nanbeige {
     part_size: usize,
     prefill_batch: usize,
     attn_i8: usize,
+    gqa_i8pv: bool,
     pub reference: bool,
     graphs: HashMap<usize, cudarc::driver::sys::CUgraphExec>,
     pub graphs_enabled: bool,
@@ -663,11 +664,14 @@ impl Nanbeige {
             out: alloc(b * 22016 * 2)?,
             ws: alloc(32 * 1024 * 1024)?,
         };
+        // Load once so captured graphs cannot silently change attention algorithms.
+        let gqa_i8pv = std::env::var("DSX_NB_GQA_I8PV").is_ok_and(|v| v == "1");
         if kv_bits == 3 {
             g.set_smem(g.kernel("nb_attn_q3_tc")?, 48 * 1024)?;
             g.set_smem(g.kernel("nb_attn_q3_i8")?, 32 * 1024)?;
             g.set_smem(g.kernel("nb_attn_q3_i8pv")?, 24 * 1024)?;
             g.set_smem(g.kernel("nb_attn_q3_gqa")?, 48 * 1024)?;
+            if gqa_i8pv { g.set_smem(g.kernel("nb_attn_q3_gqa_i8pv")?, 24 * 1024)?; }
         }
         let res = Self {
             x: alloc(b * 7168 * 4)?,
@@ -701,6 +705,7 @@ impl Nanbeige {
             part_size,
             prefill_batch,
             attn_i8: std::env::var("DSX_NB_ATTN8").ok().and_then(|s|s.parse().ok()).unwrap_or(0),
+            gqa_i8pv,
             reference: false,
             graphs: HashMap::new(),
             graphs_enabled: true,
@@ -900,7 +905,8 @@ impl Nanbeige {
             .next_power_of_two()
             .min(self.ctx.div_ceil(part_size));
         let graph_key = splits + if gqa { 1_000_000 } else { 0 }
-            + t * 10_000_000 + if self.collect_all_logits { 100_000_000 } else { 0 };
+            + t * 10_000_000 + if self.collect_all_logits { 100_000_000 } else { 0 }
+            + if gqa && self.gqa_i8pv { 200_000_000 } else { 0 };
         // Verification batches use fixed buffers and read position from device memory.
         // Keep their graphs distinct by row count, attention geometry and head layout.
         if (t == 1 || (t <= 9 && std::env::var_os("DSX_NB_SPEC_GRAPHS").is_some()))
@@ -1049,7 +1055,7 @@ impl Nanbeige {
                     ],
                 )?;
                 if t <= 9 && self.pos >= 2048 {
-                    g.launch(g.kernel("nb_attn_q3_gqa")?,(8,splits as u32,t.div_ceil(4) as u32),256,48*1024,&[Arg::P(self.q.ptr),Arg::P(l.kc.ptr),Arg::P(l.vc.ptr),Arg::P(l.kr),Arg::P(l.vr),Arg::P(self.tmp.ptr),Arg::P(self.position.ptr),Arg::I(self.ctx as i32),Arg::I(t as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(512)])?;
+                    g.launch(g.kernel(if self.gqa_i8pv { "nb_attn_q3_gqa_i8pv" } else { "nb_attn_q3_gqa" })?,(8,splits as u32,t.div_ceil(4) as u32),256,if self.gqa_i8pv {24*1024} else {48*1024},&[Arg::P(self.q.ptr),Arg::P(l.kc.ptr),Arg::P(l.vc.ptr),Arg::P(l.kr),Arg::P(l.vr),Arg::P(self.tmp.ptr),Arg::P(self.position.ptr),Arg::I(self.ctx as i32),Arg::I(t as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(512)])?;
                     launch(g,"nb_attn_merge",(56,t as u32,1),128,&[Arg::P(self.tmp.ptr),Arg::P(self.att.ptr),Arg::I(t as i32),Arg::I(splits as i32)])?;
                 } else if t > 9 {
                     for offset in (0..t).step_by(512) {
@@ -1670,7 +1676,10 @@ pub fn validate_exl3() -> Result<serde_json::Value> {
 /// Check causal attention, GQA head mapping, split merges, and both KV storage paths
 /// against an independent f64 softmax over independently decoded packed values.
 pub fn validate_attention() -> Result<serde_json::Value> {
-    let g=Gpu::new(0)?;let ctx=8192usize;let unaligned=std::env::var_os("DSX_NB_ATTN_AUDIT_UNALIGNED").is_some();let pos=if unaligned{4097usize}else{4096usize};let count=if unaligned{512usize}else{65usize};
+    let g=Gpu::new(0)?;let ctx=8192usize;let unaligned=std::env::var_os("DSX_NB_ATTN_AUDIT_UNALIGNED").is_some();let pos=if unaligned{4097usize}else{4096usize};
+    // Optional production row counts exercise one-token decode and partial speculative tiles.
+    let count=std::env::var("DSX_NB_ATTN_AUDIT_ROWS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if unaligned{512}else{65});
+    ensure!((1..=512).contains(&count), "attention audit rows must be in 1..=512");
     let centroids=[-2.1519457f32,-1.3439093,-0.7560053,-0.2450942,0.2450942,0.7560053,1.3439093,2.1519457];
     let mut seed=1977u32;let mut rng=||{seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);seed};
     let mut caches=vec![];let mut recents=vec![];
@@ -1686,19 +1695,26 @@ pub fn validate_attention() -> Result<serde_json::Value> {
     let tmp=g.alloc(count*56*ctx.div_ceil(128)*130*4)?;let out=g.alloc(count*7168*2)?;
     let decode=|which:usize,h:usize,p:usize,j:usize| -> f64 {let off=(h*ctx+p)*50;let b=off+2+(j/8)*3;let v=(caches[which][b] as u32)|((caches[which][b+1] as u32)<<8)|((caches[which][b+2] as u32)<<16);half::bf16::from_f32(centroids[((v>>(j%8*3))&7) as usize]*0.5).to_f32() as f64};
     let mut expected=vec![];
-    for t in [0usize,3,8,15,16,31,32,63,64,count-1] {for head in [0usize,6,7,55] {let mut scores=vec![];for p in 0..=pos+t {let mut dot=0.;for j in 0..128 {dot+=q[t*7168+head*128+j] as f64*decode(0,head/7,p,j);}scores.push(dot/(128f64).sqrt());}
+    for t in [0usize,3,4,7,8,15,16,31,32,63,64,count-1].into_iter().filter(|&t| t<count) {for head in [0usize,6,7,55] {let mut scores=vec![];for p in 0..=pos+t {let mut dot=0.;for j in 0..128 {dot+=q[t*7168+head*128+j] as f64*decode(0,head/7,p,j);}scores.push(dot/(128f64).sqrt());}
         let max=scores.iter().copied().fold(f64::NEG_INFINITY,f64::max);let weights:Vec<f64>=scores.iter().map(|s|(s-max).exp()).collect();let den: f64=weights.iter().sum();let mut y=vec![0.;128];for p in 0..=pos+t {for j in 0..128 {y[j]+=weights[p]*decode(1,head/7,p,j)/den;}}
         expected.push((t,head,y));
     }}
     let mut results=vec![];
-    for kind in ["parallel","gqa","prefill_tc","prefill_i8","prefill_i8pv"] {
-        let splits=if kind=="parallel" {(pos+count).div_ceil(128)} else if kind=="gqa" {(pos+count).div_ceil(512)} else {1};
-        let common=[Arg::P(qd.ptr),Arg::P(kd.ptr),Arg::P(vd.ptr),Arg::P(kr.ptr),Arg::P(vr.ptr),Arg::P(tmp.ptr),Arg::P(pd.ptr),Arg::I(ctx as i32),Arg::I(count as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(if kind=="gqa" {512} else {32768}),Arg::I(count as i32)];
-        if kind=="parallel" {launch(&g,"nb_attn_q3_parallel",(56,count as u32,splits as u32),256,&common)?;} else {let name=if kind=="gqa" {"nb_attn_q3_gqa"}else if kind=="prefill_i8pv" {"nb_attn_q3_i8pv"}else if kind=="prefill_i8" {"nb_attn_q3_i8"}else{"nb_attn_q3_tc"};let kernel=g.kernel(name)?;let smem=if kind=="prefill_i8pv"{24*1024}else if kind=="prefill_i8"{32*1024}else{48*1024};g.set_smem(kernel,smem)?;g.launch(kernel,if kind=="gqa"{(8,splits as u32,count.div_ceil(4) as u32)}else{(56,1,count.div_ceil(32) as u32)},256,smem as u32,&common)?;}
+    for kind in ["parallel","gqa","gqa_i8pv","gqa_i8pv_padded","prefill_tc","prefill_i8","prefill_i8pv"] {
+        let gqa = kind.starts_with("gqa");
+        let splits=if kind=="parallel" {(pos+count).div_ceil(128)} else if kind=="gqa_i8pv_padded" {(pos+count).div_ceil(512).next_power_of_two().min(ctx.div_ceil(512))} else if gqa {(pos+count).div_ceil(512)} else {1};
+        let common=[Arg::P(qd.ptr),Arg::P(kd.ptr),Arg::P(vd.ptr),Arg::P(kr.ptr),Arg::P(vr.ptr),Arg::P(tmp.ptr),Arg::P(pd.ptr),Arg::I(ctx as i32),Arg::I(count as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(if gqa {512} else {32768}),Arg::I(count as i32)];
+        if kind=="parallel" {launch(&g,"nb_attn_q3_parallel",(56,count as u32,splits as u32),256,&common)?;} else {
+            let name=match kind {"gqa"=>"nb_attn_q3_gqa", "gqa_i8pv" | "gqa_i8pv_padded"=>"nb_attn_q3_gqa_i8pv", "prefill_i8pv"=>"nb_attn_q3_i8pv", "prefill_i8"=>"nb_attn_q3_i8", _=>"nb_attn_q3_tc"};
+            let kernel=g.kernel(name)?;
+            let smem=if kind.contains("i8pv"){24*1024}else if kind=="prefill_i8"{32*1024}else{48*1024};
+            g.set_smem(kernel,smem)?;
+            g.launch(kernel,if gqa{(8,splits as u32,count.div_ceil(4) as u32)}else{(56,1,count.div_ceil(32) as u32)},256,smem as u32,&common)?;
+        }
         launch(&g,"nb_attn_merge",(56,count as u32,1),128,&[Arg::P(tmp.ptr),Arg::P(out.ptr),Arg::I(count as i32),Arg::I(splits as i32)])?;
         let got:Vec<u16>=g.download(out.ptr,count*7168)?;let mut max=0f64;let mut squared=0.;let mut norm=0.;
         for (t,h,ys) in &expected {for j in 0..128 {let v=half::bf16::from_bits(got[t*7168+h*128+j]).to_f32() as f64;ensure!(v.is_finite(),"nonfinite attention");let e=v-ys[j];max=max.max(e.abs());squared+=e*e;norm+=ys[j]*ys[j];}}
-        let relative=(squared/norm).sqrt();ensure!(relative<if kind.starts_with("prefill_i8"){0.05}else{0.01},"attention {kind} relative error {relative}");
+        let relative=(squared/norm).sqrt();ensure!(relative<if kind.starts_with("prefill_i8") || kind.starts_with("gqa_i8pv") {0.05}else{0.01},"attention {kind} relative error {relative}");
         results.push(serde_json::json!({"kernel":kind,"max_abs_error":max,"relative_rms_error":relative,"splits":splits}));
     }
     Ok(serde_json::json!({"context_position":pos,"rows":count,"sampled_heads":[0,6,7,55],"reference":"independent f64 causal softmax, independently decoded 3bit KV, BF16 recent window","results":results}))
@@ -1750,22 +1766,27 @@ pub fn benchmark_attention() -> Result<serde_json::Value> {
     let recent=g.upload(&vec![half::bf16::from_f32(0.25).to_bits();8*2592*128])?;
     let tmp=g.alloc(8*56*ctx.div_ceil(128)*130*4)?;
     let out=g.alloc(8*7168*2)?;
-    let kernel=g.kernel("nb_attn_q3_gqa")?;
-    g.set_smem(kernel,48*1024)?;
+    let i8pv=std::env::var("DSX_NB_GQA_I8PV").is_ok_and(|v| v=="1");
+    let padded=std::env::var("DSX_NB_ATTN_PADDED").is_ok_and(|v| v=="1");
+    let kernel_name=if i8pv {"nb_attn_q3_gqa_i8pv"} else {"nb_attn_q3_gqa"};
+    let kernel=g.kernel(kernel_name)?;
+    let shared_bytes=if i8pv {24*1024} else {48*1024};
+    g.set_smem(kernel,shared_bytes)?;
     let mut results=vec![];
     for pos in [4096usize,32768,65536,131072,262135] {
         let pd=g.upload(&[pos as i32])?;
         for rows in [1usize,4,8] {
             let mut baseline:Option<Vec<u16>>=None;
             for part in [512usize,128,256,1024,2048] {
-                let splits=(pos+rows).div_ceil(part);
+                let exact_splits=(pos+rows).div_ceil(part);
+                let splits=if padded {exact_splits.next_power_of_two().min(ctx.div_ceil(part))} else {exact_splits};
                 let args=[Arg::P(q.ptr),Arg::P(k.ptr),Arg::P(v.ptr),Arg::P(recent.ptr),Arg::P(recent.ptr),Arg::P(tmp.ptr),Arg::P(pd.ptr),Arg::I(ctx as i32),Arg::I(rows as i32),Arg::I(splits as i32),Arg::I(0),Arg::I(part as i32)];
                 let run=|| -> Result<()> {
-                    g.launch(kernel,(8,splits as u32,rows.div_ceil(4) as u32),256,48*1024,&args)?;
+                    g.launch(kernel,(8,splits as u32,rows.div_ceil(4) as u32),256,shared_bytes as u32,&args)?;
                     launch(&g,"nb_attn_merge",(56,rows as u32,1),128,&[Arg::P(tmp.ptr),Arg::P(out.ptr),Arg::I(rows as i32),Arg::I(splits as i32)])?;
                     Ok(())
                 };
-                run()?;g.sync()?;
+                for _ in 0..8 {run()?;}g.sync()?;
                 let got:Vec<u16>=g.download(out.ptr,rows*7168)?;
                 ensure!(got.iter().all(|x|half::bf16::from_bits(*x).is_finite()),"nonfinite attention benchmark");
                 let base=baseline.get_or_insert_with(||got.clone());
@@ -1783,5 +1804,5 @@ pub fn benchmark_attention() -> Result<serde_json::Value> {
             }
         }
     }
-    Ok(serde_json::json!({"scope":"synthetic isolated GQA attention plus merge; not full model throughput","context_capacity":ctx,"results":results}))
+    Ok(serde_json::json!({"scope":"synthetic isolated GQA attention plus merge; not full model throughput","context_capacity":ctx,"kernel":kernel_name,"shared_bytes":shared_bytes,"production_padded_splits":padded,"warmup_calls":8,"timing_samples":7,"calls_per_sample":4,"results":results}))
 }
