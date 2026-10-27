@@ -47,6 +47,7 @@ used a 256K context; changing `--ctx` changes available expert-cache memory and 
 | `DSX_ADAPT_EARLY` | off; `1` enables | earlier cache update; measured worse residency |
 | `DSX_ENGRAM_FP8` | off; `1` enables | convert F16 Engram **projections** to exact FP8 weights at load |
 | `DSX_ENGRAM_PERSIST` | off; `1` enables | persistent lookup-row gather threads; marginal measured gain |
+| `DSX_ENGRAM_PREFETCH` | enabled; `0` disables | prefill gathers every Engram layer's lookup rows for the chunk on a helper thread at chunk start; [receipts](../bench/results/2026-10-26-engram-prefetch/README.md) |
 | `DSX_T16_WARP_HAD`, `DSX_T16_SPECIALIZED_DQ` | off; `1` enables | exact prefill Hadamard and weight-expansion variants |
 | `DSX_T16_FUSED_POST_GU` | off; `1` enables | combine T16 gate/up post-processing with SwiGLU |
 | `DSX_PREFILL_REUSE_BUFFERS` | off; `1` enables | share prefill query/output/scratch storage; saves ~1.91 GB at 8K |
