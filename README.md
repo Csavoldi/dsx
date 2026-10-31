@@ -51,6 +51,20 @@ Use `--no-vision` for text only.
 computation; omit the flag to disable that approximation. See [server configuration](docs/server.md) for all options
 and [expert placement](docs/placement.md) for other memory and GPU configurations.
 
+Or build and run the same server in Docker (NVIDIA Container Toolkit required). The default image carries sm_86,
+sm_89 and sm_120 kernels; `--build-arg CUDA_ARCHS=86` narrows the fatbin to one GPU:
+
+```bash
+docker build -t dsx .
+docker run --gpus all --ipc=host --ulimit memlock=-1:-1 \
+  -v "$PWD/dsx-t16:/models:ro" -p 8090:8090 dsx \
+  --model /models/DeepSeek-V4.1-Flash-1017-dsx-t16.gguf \
+  --rank /models/expert-rank.json --ctx 131072 --arena-gb 110 \
+  --host 0.0.0.0 --port 8090
+```
+
+`--target amd` builds the MI325X runner instead.
+
 ## Coding agents and API
 
 Point an OpenAI-compatible client at `http://localhost:8090/v1`, or an Anthropic-compatible client at
