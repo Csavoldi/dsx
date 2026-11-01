@@ -36,24 +36,9 @@ Use `CUDA_ARCHS=89` for an RTX 4090 or `120` for an RTX 5090. **`CUDA_ARCHS=70` 
 
 ### Tesla V100 (SM70)
 
-Volta is supported end to end by the same build: `CUDA_ARCHS=70 cargo build
---release -p dsx --features cuda`. Every SM80-only kernel path (the cp.async
-decode staging, the bf16/ldmatrix attention tiles, the int8-IMMA expert
-kernels) has an SM70 twin behind `__CUDA_ARCH__` guards, and SM80+ binaries
-are unchanged: decode routes to the unstaged GEMV (bit-identical to the
-staged one), prefill attention to the serial kernel, and the expert kernels
-to a dp4a emulation of each IMMA fragment with identical integer
-accumulators (verified bit-exact across all quant formats).
-
-Measured on two Tesla V100-PCIE-32GB (80 SMs, CUDA 12.9, driver 580) with
-108 GB of RAM and the same T16 checkpoint: **21–23 tokens/s decode** (flat
-from empty context to a 123K-token prompt), **467 tokens/s prefill** on a
-123K-token prompt (`--arena-gb 85`, ~110 s model residency load), dense
-attention 20 µs/token. The per-kernel evidence and gates are in
-`bench/PHASE0-RESULTS.md`, `bench/T3-RESULTS.md` (decode: 1.17 ms/expert
-step, 3.8e-7 vs the CPU reference), `bench/T4-RESULTS.md` (attention: cos
-1.000000, memcheck clean) and `bench/T5-RESULTS.md` (experts: 147–690 GB/s
-weight-stream, max-abs 0 vs the reference).
+`CUDA_ARCHS=70` (with CUDA 12.9) builds for Volta: every SM80-only kernel has an SM70 twin, and SM80+ binaries are
+unchanged. Measured on 2x V100-PCIE-32GB with 108 GB of RAM: 21-23 tokens/s decode and 467 tokens/s prefill on a
+123K-token prompt. Details and checks: [bench/results/2026-11-01-volta](bench/results/2026-11-01-volta/README.md).
 
 ```bash
 CUDA_ARCHS=70 cargo build --release -p dsx --features cuda
