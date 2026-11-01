@@ -3,3 +3,4 @@ nvidia/target/
 libqkern.so
 __pycache__/
 amd/target/
+.mimosa/
